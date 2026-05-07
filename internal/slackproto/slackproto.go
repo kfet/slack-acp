@@ -79,7 +79,7 @@ func (c *Client) Run(ctx context.Context) error {
 	c.botUserID = auth.UserID
 	debuglog.Logf("slack: connected as %s (%s)", auth.User, auth.UserID)
 
-	go c.consume(ctx)
+	go c.consume(ctx, c.sm.Events)
 	return c.sm.RunContext(ctx)
 }
 
@@ -89,12 +89,12 @@ func (c *Client) API() *slack.Client { return c.api }
 // BotUserID returns the cached bot user id (after Run).
 func (c *Client) BotUserID() string { return c.botUserID }
 
-func (c *Client) consume(ctx context.Context) {
+func (c *Client) consume(ctx context.Context, events <-chan socketmode.Event) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case evt, ok := <-c.sm.Events:
+		case evt, ok := <-events:
 			if !ok {
 				return
 			}

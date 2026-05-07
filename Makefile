@@ -1,4 +1,4 @@
-.PHONY: build build-all install test test-cover test-race vet fmt clean tidy check-licenses notices _all_parallel $(CROSS_TARGETS)
+.PHONY: build build-all install test test-cover test-race coverage vet fmt clean tidy check-licenses notices _all_parallel $(CROSS_TARGETS)
 
 # Output directory for all build artifacts
 BINDIR    := bin
@@ -48,7 +48,7 @@ build: tidy
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _all_parallel TIDY_DONE=1
 
-_all_parallel: vet test-race build-all check-licenses
+_all_parallel: vet test-race coverage build-all check-licenses
 
 fmt:
 	@gofmt -s -w .
@@ -94,6 +94,16 @@ test-cover: tidy
 	@mkdir -p $(BINDIR)
 	go test -coverprofile=$(BINDIR)/coverage.out ./...
 	go tool cover -func=$(BINDIR)/coverage.out
+
+# coverage enforces 100% statement coverage on every package that has
+# test files. Packages without _test.go (e.g. cmd/slack-acp wiring) are
+# skipped — `go test -cover` reports them as 0.0% which is meaningless
+# for an entry-point package.
+#
+# Any uncovered statement in a tested package fails the build, so new
+# defensive branches must be paired with a test (or refactored away).
+coverage: tidy
+	$(call RUN,coverage (100%),scripts/check-coverage.sh)
 
 test-race: tidy
 	$(call RUN,test (race),go test -race ./...)

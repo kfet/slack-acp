@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -279,6 +280,39 @@ func TestStartCwdAndStderrDefaults(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestStartStdinPipeFails forces the stdin-pipe error branch via the
+// test hook. The error itself is structurally unreachable in production
+// (cmd.StdinPipe only errors when cmd.Stdin is already set, which Start
+// never does), so the hook is the only way to cover this defensive
+// branch.
+func TestStartStdinPipeFails(t *testing.T) {
+	prev := stdinPipeFn
+	stdinPipeFn = func(_ *exec.Cmd) (io.WriteCloser, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() { stdinPipeFn = prev })
+	if _, err := Start(t.Context(), Config{
+		Command: []string{"/bin/echo"},
+		Policy:  stubPolicy{},
+	}); err == nil || !strings.Contains(err.Error(), "stdin pipe") {
+		t.Fatalf("expected stdin-pipe error, got %v", err)
+	}
+}
+
+func TestStartStdoutPipeFails(t *testing.T) {
+	prev := stdoutPipeFn
+	stdoutPipeFn = func(_ *exec.Cmd) (io.ReadCloser, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() { stdoutPipeFn = prev })
+	if _, err := Start(t.Context(), Config{
+		Command: []string{"/bin/echo"},
+		Policy:  stubPolicy{},
+	}); err == nil || !strings.Contains(err.Error(), "stdout pipe") {
+		t.Fatalf("expected stdout-pipe error, got %v", err)
 	}
 }
 

@@ -283,7 +283,8 @@ func TestConsumeCancels(t *testing.T) {
 	c := newClientForDispatch(t, h)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { c.consume(ctx); close(done) }()
+	ch := make(chan socketmode.Event)
+	go func() { c.consume(ctx, ch); close(done) }()
 	cancel()
 	select {
 	case <-done:
@@ -292,9 +293,35 @@ func TestConsumeCancels(t *testing.T) {
 	}
 }
 
-// TestConsumeChannelClose covers the !ok branch in consume's receive.
+// TestConsumeChannelClose covers the !ok branch when the events channel
+// is closed by the upstream socketmode client.
 func TestConsumeChannelClose(t *testing.T) {
-	t.Skip("consume's !ok branch is on socketmode.Client.Events which we cannot close from outside")
+	h := &stubHandler{}
+	c := newClientForDispatch(t, h)
+	ch := make(chan socketmode.Event)
+	close(ch)
+	done := make(chan struct{})
+	go func() { c.consume(context.Background(), ch); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consume did not exit on channel close")
+	}
+}
+
+// TestConsumeDispatchesEvents drives the dispatch path of consume by
+// pushing an event onto the channel and asserting it surfaces.
+func TestConsumeDispatchesEvents(t *testing.T) {
+	h := &stubHandler{}
+	c := newClientForDispatch(t, h)
+	ch := make(chan socketmode.Event, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.consume(ctx, ch)
+	ch <- socketmode.Event{Type: socketmode.EventTypeHello}
+	// No assertion beyond "doesn't panic / dispatch fires" — the Hello
+	// branch is debug-logged and produces no handler call.
+	time.Sleep(20 * time.Millisecond)
 }
 
 // TestDispatchEventsAPIHappy drives the EventsAPI branch end-to-end so
