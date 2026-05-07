@@ -19,8 +19,10 @@ agent thinks. Built on the same patterns as [poe-acp].
 ```
 
 - Each Slack thread (`channel_id` + `thread_ts`) maps 1:1 to one ACP session.
-- Each session gets its own working directory under `cwd_root` so per-agent
-  state (skills, MCP, auth) stays isolated.
+- Each session gets a stable working directory at
+  `<state_dir>/threads/<channel>/<thread_ts>` so per-agent state
+  (skills, MCP, auth, scratch files) stays isolated *and* persists
+  across restarts.
 - A new message in the same thread reuses the existing session; a follow-up
   before the previous response finishes cancels the in-flight prompt.
 - Streaming output is throttled to ~1 update/sec to stay inside Slack's
@@ -54,7 +56,7 @@ Or with a config file:
   "agent_cmd": ["fir", "--mode", "acp"],
   "policy": "read-only",
   "allowed_user_ids": ["U0123456"],
-  "cwd_root": "/var/lib/slack-acp"
+  "state_dir": "/var/lib/slack-acp"
 }
 ```
 
