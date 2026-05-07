@@ -5,13 +5,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
-- Coverage gate extracted from the Makefile into a Go tool
-  (`cmd/covcheck`, logic in `internal/covcheck`) registered via the
-  `tool` directive in `go.mod`. The Makefile now invokes it as
-  `go tool covcheck`. The tool reads `.covignore`, writes the
-  filtered profile, and enforces the minimum coverage threshold —
-  same behaviour as before, but now testable and reusable from
-  outside Make.
+- Coverage gate now uses the standalone
+  [`covgate`](https://github.com/kfet/covgate) tool (MIT,
+  github.com/kfet/covgate) registered via `go.mod`'s `tool`
+  directive and invoked as `go tool covgate`. Replaces the
+  in-tree `cmd/covcheck` + `internal/covcheck` (deleted) — same
+  semantics, now reusable across projects.
 - `make` with no arguments now defaults to `make all` (full build
   including the 100% coverage gate). `make build` remains for a
   quick native-only build.

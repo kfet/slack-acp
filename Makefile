@@ -108,12 +108,13 @@ vet:
 	$(call RUN,vet,go vet ./...)
 
 # coverage runs the suite and enforces 100% statement coverage on the
-# filtered profile. The covcheck tool (cmd/covcheck) reads .covignore,
-# strips matching lines from the raw profile, writes the filtered
-# profile to bin/coverage.out, and fails if the result is below 100%.
+# filtered profile. The covgate tool (github.com/kfet/covgate) reads
+# .covignore, strips matching lines from the raw profile, writes the
+# filtered profile to bin/coverage.out, and fails if the result is
+# below 100%.
 coverage: tidy | $(BINDIR)
 	$(call RUN,test (cover),go test -covermode=set -coverprofile=$(BINDIR)/coverage.tmp.out ./...)
-	$(call RUN,coverage (100%),go tool covcheck -profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out -ignore=.covignore -min=100)
+	$(call RUN,coverage (100%),go tool covgate -profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out -ignore=.covignore -min=100)
 
 open-coverage:
 	go tool cover -html=$(BINDIR)/coverage.out
