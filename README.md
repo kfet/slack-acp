@@ -20,7 +20,7 @@ agent thinks. Built on the same patterns as [poe-acp].
 
 - Each Slack thread (`channel_id` + `thread_ts`) maps 1:1 to one ACP session.
 - Each session gets a stable working directory at
-  `<state_dir>/threads/<channel>/<thread_ts>` so per-agent state
+  `<StateDir>/threads/<channel_id>/<thread_ts>` so per-agent state
   (skills, MCP, auth, scratch files) stays isolated *and* persists
   across restarts.
 - A new message in the same thread reuses the existing session; a follow-up

@@ -688,9 +688,9 @@ func TestCloseEscalatesToKill(t *testing.T) {
 	if err != nil {
 		t.Skipf("os.Executable: %v", err)
 	}
-	prev := closeGrace
-	closeGrace = 50 * time.Millisecond
-	t.Cleanup(func() { closeGrace = prev })
+	prev := closeGraceNs.Load()
+	closeGraceNs.Store(int64(50 * time.Millisecond))
+	t.Cleanup(func() { closeGraceNs.Store(prev) })
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
