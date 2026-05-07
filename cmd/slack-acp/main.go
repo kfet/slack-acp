@@ -27,7 +27,7 @@ func main() {
 	configPath := flag.String("config", "", "path to JSON config file")
 	agentCmd := flag.String("agent-cmd", "", "agent argv (default: fir --mode acp); space-separated; overrides config")
 	policyName := flag.String("policy", "", "permission policy: allow-all|read-only|deny-all (default allow-all)")
-	cwdRoot := flag.String("cwd-root", "", "root directory for per-conversation cwds")
+	stateDir := flag.String("state-dir", "", "root directory for per-thread state (default: $XDG_STATE_HOME/slack-acp)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -60,9 +60,16 @@ func main() {
 	if *policyName != "" {
 		cfg.Policy = *policyName
 	}
-	if *cwdRoot != "" {
-		cfg.CwdRoot = *cwdRoot
+	if *stateDir != "" {
+		cfg.StateDir = *stateDir
 	}
+	if cfg.StateDir == "" {
+		cfg.StateDir = router.DefaultStateDir()
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+		log.Fatalf("state dir: %v", err)
+	}
+	log.Printf("slack-acp: state dir %s", cfg.StateDir)
 
 	if cfg.BotToken == "" || cfg.AppToken == "" {
 		log.Fatalf("slack-acp: bot_token and app_token required (set in config or via SLACK_BOT_TOKEN / SLACK_APP_TOKEN env)")
@@ -78,7 +85,7 @@ func main() {
 
 	agent, err := acpclient.Start(ctx, acpclient.Config{
 		Command: cfg.AgentCmd,
-		Cwd:     os.TempDir(),
+		Cwd:     cfg.StateDir,
 		Policy:  pol,
 		Stderr:  os.Stderr,
 	})
@@ -89,12 +96,13 @@ func main() {
 	log.Printf("slack-acp %s: agent up (caps=%+v)", version, agent.Caps())
 
 	r, err := router.New(router.Config{
-		Agent:   agent,
-		CwdRoot: cfg.CwdRoot,
+		Agent:    agent,
+		StateDir: cfg.StateDir,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
 	}
+	defer r.Close()
 	go r.Run(ctx)
 
 	allowedUsers := toSet(cfg.AllowedUserIDs)

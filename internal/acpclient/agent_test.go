@@ -13,6 +13,9 @@ func TestParseCaps(t *testing.T) {
 		"empty":           {raw: `{}`, want: Caps{}},
 		"loadSession":     {raw: `{"agentCapabilities":{"loadSession":true}}`, want: Caps{LoadSession: true}},
 		"embeddedContext": {raw: `{"agentCapabilities":{"promptCapabilities":{"embeddedContext":true}}}`, want: Caps{EmbeddedContext: true}},
+		"listSessions":    {raw: `{"agentCapabilities":{"sessionCapabilities":{"list":{}}}}`, want: Caps{ListSessions: true}},
+		"resumeSession":   {raw: `{"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}`, want: Caps{ResumeSession: true}},
+		"listAndResume":   {raw: `{"agentCapabilities":{"sessionCapabilities":{"list":{},"resume":{}}}}`, want: Caps{ListSessions: true, ResumeSession: true}},
 		"malformed":       {raw: `{"agentCapabilities":`, want: Caps{}},
 	}
 	for name, c := range cases {

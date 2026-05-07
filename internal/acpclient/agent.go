@@ -33,8 +33,42 @@ type PermissionPolicy interface {
 
 // Caps captures the agent capabilities we care about.
 type Caps struct {
-	LoadSession     bool
+	// LoadSession is the standard agentCapabilities.loadSession bool.
+	// Currently parsed but unused: see Roadmap in docs/design.md for the
+	// fallback path that would call session/load when list/resume aren't
+	// advertised.
+	LoadSession bool
+	// ListSessions reflects agentCapabilities.sessionCapabilities.list
+	// (unstable RFD).
+	ListSessions bool
+	// ResumeSession reflects agentCapabilities.sessionCapabilities.resume
+	// (unstable RFD).
+	ResumeSession   bool
 	EmbeddedContext bool
+}
+
+// SessionInfo is one entry from a session/list response.
+type SessionInfo struct {
+	SessionId string  `json:"sessionId"`
+	Cwd       string  `json:"cwd,omitempty"`
+	Title     *string `json:"title,omitempty"`
+	UpdatedAt string  `json:"updatedAt,omitempty"`
+}
+
+// listSessionsRequest mirrors the unstable RFD for session/list.
+type listSessionsRequest struct {
+	Cwd string `json:"cwd,omitempty"`
+}
+
+type listSessionsResponse struct {
+	Sessions []SessionInfo `json:"sessions"`
+}
+
+// resumeSessionRequest mirrors the unstable RFD for session/resume.
+type resumeSessionRequest struct {
+	SessionId  string          `json:"sessionId"`
+	Cwd        string          `json:"cwd,omitempty"`
+	McpServers []acp.McpServer `json:"mcpServers,omitempty"`
 }
 
 // Config configures an AgentProc.
@@ -122,7 +156,11 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 func parseCaps(raw json.RawMessage) Caps {
 	var env struct {
 		AgentCapabilities struct {
-			LoadSession        bool `json:"loadSession"`
+			LoadSession         bool `json:"loadSession"`
+			SessionCapabilities struct {
+				List   *json.RawMessage `json:"list"`
+				Resume *json.RawMessage `json:"resume"`
+			} `json:"sessionCapabilities"`
 			PromptCapabilities struct {
 				EmbeddedContext bool `json:"embeddedContext"`
 			} `json:"promptCapabilities"`
@@ -131,6 +169,8 @@ func parseCaps(raw json.RawMessage) Caps {
 	_ = json.Unmarshal(raw, &env)
 	return Caps{
 		LoadSession:     env.AgentCapabilities.LoadSession,
+		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
+		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
 		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
 	}
 }
@@ -151,6 +191,35 @@ func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpda
 	a.sinks[resp.SessionId] = sink
 	a.mu.Unlock()
 	return resp.SessionId, nil
+}
+
+// ListSessions calls the unstable session/list. Caller must check
+// Caps().ListSessions first; on agents that don't advertise the cap the
+// agent will reject the method.
+func (a *AgentProc) ListSessions(ctx context.Context, cwd string) ([]SessionInfo, error) {
+	resp, err := acp.SendRequest[listSessionsResponse](a.conn, ctx, "session/list", listSessionsRequest{Cwd: cwd})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Sessions, nil
+}
+
+// ResumeSession calls the unstable session/resume and registers the sink
+// for the resumed session. Caller must check Caps().ResumeSession first.
+// sid is the agent-returned identifier (as listed by ListSessions).
+func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink SessionUpdateSink) error {
+	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, "session/resume", resumeSessionRequest{
+		SessionId:  string(sid),
+		Cwd:        cwd,
+		McpServers: []acp.McpServer{},
+	})
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.sinks[sid] = sink
+	a.mu.Unlock()
+	return nil
 }
 
 // Prompt sends a user message to the session. Returns the stop reason.

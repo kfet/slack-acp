@@ -17,9 +17,12 @@ type Config struct {
 	// AgentCmd is the argv used to spawn the ACP agent (default: ["fir","--mode","acp"]).
 	AgentCmd []string `json:"agent_cmd,omitempty"`
 
-	// CwdRoot is the directory under which per-conversation cwds are created.
-	// Defaults to $TMPDIR/slack-acp.
-	CwdRoot string `json:"cwd_root,omitempty"`
+	// StateDir is the root under which per-thread state lives. Each Slack
+	// thread gets a stable cwd at <StateDir>/threads/<channel>/<thread_ts>
+	// so agent state (e.g. .fir/) persists across restarts and idle GC,
+	// allowing future session resumption. Defaults to
+	// $XDG_STATE_HOME/slack-acp (or ~/.local/state/slack-acp).
+	StateDir string `json:"state_dir,omitempty"`
 
 	// Policy is one of allow-all|read-only|deny-all (default allow-all).
 	Policy string `json:"policy,omitempty"`
