@@ -1,31 +1,23 @@
 # Coverage exclusions — regex patterns matched against lines of the
-# raw `go test -coverprofile` output, applied before the 100% gate.
+# raw `go test -coverprofile` output, applied before the 100% gate
+# by covgate (https://github.com/kfet/covgate).
 #
-# # Convention: NO LINE NUMBERS. NO PER-FUNCTION REGEXES.
-#
-# Line numbers shift the moment anyone edits the file above them. Use
-# one of these two file-level conventions instead:
-#
-#   1. Entry-point shims: `cmd/<binary>/main.go` is excluded
-#      wholesale. Keep the binary's main() to bare flag parsing,
-#      signal handling, and dependency assembly. Anything testable
-#      belongs in internal/* where it must be 100% covered.
-#
-#   2. Structurally-unreachable defensive code: isolate it in a file
-#      named `unreachable.go` inside the package that needs it, with
-#      a doc comment explaining the convention and a comment above
-#      each helper justifying *why* it cannot be reached from a test.
-#      The whole file is then excluded by the pattern below.
-#
-# To add a new exclusion: extract the unreachable code into a helper
-# and move that helper into the package's `unreachable.go`. Do NOT
-# add a fresh regex here unless you are introducing one of the two
-# conventions above to a new location.
+# Convention: file-level patterns only. NO LINE NUMBERS. NO
+# PER-FUNCTION REGEXES. Line numbers shift on any edit above them;
+# per-function regexes mask new untested code added inside the same
+# function. Anything coarser — a whole file, a whole subpackage, a
+# whole generated bundle — is fine.
 #
 # See AGENTS.md "Coverage" for the rationale.
 
-# ---- entry-point shims: cmd/<binary>/main.go ----
+# Entry-point shims: cmd/<binary>/main.go.
+# main() should be bare flag parsing, signal handling, and dependency
+# assembly. Anything testable belongs in internal/*.
 ^github.com/kfet/slack-acp/cmd/[^/]+/main\.go:
 
-# ---- structurally-unreachable defensive code, isolated per package ----
+# Per-package "unreachable.go" files. NOTE: this is a legacy pattern
+# kept until the existing internal/acpclient/unreachable.go is
+# refactored away; new exclusions should target the file the code
+# naturally lives in, not a dedicated "unreachable.go" dumping
+# ground (same shape as a utils.go grab-bag).
 /unreachable\.go:

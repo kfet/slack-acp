@@ -58,15 +58,15 @@ The gate is implemented by [`covgate`](https://github.com/kfet/covgate), registe
 go tool covgate -profile=bin/coverage.tmp.out -out=bin/coverage.out -ignore=.covignore -min=100
 ```
 
-`.covignore` uses **only file-level patterns** — never line numbers, never per-function regexes. Line numbers shift the moment anyone edits the file above them, and per-function regexes mask new untested code added to the same function.
+`.covignore` uses **file-level patterns only** — never line numbers, never per-function regexes. Line numbers shift the moment anyone edits the file above them, and per-function regexes mask new untested code added to the same function. Anything coarser than that — a whole file, a whole subpackage, a whole generated bundle — is fine.
 
-There are exactly two sanctioned exclusion shapes:
+Two things to **avoid**:
 
-1. **Entry-point shims** — `cmd/<binary>/main.go` is excluded wholesale. Keep `main()` to bare flag parsing, signal handling, and dependency assembly. Anything testable belongs in `internal/*` where it must be 100% covered.
+1. **A dedicated `unreachable.go` (or `untestable.go`) file** as a place to dump hard-to-test code. That's the same shape as a `utils.go` grab-bag — code organised by a meta-property ("hard to test") rather than by what it *is*. If a branch genuinely cannot be reached from a test, prefer restructuring (panic on the impossible-error branch so callers have nothing to cover); only as a last resort exclude the file the code naturally lives in.
 
-2. **Structurally-unreachable defensive code** — isolate it in a file named `unreachable.go` inside the package that needs it, and the project-wide `/unreachable\.go:` pattern excludes the whole file. Each helper in `unreachable.go` must be paired with a comment justifying *why* it cannot be reached from a test. When the unreachable code is an error branch the production caller can't trigger, the helper should `panic` rather than return the error — that way the caller has no impossible `if err != nil` left over to cover.
+2. **Per-line / per-function regexes**, for the rot reason above.
 
-To add a new exclusion: extract the unreachable code into a helper, move it into the package's `unreachable.go`, and write the doc comment. Do **not** add fresh regexes to `.covignore`.
+To add a new exclusion: identify the file or package boundary that captures the untested code and add a single anchored pattern. See `covgate`'s README for syntax details.
 
 ## Agent-process concerns
 
