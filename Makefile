@@ -1,15 +1,19 @@
-.PHONY: build build-all install test test-cover test-race coverage vet fmt clean tidy check-licenses notices _all_parallel $(CROSS_TARGETS)
+# Default goal: `make` runs the full build (fmt, vet, test-race, coverage gate,
+# cross-builds, license check). Use `make build` for a quick native-only build.
+.DEFAULT_GOAL := all
 
-# Output directory for all build artifacts
-BINDIR    := bin
-BINARY    := $(BINDIR)/slack-acp
+.PHONY: all build build-all install test test-race coverage open-coverage \
+        vet fmt clean tidy check-licenses notices publish deploy \
+        _all_parallel
+
+# ---------------------------------------------------------------------------
+# Paths and version metadata
+# ---------------------------------------------------------------------------
+BINDIR      := bin
+BINARY      := $(BINDIR)/slack-acp
 NOTICE_FILE := THIRD_PARTY_NOTICES.md
 
-# Go binary install path
-GOBIN     := $(shell go env GOPATH)/bin
-VERSION   := $(shell cat VERSION 2>/dev/null || echo dev)
-
-# Compute version metadata
+VERSION    := $(shell cat VERSION 2>/dev/null || echo dev)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
 GIT_TAG    := $(shell git describe --exact-match --tags HEAD 2>/dev/null)
 GIT_DIRTY  := $(shell git diff --quiet 2>/dev/null || echo .dirty)
@@ -19,12 +23,12 @@ ifneq ($(GIT_TAG),v$(VERSION))
   endif
 endif
 
-LDFLAGS   := -s -w -X main.version=$(VERSION)
+LDFLAGS := -s -w -X main.version=$(VERSION)
+GOBUILD := go build -trimpath -ldflags="$(LDFLAGS)"
 
 # ---------------------------------------------------------------------------
 # Quiet build helpers — print a short step name, show output only on failure.
-# Usage: $(call RUN,label,command)
-# Set V=1 for verbose output: make all V=1
+# Usage: $(call RUN,label,command).  Set V=1 for verbose output.
 # ---------------------------------------------------------------------------
 ifdef V
   define RUN
@@ -39,12 +43,44 @@ else
   endef
 endif
 
-build: tidy
+$(BINDIR):
 	@mkdir -p $(BINDIR)
-	$(call RUN,build (native),go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/slack-acp/)
 
-# `make all` runs fmt first, then everything else in parallel via recursive make -j.
-# TIDY_DONE=1 tells sub-targets to skip redundant go-mod-tidy (already ran here).
+# ---------------------------------------------------------------------------
+# Build targets
+# ---------------------------------------------------------------------------
+build: tidy | $(BINDIR)
+	$(call RUN,build (native),$(GOBUILD) -o $(BINARY) ./cmd/slack-acp/)
+
+install:
+	go install -ldflags="$(LDFLAGS)" ./cmd/slack-acp/
+
+# Cross-compile matrix — matches fir's targets: darwin/{arm64,amd64},
+# linux/{armv6,arm64,amd64}.  Each entry expands to its own phony target so
+# `_all_parallel` can build them concurrently under `make -j`.
+#
+# Format: <goos>/<goarch>[/<goarm>]
+CROSS_TARGETS := darwin/arm64 darwin/amd64 linux/arm/6 linux/arm64 linux/amd64
+
+define CROSS_template
+$(eval _os    := $(word 1,$(subst /, ,$(1))))
+$(eval _arch  := $(word 2,$(subst /, ,$(1))))
+$(eval _goarm := $(word 3,$(subst /, ,$(1))))
+$(eval _name  := $(_os)-$(if $(_goarm),$(_arch)v$(_goarm),$(_arch)))
+build-$(_name): | $$(BINDIR)
+	$$(call RUN,build $(_os)/$(if $(_goarm),$(_arch)v$(_goarm),$(_arch)),GOOS=$(_os) GOARCH=$(_arch) $(if $(_goarm),GOARM=$(_goarm) )$$(GOBUILD) -o $$(BINARY)-$(_name) ./cmd/slack-acp/)
+.PHONY: build-$(_name)
+CROSS_PHONY += build-$(_name)
+endef
+
+$(foreach t,$(CROSS_TARGETS),$(eval $(call CROSS_template,$(t))))
+
+build-all: $(CROSS_PHONY) build
+
+# ---------------------------------------------------------------------------
+# Aggregate target: `make all` runs fmt + tidy serially, then everything else
+# in parallel.  TIDY_DONE=1 tells sub-targets to skip a redundant go-mod-tidy.
+# ---------------------------------------------------------------------------
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _all_parallel TIDY_DONE=1
 
@@ -53,78 +89,17 @@ _all_parallel: vet test-race coverage build-all check-licenses
 fmt:
 	@gofmt -s -w .
 
-install:
-	go install -ldflags="$(LDFLAGS)" ./cmd/slack-acp/
-
-# Ensure modules are tidy once; other targets depend on this.
 # Skipped when TIDY_DONE=1 (set by `make all` after running tidy upfront).
 tidy:
 ifndef TIDY_DONE
 	@go mod tidy
 endif
 
-# Cross-compile for all targets (each is an independent phony target for parallelism).
-# Matches fir's target matrix: darwin/{arm64,amd64}, linux/{armv6,arm64,amd64}.
-CROSS_TARGETS := build-darwin-arm64 build-darwin-amd64 build-linux-armv6 build-linux-arm64 build-linux-amd64
-
-build-all: $(CROSS_TARGETS) build
-
-build-darwin-arm64: | $(BINDIR)
-	$(call RUN,build darwin/arm64,GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-arm64 ./cmd/slack-acp/)
-
-build-darwin-amd64: | $(BINDIR)
-	$(call RUN,build darwin/amd64,GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-amd64 ./cmd/slack-acp/)
-
-build-linux-armv6: | $(BINDIR)
-	$(call RUN,build linux/armv6,GOOS=linux GOARCH=arm GOARM=6 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-armv6 ./cmd/slack-acp/)
-
-build-linux-arm64: | $(BINDIR)
-	$(call RUN,build linux/arm64,GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-arm64 ./cmd/slack-acp/)
-
-build-linux-amd64: | $(BINDIR)
-	$(call RUN,build linux/amd64,GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-amd64 ./cmd/slack-acp/)
-
-$(BINDIR):
-	@mkdir -p $(BINDIR)
-
+# ---------------------------------------------------------------------------
+# Test & coverage
+# ---------------------------------------------------------------------------
 test: tidy
 	go test ./...
-
-test-cover: tidy
-	@mkdir -p $(BINDIR)
-	go test -coverprofile=$(BINDIR)/coverage.out ./...
-	go tool cover -func=$(BINDIR)/coverage.out
-
-# coverage runs the suite and enforces 100% statement coverage on the
-# filtered profile. Lines matching any regex in .covignore are stripped
-# from coverage.out before the gate; each ignore entry must be paired
-# with a comment justifying why the branch is unreachable in practice.
-# See .covignore for the current set. Mirrors sibling project poe-acp's
-# .covignore approach (commit history of poe-acp/Makefile run-tests).
-coverage: tidy
-	@mkdir -p $(BINDIR)
-	@_log=$$(mktemp); _ign=$$(mktemp); _trap="rm -f $$_log $$_ign"; trap "$$_trap" EXIT; \
-	go test -covermode=set -coverprofile=$(BINDIR)/coverage.tmp.out ./... > $$_log 2>&1; \
-	rc=$$?; \
-	if [ $$rc -ne 0 ]; then printf "  %-28s ✗\n" "coverage (100%)"; cat $$_log; exit $$rc; fi; \
-	grep -vE '^(#|$$)' .covignore > $$_ign 2>/dev/null || true; \
-	if [ -s $$_ign ]; then \
-		grep -v -E -f $$_ign $(BINDIR)/coverage.tmp.out > $(BINDIR)/coverage.out; \
-	else \
-		cp $(BINDIR)/coverage.tmp.out $(BINDIR)/coverage.out; \
-	fi; \
-	if go tool cover -func=$(BINDIR)/coverage.out | tail -1 | grep -qv '100.0%'; then \
-		printf "  %-28s ✗\n" "coverage (100%)"; \
-		echo "ERROR: coverage is not 100% — see $(BINDIR)/coverage.out (make open-coverage)"; \
-		go tool cover -func=$(BINDIR)/coverage.out | grep -v '100.0%' | grep -v '^total:' || true; \
-		exit 1; \
-	fi; \
-	printf "  %-28s ✓\n" "coverage (100%)"
-
-# open-coverage launches the HTML coverage report in the default browser.
-.PHONY: open-coverage
-open-coverage:
-	go tool cover -html=$(BINDIR)/coverage.out
 
 test-race: tidy
 	$(call RUN,test (race),go test -race ./...)
@@ -132,19 +107,38 @@ test-race: tidy
 vet:
 	$(call RUN,vet,go vet ./...)
 
-clean:
-	rm -rf $(BINDIR)
-	rm -rf dist
-	rm -f $(NOTICE_FILE)
+# coverage runs the suite and enforces 100% statement coverage on the
+# filtered profile.  Lines matching any regex in .covignore are stripped
+# from coverage.out before the gate; each ignore entry must be paired
+# with a comment justifying why the branch is unreachable in practice.
+# Mirrors sibling project poe-acp's .covignore approach.
+coverage: tidy | $(BINDIR)
+	@set -e; \
+	raw=$(BINDIR)/coverage.tmp.out; out=$(BINDIR)/coverage.out; ign=$$(mktemp); \
+	trap 'rm -f $$ign' EXIT; \
+	log=$$(mktemp); \
+	if ! go test -covermode=set -coverprofile=$$raw ./... > $$log 2>&1; then \
+		printf "  %-28s ✗\n" "coverage (100%)"; cat $$log; rm -f $$log; exit 1; \
+	fi; \
+	rm -f $$log; \
+	grep -vE '^(#|$$)' .covignore > $$ign 2>/dev/null || true; \
+	if [ -s $$ign ]; then grep -v -E -f $$ign $$raw > $$out; else cp $$raw $$out; fi; \
+	uncovered=$$(go tool cover -func=$$out | awk '$$NF != "100.0%" && $$1 != "total:"'); \
+	total=$$(go tool cover -func=$$out | awk '$$1 == "total:" {print $$NF}'); \
+	if [ -n "$$uncovered" ] || [ "$$total" != "100.0%" ]; then \
+		printf "  %-28s ✗\n" "coverage (100%)"; \
+		echo "ERROR: coverage is not 100% (total=$$total) — see $$out (make open-coverage)"; \
+		[ -n "$$uncovered" ] && echo "$$uncovered"; \
+		exit 1; \
+	fi; \
+	printf "  %-28s ✓\n" "coverage (100%)"
+
+open-coverage:
+	go tool cover -html=$(BINDIR)/coverage.out
 
 # ---------------------------------------------------------------------------
 # Third-party license notices
-#
-# `make notices` generates THIRD_PARTY_NOTICES.md from go.mod / go.sum via
-# go-licenses. `make check-licenses` fails the build if any dependency is
-# under a disallowed license.
 # ---------------------------------------------------------------------------
-
 GO_LICENSES := go run github.com/google/go-licenses@v1.6.0
 
 notices: $(NOTICE_FILE)
@@ -156,9 +150,15 @@ check-licenses:
 	$(call RUN,check licenses,$(GO_LICENSES) check ./cmd/slack-acp --disallowed_types=forbidden,restricted 2>/dev/null)
 
 # ---------------------------------------------------------------------------
+# Housekeeping
+# ---------------------------------------------------------------------------
+clean:
+	rm -rf $(BINDIR) dist
+	rm -f $(NOTICE_FILE)
+
+# ---------------------------------------------------------------------------
 # Release publishing & remote deployment
 # ---------------------------------------------------------------------------
-
 RELEASE_TAG := v$(shell cat VERSION 2>/dev/null || echo 0.0.0)
 
 publish: build notices
@@ -169,7 +169,7 @@ publish: build notices
 	git push origin main $(RELEASE_TAG)
 	@echo "Pushed $(RELEASE_TAG)."
 
-# Deploy to a remote host via scp (auto-detects OS and arch)
+# Deploy to a remote host via scp (auto-detects OS and arch).
 # Usage: make deploy HOST=myhost
 deploy: build-all
 	@if [ -z "$(HOST)" ]; then echo "Usage: make deploy HOST=<hostname>"; exit 1; fi
@@ -178,8 +178,7 @@ deploy: build-all
 	ARCH=$$(echo "$$INFO" | awk '{print $$2}'); \
 	case "$$OS-$$ARCH" in \
 		Linux-aarch64|Linux-arm64)   BIN=$(BINARY)-linux-arm64 ;; \
-		Linux-armv6l)                BIN=$(BINARY)-linux-armv6 ;; \
-		Linux-armv7l)                BIN=$(BINARY)-linux-armv6 ;; \
+		Linux-armv6l|Linux-armv7l)   BIN=$(BINARY)-linux-armv6 ;; \
 		Linux-x86_64)                BIN=$(BINARY)-linux-amd64 ;; \
 		Darwin-arm64)                BIN=$(BINARY)-darwin-arm64 ;; \
 		Darwin-x86_64)               BIN=$(BINARY)-darwin-amd64 ;; \
