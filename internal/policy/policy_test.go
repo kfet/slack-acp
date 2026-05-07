@@ -52,4 +52,42 @@ func TestReadOnly(t *testing.T) {
 	if got := selected(ReadOnly{}.Decide(context.Background(), req("write foo.go"))); got != "r" {
 		t.Fatalf("write: got %q", got)
 	}
+	// Title-less request: no write keyword match → allow.
+	rq := acp.RequestPermissionRequest{
+		Options: []acp.PermissionOption{{OptionId: "a", Name: "Allow once", Kind: "allow_once"}},
+	}
+	if got := selected(ReadOnly{}.Decide(context.Background(), rq)); got != "a" {
+		t.Fatalf("nil-title: got %q", got)
+	}
+}
+
+// TestPickFallbacks exercises the branches inside pick that aren't
+// otherwise reached: empty-options → empty selected; and the "no option
+// matched, fall back to first" branch.
+func TestPickFallbacks(t *testing.T) {
+	// Empty options → outcome.Selected has empty OptionId.
+	out := AllowAll{}.Decide(context.Background(), acp.RequestPermissionRequest{})
+	if out.Outcome.Selected == nil || out.Outcome.Selected.OptionId != "" {
+		t.Fatalf("empty-options: got %+v", out.Outcome.Selected)
+	}
+
+	// No option matches "allow" → fall back to first.
+	rq := acp.RequestPermissionRequest{
+		Options: []acp.PermissionOption{
+			{OptionId: "x", Name: "weird", Kind: "weird"},
+			{OptionId: "y", Name: "more weird", Kind: "weird"},
+		},
+	}
+	if got := selected(AllowAll{}.Decide(context.Background(), rq)); got != "x" {
+		t.Fatalf("no-match fallback: got %q want x", got)
+	}
+}
+
+// TestParseTrim covers Parse's trim/lowercase normalisation paths.
+func TestParseTrim(t *testing.T) {
+	for _, n := range []string{"  Allow-All  ", "Read-Only", "Deny-All", "Allow", "ReadOnly", "Deny"} {
+		if _, err := Parse(n); err != nil {
+			t.Fatalf("parse %q: %v", n, err)
+		}
+	}
 }

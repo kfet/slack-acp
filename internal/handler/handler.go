@@ -28,14 +28,23 @@ type Config struct {
 	PromptTimeout time.Duration
 }
 
+// inflightEntry wraps a per-call cancel func with a unique identity so
+// clearInflight can tell its own entry from one a follow-up has since
+// installed. Comparing the cancel funcs themselves via fmt.Sprintf("%p",
+// ...) is not safe: two closures produced from the same source line
+// share an underlying code pointer.
+type inflightEntry struct {
+	cancel context.CancelFunc
+}
+
 // Handler implements slackproto.Handler.
 type Handler struct {
 	cfg Config
 
-	// inflight maps ConvKey → cancel func of the goroutine processing it,
+	// inflight maps ConvKey → entry of the goroutine processing it,
 	// so a follow-up message in the same thread can cancel the prior run.
 	inflightMu sync.Mutex
-	inflight   map[router.ConvKey]context.CancelFunc
+	inflight   map[router.ConvKey]*inflightEntry
 }
 
 // New constructs a handler.
@@ -43,7 +52,7 @@ func New(cfg Config) *Handler {
 	if cfg.PromptTimeout == 0 {
 		cfg.PromptTimeout = 10 * time.Minute
 	}
-	return &Handler{cfg: cfg, inflight: make(map[router.ConvKey]context.CancelFunc)}
+	return &Handler{cfg: cfg, inflight: make(map[router.ConvKey]*inflightEntry)}
 }
 
 // SetAPI installs the Slack API client (used for posting/updating messages).
@@ -65,9 +74,10 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	// Cancel any in-flight prompt for this thread, then start a new one.
 	h.cancelInflight(ctx, key)
 	pctx, cancel := context.WithTimeout(context.Background(), h.cfg.PromptTimeout)
-	h.setInflight(key, cancel)
+	entry := &inflightEntry{cancel: cancel}
+	h.setInflight(key, entry)
 	go func() {
-		defer h.clearInflight(key, cancel)
+		defer h.clearInflight(key, entry)
 		defer cancel()
 		if err := h.run(pctx, ev, key, text); err != nil {
 			debuglog.Logf("handler: prompt error: %v", err)
@@ -91,27 +101,27 @@ func (h *Handler) allowed(ev slackproto.Event) bool {
 
 func (h *Handler) cancelInflight(ctx context.Context, key router.ConvKey) {
 	h.inflightMu.Lock()
-	c, ok := h.inflight[key]
+	e, ok := h.inflight[key]
 	if ok {
 		delete(h.inflight, key)
 	}
 	h.inflightMu.Unlock()
 	if ok {
-		c()
+		e.cancel()
 		// Also tell the agent to stop generating.
 		h.cfg.Router.Cancel(ctx, key)
 	}
 }
 
-func (h *Handler) setInflight(key router.ConvKey, c context.CancelFunc) {
+func (h *Handler) setInflight(key router.ConvKey, e *inflightEntry) {
 	h.inflightMu.Lock()
-	h.inflight[key] = c
+	h.inflight[key] = e
 	h.inflightMu.Unlock()
 }
 
-func (h *Handler) clearInflight(key router.ConvKey, c context.CancelFunc) {
+func (h *Handler) clearInflight(key router.ConvKey, e *inflightEntry) {
 	h.inflightMu.Lock()
-	if cur, ok := h.inflight[key]; ok && fmt.Sprintf("%p", cur) == fmt.Sprintf("%p", c) {
+	if cur, ok := h.inflight[key]; ok && cur == e {
 		delete(h.inflight, key)
 	}
 	h.inflightMu.Unlock()
