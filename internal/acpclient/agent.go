@@ -131,6 +131,14 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 		return nil, fmt.Errorf("start agent: %w", err)
 	}
 
+	return connect(ctx, cfg, cmd, stdin, stdout)
+}
+
+// connect performs the post-spawn ACP handshake on a pre-built pair of
+// pipes. Extracted from Start so tests can drive it over an in-process
+// io.Pipe instead of launching a real subprocess. cmd may be nil — in
+// that case Close becomes a no-op.
+func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) (*AgentProc, error) {
 	a := &AgentProc{
 		cfg:   cfg,
 		cmd:   cmd,
@@ -146,7 +154,9 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 	}
 	raw, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodInitialize, initParams)
 	if err != nil {
-		_ = cmd.Process.Kill()
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
 		return nil, fmt.Errorf("acp initialize: %w", err)
 	}
 	a.caps = parseCaps(raw)
@@ -255,6 +265,10 @@ func (a *AgentProc) RebindSink(sid acp.SessionId, sink SessionUpdateSink) {
 	a.mu.Unlock()
 }
 
+// closeGrace is the time we wait for the agent to exit after sending
+// SIGINT before escalating to SIGKILL. Variable so tests can override.
+var closeGrace = 2 * time.Second
+
 // Close terminates the agent process.
 func (a *AgentProc) Close() error {
 	if a.cmd == nil || a.cmd.Process == nil {
@@ -266,7 +280,7 @@ func (a *AgentProc) Close() error {
 	select {
 	case <-done:
 		return nil
-	case <-time.After(2 * time.Second):
+	case <-time.After(closeGrace):
 		_ = a.cmd.Process.Kill()
 		<-done
 		return nil

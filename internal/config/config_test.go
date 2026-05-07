@@ -39,3 +39,27 @@ func TestLoadBadPolicy(t *testing.T) {
 		t.Fatal("want err")
 	}
 }
+
+func TestLoadMissingFile(t *testing.T) {
+	if _, err := Load(filepath.Join(t.TempDir(), "no-such")); err == nil {
+		t.Fatal("want read error")
+	}
+}
+
+func TestLoadMalformedJSON(t *testing.T) {
+	p := write(t, `{not json`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("want parse error")
+	}
+}
+
+func TestValidateAllPolicies(t *testing.T) {
+	// All accepted spellings exercise the explicit allow branches in the
+	// switch — the rejected case is covered by TestLoadBadPolicy above.
+	for _, p := range []string{"", "allow-all", "allow", "read-only", "readonly", "deny-all", "deny"} {
+		c := &Config{Policy: p}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("policy %q: %v", p, err)
+		}
+	}
+}

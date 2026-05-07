@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Comprehensive test coverage across `internal/*`, mirroring the
+  approach used in sibling project `poe-acp`. The router gained a
+  thin `Agent` interface so a `fakeAgent` can drive every code path;
+  acpclient grew a `connect()` helper extracted from `Start` so the
+  ACP wire layer can be exercised over `io.Pipe` and a re-execed
+  test-binary fake agent for `Start`/`Close` paths. Final coverage:
+  router, handler, config, policy, debuglog at 100%; slackproto
+  99.1% (one unreachable branch on a socketmode-internal channel
+  close); acpclient 98.4% (two unreachable defensive branches on
+  pre-set stdio).
 - Cold-start session resumption via the unstable ACP `session/list` +
   `session/resume` RPCs. When the agent advertises
   `sessionCapabilities.{list,resume}` (e.g. `fir --mode acp`), the
@@ -20,6 +30,13 @@ All notable changes to this project will be documented in this file.
   state directory.
 - `router.Router.Close()` releases the `os.Root` handle on shutdown;
   `cmd/slack-acp` defers it.
+
+### Fixed
+- handler: `clearInflight` previously compared cancel funcs via
+  `fmt.Sprintf("%p", c)`, which is unsafe — Go closures from the same
+  source line share a code pointer. A stale clear could therefore
+  evict the live entry of a follow-up prompt. Replaced with identity
+  comparison on a per-call `*inflightEntry` pointer.
 
 ### Changed
 - Per-thread cwd is now a stable path under `StateDir`

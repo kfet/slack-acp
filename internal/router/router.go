@@ -44,9 +44,23 @@ type Session struct {
 	Mu sync.Mutex
 }
 
+// Agent is the subset of *acpclient.AgentProc the router depends on.
+// Exposed as an interface so tests can substitute a fake. The real
+// *acpclient.AgentProc satisfies it.
+type Agent interface {
+	Caps() acpclient.Caps
+	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink) (acp.SessionId, error)
+	ListSessions(ctx context.Context, cwd string) ([]acpclient.SessionInfo, error)
+	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
+	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
+	Cancel(ctx context.Context, sid acp.SessionId) error
+	DropSession(sid acp.SessionId)
+	RebindSink(sid acp.SessionId, sink acpclient.SessionUpdateSink)
+}
+
 // Router owns the conv→session map and creates sessions on demand.
 type Router struct {
-	agent       *acpclient.AgentProc
+	agent       Agent
 	stateDir    string
 	root        *os.Root // sandbox for per-thread cwd creation
 	idleTimeout time.Duration
@@ -57,7 +71,7 @@ type Router struct {
 
 // Config configures a Router.
 type Config struct {
-	Agent       *acpclient.AgentProc
+	Agent       Agent
 	StateDir    string
 	IdleTimeout time.Duration // 0 → 30 minutes
 }
@@ -315,6 +329,6 @@ func (r *Router) Len() int {
 	return len(r.byKey)
 }
 
-// Agent returns the underlying agent process. Handlers use this to send
+// Agent returns the underlying agent. Handlers use this to send
 // prompts directly while holding Session.Mu.
-func (r *Router) Agent() *acpclient.AgentProc { return r.agent }
+func (r *Router) Agent() Agent { return r.agent }
