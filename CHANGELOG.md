@@ -5,20 +5,24 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- `make all` now enforces 100% statement coverage on every Go package
-  that ships test files via a new `make coverage` step (powered by
-  `scripts/check-coverage.sh`). The gate parses the `go test
-  -coverprofile` output directly, prints a per-package summary, and
-  fails the build with a function-level breakdown of any uncovered
-  statements. New defensive branches must be paired with a test or
-  refactored away. Packages without any `*_test.go` (e.g. the
-  `cmd/slack-acp` entry-point wiring) are skipped because their 0.0%
-  default report is meaningless. To make true 100% achievable, the
-  `slackproto.Client.consume` loop now takes the events channel as a
-  parameter (so a closed channel can be tested), and `acpclient.Start`
-  acquires its child stdio via package-level `stdinPipeFn` /
-  `stdoutPipeFn` indirections that tests override to exercise the
-  otherwise-unreachable defensive error branches.
+- `make all` now enforces 100% statement coverage via a `make
+  coverage` step that runs the suite, strips lines matching any
+  regex in `.covignore` from the profile, and fails the build if
+  the resulting total is not 100%. Mirrors sibling project
+  `poe-acp`'s `.covignore` pattern. Each entry in `.covignore` is
+  paired with a comment justifying why the branch is unreachable
+  in practice.
+
+  Initial exclusions:
+  - `cmd/slack-acp/main.go` (entry-point wiring; would need
+    a subprocess smoke harness to exercise meaningfully).
+  - Two defensive branches in `acpclient.Start` for
+    `cmd.{Stdin,Stdout}Pipe` errors that only fire when those
+    streams were pre-set, which Start never does.
+
+  To make every other line genuinely 100%-covered, the
+  `slackproto.Client.consume` loop now takes the events channel
+  as a parameter (so a closed channel can be tested directly).
 - Comprehensive test coverage across `internal/*`, mirroring the
   approach used in sibling project `poe-acp`. The router gained a
   thin `Agent` interface so a `fakeAgent` can drive every code path;

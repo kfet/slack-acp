@@ -97,16 +97,6 @@ type AgentProc struct {
 	sinks map[acp.SessionId]SessionUpdateSink
 }
 
-// pipeFns is the indirection used by Start to acquire the agent's
-// stdio. exec.Cmd.{Stdin,Stdout}Pipe error only when the corresponding
-// stream is already set, which Start never does — making those branches
-// structurally unreachable in production. Tests override these hooks to
-// exercise the error paths.
-var (
-	stdinPipeFn  = (*exec.Cmd).StdinPipe
-	stdoutPipeFn = (*exec.Cmd).StdoutPipe
-)
-
 // Start launches the agent process and performs Initialize.
 func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 	if len(cfg.Command) == 0 {
@@ -129,11 +119,11 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 	} else {
 		cmd.Stderr = os.Stderr
 	}
-	stdin, err := stdinPipeFn(cmd)
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
-	stdout, err := stdoutPipeFn(cmd)
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}

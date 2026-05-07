@@ -95,15 +95,36 @@ test-cover: tidy
 	go test -coverprofile=$(BINDIR)/coverage.out ./...
 	go tool cover -func=$(BINDIR)/coverage.out
 
-# coverage enforces 100% statement coverage on every package that has
-# test files. Packages without _test.go (e.g. cmd/slack-acp wiring) are
-# skipped — `go test -cover` reports them as 0.0% which is meaningless
-# for an entry-point package.
-#
-# Any uncovered statement in a tested package fails the build, so new
-# defensive branches must be paired with a test (or refactored away).
+# coverage runs the suite and enforces 100% statement coverage on the
+# filtered profile. Lines matching any regex in .covignore are stripped
+# from coverage.out before the gate; each ignore entry must be paired
+# with a comment justifying why the branch is unreachable in practice.
+# See .covignore for the current set. Mirrors sibling project poe-acp's
+# .covignore approach (commit history of poe-acp/Makefile run-tests).
 coverage: tidy
-	$(call RUN,coverage (100%),scripts/check-coverage.sh)
+	@mkdir -p $(BINDIR)
+	@_log=$$(mktemp); _ign=$$(mktemp); _trap="rm -f $$_log $$_ign"; trap "$$_trap" EXIT; \
+	go test -covermode=set -coverprofile=$(BINDIR)/coverage.tmp.out ./... > $$_log 2>&1; \
+	rc=$$?; \
+	if [ $$rc -ne 0 ]; then printf "  %-28s ✗\n" "coverage (100%)"; cat $$_log; exit $$rc; fi; \
+	grep -vE '^(#|$$)' .covignore > $$_ign 2>/dev/null || true; \
+	if [ -s $$_ign ]; then \
+		grep -v -E -f $$_ign $(BINDIR)/coverage.tmp.out > $(BINDIR)/coverage.out; \
+	else \
+		cp $(BINDIR)/coverage.tmp.out $(BINDIR)/coverage.out; \
+	fi; \
+	if go tool cover -func=$(BINDIR)/coverage.out | tail -1 | grep -qv '100.0%'; then \
+		printf "  %-28s ✗\n" "coverage (100%)"; \
+		echo "ERROR: coverage is not 100% — see $(BINDIR)/coverage.out (make open-coverage)"; \
+		go tool cover -func=$(BINDIR)/coverage.out | grep -v '100.0%' | grep -v '^total:' || true; \
+		exit 1; \
+	fi; \
+	printf "  %-28s ✓\n" "coverage (100%)"
+
+# open-coverage launches the HTML coverage report in the default browser.
+.PHONY: open-coverage
+open-coverage:
+	go tool cover -html=$(BINDIR)/coverage.out
 
 test-race: tidy
 	$(call RUN,test (race),go test -race ./...)
