@@ -2,6 +2,8 @@ module github.com/kfet/slack-acp
 
 go 1.25
 
+tool github.com/kfet/slack-acp/cmd/covcheck
+
 require (
 	github.com/coder/acp-go-sdk v0.12.2
 	github.com/slack-go/slack v0.23.0
