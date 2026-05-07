@@ -1,0 +1,36 @@
+# Coverage exclusions — regex patterns matched against lines of the
+# raw `go test -coverprofile` output, applied before the 100% gate.
+#
+# Lines starting with `#` are comments. Empty lines are ignored.
+# Anchor each pattern at the start of the path (`^github.com/...`) so
+# it only matches the intended file.
+#
+# Each entry MUST be paired with a comment explaining why the line is
+# unreachable in practice. Add a new entry only after refactoring is
+# more invasive than the gain in test confidence.
+
+# cmd/slack-acp/main.go is the entry-point wiring: flag parsing,
+# signal handling, dependency assembly. The internal/* packages
+# carry the testable logic; main.go is a thin adapter that would
+# need a full subprocess-based smoke harness to exercise. Excluded
+# wholesale, like sibling project poe-acp does for its own main.go.
+^github.com/kfet/slack-acp/cmd/slack-acp/main\.go:
+
+# Two defensive branches in acpclient.Start:
+#
+#   stdin, err := cmd.StdinPipe()
+#   if err != nil { ... }
+#   stdout, err := cmd.StdoutPipe()
+#   if err != nil { ... }
+#
+# StdinPipe / StdoutPipe error only when the corresponding cmd.Stdin
+# or cmd.Stdout was already set. Start never does that — the cmd is
+# constructed inline by exec.CommandContext and the only fields we
+# touch are .Dir, .Env, .Stderr — so both branches are structurally
+# unreachable in production. Earlier we routed these through
+# package-level pipeFn indirections so tests could override them, but
+# that was contortion of production code purely to satisfy the
+# coverage gate. The .covignore approach (matching poe-acp) keeps
+# Start straightforward.
+^github.com/kfet/slack-acp/internal/acpclient/agent\.go:123\.
+^github.com/kfet/slack-acp/internal/acpclient/agent\.go:127\.
