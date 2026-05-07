@@ -52,6 +52,12 @@ Prefer deterministic synchronization over `time.Sleep` and wall-clock polling. U
 
 `make all` runs a hard 100% statement-coverage gate (`make coverage`) over a profile filtered through `.covignore`. Any uncovered statement that isn't excluded by the patterns in `.covignore` fails the build.
 
+The gate is implemented by `cmd/covcheck` (registered as a Go tool in `go.mod`; invoked as `go tool covcheck`). The logic lives in `internal/covcheck` and is itself 100%-covered. Run it directly for ad-hoc checks:
+
+```
+go tool covcheck -profile=bin/coverage.tmp.out -out=bin/coverage.out -ignore=.covignore -min=100
+```
+
 `.covignore` uses **only file-level patterns** — never line numbers, never per-function regexes. Line numbers shift the moment anyone edits the file above them, and per-function regexes mask new untested code added to the same function.
 
 There are exactly two sanctioned exclusion shapes:

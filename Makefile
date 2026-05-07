@@ -108,30 +108,12 @@ vet:
 	$(call RUN,vet,go vet ./...)
 
 # coverage runs the suite and enforces 100% statement coverage on the
-# filtered profile.  Lines matching any regex in .covignore are stripped
-# from coverage.out before the gate; each ignore entry must be paired
-# with a comment justifying why the branch is unreachable in practice.
-# Mirrors sibling project poe-acp's .covignore approach.
+# filtered profile. The covcheck tool (cmd/covcheck) reads .covignore,
+# strips matching lines from the raw profile, writes the filtered
+# profile to bin/coverage.out, and fails if the result is below 100%.
 coverage: tidy | $(BINDIR)
-	@set -e; \
-	raw=$(BINDIR)/coverage.tmp.out; out=$(BINDIR)/coverage.out; ign=$$(mktemp); \
-	trap 'rm -f $$ign' EXIT; \
-	log=$$(mktemp); \
-	if ! go test -covermode=set -coverprofile=$$raw ./... > $$log 2>&1; then \
-		printf "  %-28s ✗\n" "coverage (100%)"; cat $$log; rm -f $$log; exit 1; \
-	fi; \
-	rm -f $$log; \
-	grep -vE '^(#|$$)' .covignore > $$ign 2>/dev/null || true; \
-	if [ -s $$ign ]; then grep -v -E -f $$ign $$raw > $$out; else cp $$raw $$out; fi; \
-	uncovered=$$(go tool cover -func=$$out | awk '$$NF != "100.0%" && $$1 != "total:"'); \
-	total=$$(go tool cover -func=$$out | awk '$$1 == "total:" {print $$NF}'); \
-	if [ -n "$$uncovered" ] || [ "$$total" != "100.0%" ]; then \
-		printf "  %-28s ✗\n" "coverage (100%)"; \
-		echo "ERROR: coverage is not 100% (total=$$total) — see $$out (make open-coverage)"; \
-		[ -n "$$uncovered" ] && echo "$$uncovered"; \
-		exit 1; \
-	fi; \
-	printf "  %-28s ✓\n" "coverage (100%)"
+	$(call RUN,test (cover),go test -covermode=set -coverprofile=$(BINDIR)/coverage.tmp.out ./...)
+	$(call RUN,coverage (100%),go tool covcheck -profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out -ignore=.covignore -min=100)
 
 open-coverage:
 	go tool cover -html=$(BINDIR)/coverage.out
