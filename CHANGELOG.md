@@ -9,20 +9,30 @@ All notable changes to this project will be documented in this file.
   coverage` step that runs the suite, strips lines matching any
   regex in `.covignore` from the profile, and fails the build if
   the resulting total is not 100%. Mirrors sibling project
-  `poe-acp`'s `.covignore` pattern. Each entry in `.covignore` is
-  paired with a comment justifying why the branch is unreachable
-  in practice.
+  `poe-acp`'s `.covignore` pattern.
 
-  Initial exclusions:
-  - `cmd/slack-acp/main.go` (entry-point wiring; would need
-    a subprocess smoke harness to exercise meaningfully).
-  - Two defensive branches in `acpclient.Start` for
-    `cmd.{Stdin,Stdout}Pipe` errors that only fire when those
-    streams were pre-set, which Start never does.
+  `.covignore` uses **only file-level patterns** — never line
+  numbers, never per-function regexes — because both are brittle
+  against any edit nearby. Two sanctioned exclusion shapes:
+
+    1. `cmd/<binary>/main.go` (entry-point wiring; would need a
+       subprocess smoke harness to exercise meaningfully).
+    2. A per-package `unreachable.go` file that isolates
+       structurally-unreachable defensive code, paired with a
+       doc comment justifying the unreachability claim.
+
+  When the unreachable code is an error branch the production
+  caller can't trigger, the helper in `unreachable.go` panics
+  rather than returning the error — that way the caller has no
+  impossible `if err != nil` branch left over to cover.
+
+  See `AGENTS.md` "Coverage" section for the full convention.
 
   To make every other line genuinely 100%-covered, the
   `slackproto.Client.consume` loop now takes the events channel
-  as a parameter (so a closed channel can be tested directly).
+  as a parameter (so a closed channel can be tested directly),
+  and `acpclient.setupCmdPipes` was extracted into
+  `internal/acpclient/unreachable.go`.
 - Comprehensive test coverage across `internal/*`, mirroring the
   approach used in sibling project `poe-acp`. The router gained a
   thin `Agent` interface so a `fakeAgent` can drive every code path;
