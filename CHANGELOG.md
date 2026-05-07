@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `make` with no arguments now defaults to `make all` (full build
+  including the 100% coverage gate). `make build` remains for a
+  quick native-only build.
+
 ### Added
 - `make all` now enforces 100% statement coverage via a `make
   coverage` step that runs the suite, strips lines matching any
