@@ -1,0 +1,10 @@
+module github.com/kfet/slack-acp
+
+go 1.25
+
+require (
+	github.com/coder/acp-go-sdk v0.12.2
+	github.com/slack-go/slack v0.23.0
+)
+
+require github.com/gorilla/websocket v1.5.3 // indirect
