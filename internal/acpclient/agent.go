@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -258,9 +259,12 @@ func (a *AgentProc) RebindSink(sid acp.SessionId, sink SessionUpdateSink) {
 	a.mu.Unlock()
 }
 
-// closeGrace is the time we wait for the agent to exit after sending
-// SIGINT before escalating to SIGKILL. Variable so tests can override.
-var closeGrace = 2 * time.Second
+// closeGraceNs is the time (nanoseconds) we wait for the agent to exit
+// after sending SIGINT before escalating to SIGKILL. Stored in an atomic
+// so tests can swap it without racing the production read in Close.
+var closeGraceNs atomic.Int64
+
+func init() { closeGraceNs.Store(int64(2 * time.Second)) }
 
 // Close terminates the agent process.
 func (a *AgentProc) Close() error {
@@ -273,7 +277,7 @@ func (a *AgentProc) Close() error {
 	select {
 	case <-done:
 		return nil
-	case <-time.After(closeGrace):
+	case <-time.After(time.Duration(closeGraceNs.Load())):
 		_ = a.cmd.Process.Kill()
 		<-done
 		return nil

@@ -92,7 +92,7 @@ layout.
 Lifecycle rules:
 
 - **Created** lazily by the router on first prompt for a thread, via
-  `os.MkdirAll` (idempotent).
+  `*os.Root.MkdirAll` (idempotent, sandboxed inside `StateDir`).
 - **Reused** on every subsequent message in the same thread — the path
   is a pure function of the conv key.
 - **NOT deleted on idle GC.** GC only drops the in-memory ACP

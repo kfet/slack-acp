@@ -67,7 +67,7 @@ To add a new exclusion: extract the unreachable code into a helper, move it into
 The bot spawns the agent as a long-lived child and talks ACP over its stdio:
 
 - **Cold-start budget** — agents like `fir --mode acp` can take seconds to be ready. Use the request context for readiness gates; don't bake in wall-clock deadlines.
-- **Per-thread cwd** — each session runs in a stable working directory at `<state_dir>/threads/<channel>/<thread_ts>` so `.fir/` (or other agent) state stays isolated *and* persists across idle GC / restarts. Idle GC drops the in-memory ACP session but does **not** delete the directory; future resumption reuses the same path. Don't share cwds across threads, and don't reintroduce `RemoveAll` on GC.
+- **Per-thread cwd** — each session runs in a stable working directory at `<StateDir>/threads/<channel_id>/<thread_ts>` so `.fir/` (or other agent) state stays isolated *and* persists across idle GC / restarts. Idle GC drops the in-memory ACP session but does **not** delete the directory; future resumption reuses the same path. Don't share cwds across threads, and don't reintroduce `RemoveAll` on GC.
 - **Streaming throttle** — Slack `chat.update` rate limits hard at >1/sec per channel. The PostStreamer enforces this; don't bypass.
 - **Cancel on follow-up** — a new message in the same thread cancels the in-flight prompt via context + `session/cancel`. Don't regress this.
 - **GC** — stale sessions get reaped by idle timeout. Anything holding a session reference must check liveness.

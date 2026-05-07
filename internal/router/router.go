@@ -104,14 +104,23 @@ func New(cfg Config) (*Router, error) {
 }
 
 // Close releases the os.Root handle backing per-thread cwd creation.
-// Safe to call multiple times.
+// Idempotent: the first call closes the root, subsequent calls are
+// no-ops.
+//
+// Contract: callers must not invoke Close concurrently with
+// GetOrCreate, Cancel, or any other Router method that touches the
+// state directory. In practice Close is intended for shutdown after
+// all incoming Slack events have drained — the cmd/slack-acp main
+// wires it via `defer r.Close()` after the slackproto client returns.
 func (r *Router) Close() error {
-	if r.root == nil {
+	r.mu.Lock()
+	root := r.root
+	r.root = nil
+	r.mu.Unlock()
+	if root == nil {
 		return nil
 	}
-	err := r.root.Close()
-	r.root = nil
-	return err
+	return root.Close()
 }
 
 // DefaultStateDir picks a sensible default state root.

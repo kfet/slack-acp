@@ -27,12 +27,6 @@ All notable changes to this project will be documented in this file.
   impossible `if err != nil` branch left over to cover.
 
   See `AGENTS.md` "Coverage" section for the full convention.
-
-  To make every other line genuinely 100%-covered, the
-  `slackproto.Client.consume` loop now takes the events channel
-  as a parameter (so a closed channel can be tested directly),
-  and `acpclient.setupCmdPipes` was extracted into
-  `internal/acpclient/unreachable.go`.
 - Comprehensive test coverage across `internal/*`, mirroring the
   approach used in sibling project `poe-acp`. The router gained a
   thin `Agent` interface so a `fakeAgent` can drive every code path;
@@ -54,7 +48,8 @@ All notable changes to this project will be documented in this file.
   rooted at `StateDir`, so a malformed Slack id can't escape the
   state directory.
 - `router.Router.Close()` releases the `os.Root` handle on shutdown;
-  `cmd/slack-acp` defers it.
+  `cmd/slack-acp` defers it. Now documented as not safe to call
+  concurrently with `GetOrCreate` / `Cancel` (shutdown-only).
 
 ### Fixed
 - handler: `clearInflight` previously compared cancel funcs via
@@ -62,14 +57,22 @@ All notable changes to this project will be documented in this file.
   source line share a code pointer. A stale clear could therefore
   evict the live entry of a follow-up prompt. Replaced with identity
   comparison on a per-call `*inflightEntry` pointer.
+- `cmd/slack-acp` now validates required tokens before logging any
+  state-directory progress, so an operator with missing
+  `bot_token` / `app_token` fails fast instead of seeing a benign
+  "state dir created" message before the real error.
+- `acpclient` `closeGrace` (the SIGINT→SIGKILL escalation window) is
+  now an `atomic.Int64` so the test override is race-free against
+  the production read in `Close`. Previously a `t.Parallel()`
+  inside the package would have raced.
 
 ### Changed
 - Per-thread cwd is now a stable path under `StateDir`
-  (`<state_dir>/threads/<channel>/<thread_ts>`) instead of a random
-  tempdir. Idle GC drops the in-memory ACP session but leaves the
-  directory on disk, so agent state (e.g. `.fir/`) persists across
-  restarts and enables future session resumption. Mirrors the
-  approach used in sibling project `poe-acp`.
+  (`<StateDir>/threads/<channel_id>/<thread_ts>`) instead of a
+  random tempdir. Idle GC drops the in-memory ACP session but
+  leaves the directory on disk, so agent state (e.g. `.fir/`)
+  persists across restarts and enables future session resumption.
+  Mirrors the approach used in sibling project `poe-acp`.
 - Config field `cwd_root` renamed to `state_dir`; CLI flag
   `--cwd-root` renamed to `--state-dir`. Default is now
   `$XDG_STATE_HOME/slack-acp` (falling back to
@@ -77,6 +80,15 @@ All notable changes to this project will be documented in this file.
   `$TMPDIR/slack-acp`.
 - The agent child process now runs with its cwd set to `StateDir`
   rather than `$TMPDIR`.
+- `slackproto.Client.consume` now takes the events channel as a
+  parameter so a closed channel can be tested directly. Pure
+  refactor; the production wiring in `Run` still passes
+  `c.sm.Events` unchanged.
+- `acpclient` extracted `setupCmdPipes` into
+  `internal/acpclient/unreachable.go`. The helper panics on
+  `cmd.{Stdin,Stdout}Pipe` errors that are structurally
+  unreachable in production, so `Start` no longer carries an
+  impossible `if err != nil` branch.
 
 ## [0.1.0] - 2026-05-06
 

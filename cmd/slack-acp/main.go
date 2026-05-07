@@ -66,14 +66,18 @@ func main() {
 	if cfg.StateDir == "" {
 		cfg.StateDir = router.DefaultStateDir()
 	}
+
+	// Validate required tokens before doing any disk or network work,
+	// so an operator with missing tokens fails fast rather than seeing
+	// "state dir created" before the real error.
+	if cfg.BotToken == "" || cfg.AppToken == "" {
+		log.Fatalf("slack-acp: bot_token and app_token required (set in config or via SLACK_BOT_TOKEN / SLACK_APP_TOKEN env)")
+	}
+
 	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
 		log.Fatalf("state dir: %v", err)
 	}
 	log.Printf("slack-acp: state dir %s", cfg.StateDir)
-
-	if cfg.BotToken == "" || cfg.AppToken == "" {
-		log.Fatalf("slack-acp: bot_token and app_token required (set in config or via SLACK_BOT_TOKEN / SLACK_APP_TOKEN env)")
-	}
 
 	pol, err := policy.Parse(cfg.Policy)
 	if err != nil {
