@@ -48,6 +48,20 @@ When fixing a regression, **write the test first** so it fails before your fix, 
 
 Prefer deterministic synchronization over `time.Sleep` and wall-clock polling. Use channels, `sync.WaitGroup`, or callbacks instead of `require.Eventually` with arbitrary timeouts. No `time.Sleep` in tests.
 
+## Coverage
+
+`make all` runs a hard 100% statement-coverage gate (`make coverage`) over a profile filtered through `.covignore`. Any uncovered statement that isn't excluded by the patterns in `.covignore` fails the build.
+
+`.covignore` uses **only file-level patterns** — never line numbers, never per-function regexes. Line numbers shift the moment anyone edits the file above them, and per-function regexes mask new untested code added to the same function.
+
+There are exactly two sanctioned exclusion shapes:
+
+1. **Entry-point shims** — `cmd/<binary>/main.go` is excluded wholesale. Keep `main()` to bare flag parsing, signal handling, and dependency assembly. Anything testable belongs in `internal/*` where it must be 100% covered.
+
+2. **Structurally-unreachable defensive code** — isolate it in a file named `unreachable.go` inside the package that needs it, and the project-wide `/unreachable\.go:` pattern excludes the whole file. Each helper in `unreachable.go` must be paired with a comment justifying *why* it cannot be reached from a test. When the unreachable code is an error branch the production caller can't trigger, the helper should `panic` rather than return the error — that way the caller has no impossible `if err != nil` left over to cover.
+
+To add a new exclusion: extract the unreachable code into a helper, move it into the package's `unreachable.go`, and write the doc comment. Do **not** add fresh regexes to `.covignore`.
+
 ## Agent-process concerns
 
 The bot spawns the agent as a long-lived child and talks ACP over its stdio:

@@ -119,14 +119,7 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 	} else {
 		cmd.Stderr = os.Stderr
 	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
+	stdin, stdout := setupCmdPipes(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start agent: %w", err)
 	}
