@@ -1,6 +1,6 @@
 ---
 name: e2e
-description: Run and extend slack-acp's end-to-end smoke tests — black-box exercises of the real slack-acp binary against a mock Slack Socket Mode server and a scriptable fake ACP agent. Use when changes touch the wire layers (Socket Mode framing, ACP framing, session lifecycle) where in-package unit tests aren't enough.
+description: Run and extend slack-acp's end-to-end smoke tests — black-box exercises of the real slack-acp binary against a mock Slack Socket Mode server (`fakeslack.py`) and a scriptable fake ACP agent (`fakeagent.py`). Use when changes touch the wire layers (Socket Mode framing, ACP framing, session lifecycle) where in-package unit tests aren't enough.
 ---
 
 # e2e Skill
@@ -11,286 +11,472 @@ End-to-end testing for `slack-acp`. The bot has three wire surfaces:
 Slack ── ws ── slackproto ── handler ── router ── acpclient ── stdio ── agent
 ```
 
-The unit tests in `internal/*/...` cover each layer in isolation with
-fakes. **e2e tests** drive the *real* `slack-acp` binary as a
-black-box subprocess, with both the Slack side and the agent side
-faked out, to catch wiring bugs that in-package tests can't see:
+Unit tests in `internal/*/...` cover each layer in isolation with
+fakes. **e2e** drives the *real* `slack-acp` binary as a black-box
+subprocess, with both the Slack side and the agent side faked out, to
+catch wiring bugs in-package tests can't see:
 
 - Socket Mode envelope quirks (ack, retry, message vs app_mention).
-- ACP `initialize` handshake edge cases (caps negotiation, version skew).
+- ACP `initialize` handshake edge cases.
 - Process-lifecycle bugs (signal handling, child cleanup, restart).
 - State-dir layout regressions (per-thread cwd, reuse across restart).
 - Permission-policy decisions returned to the agent.
 
-When in doubt: if a unit test in `internal/handler/handler_test.go`
-*could* express the case, write it there. e2e is the layer for
-"the binary itself", not for handler logic.
+If a unit test in `internal/handler/handler_test.go` *could* express
+the case, write it there. e2e is for "the binary itself", not handler
+logic.
 
 ## Layout
 
-e2e tests live under `test/e2e/` with build tag `e2e` so they don't
-run in the default `make test` (they spawn subprocesses, fake
-listeners, etc.):
+The harness is **all scripts** — no Go test plumbing, no build tags,
+no `test/e2e/` directory:
 
 ```
-test/
-  e2e/
-    e2e_test.go           # //go:build e2e
-    fakeslack/            # mock Slack Socket Mode + Web API server
-      server.go
 .fir/skills/e2e/
-    fakeagent.py          # scriptable ACP child (ships with this skill)
+  SKILL.md                    # this file (cases described inline below)
+  scripts/
+    ws.py                     # ~280 LOC RFC 6455 server, stdlib-only
+    fakeslack.py              # mock Slack Web API + Socket Mode
+    fakeagent.py              # scriptable ACP child
 ```
 
-`fakeagent.py` lives next to this SKILL.md so the skill is
-self-contained — drop the binary anywhere via `--agent-cmd` and it
-just works (mac has `python3.9` built-in). `fakeslack` belongs in
-`test/e2e/` because it's a Go-side helper that imports `slack-go/slack`
-types and runs in the same `go test` process as the assertions.
+Tests are **described in this skill, executed ad hoc** by the agent
+running them. There is no test runner — pick the case you care about
+from the [Cases](#cases) section and run the recipe. Each case is
+self-contained: start the fakes, drive the bot, assert on
+`/control/messages`, tear down.
 
-If `test/e2e/` is empty: the harness has not been built yet. That's
-fine; the skill teaches how to build it (see "Bootstrap" below).
-Building it is a one-time effort — once it exists, the rest of the
-skill is just "run / extend".
+If you find yourself writing a `cases/*.sh` or `run.sh` — stop and add
+the case to this file instead. The skill body is the test plan.
 
-## Run
+## Prerequisites
 
-```bash
-make e2e
+- `slack-acp` built: `make build` (or `go build -o bin/slack-acp ./cmd/slack-acp`).
+- macOS `python3` (ships with the OS — `python3.9`).
+- `internal/slackproto` honouring `SLACK_API_BASE` env var (already
+  wired; see [`slackproto.go`](../../../internal/slackproto/slackproto.go)).
+- The fakes at `.fir/skills/e2e/scripts/{ws,fakeslack,fakeagent}.py`
+  are stdlib-only; nothing to install.
+- `tmux-driver` skill loaded — long-lived processes (`fakeslack`,
+  `slack-acp`) run in tmux windows so each agent step is a quick
+  non-blocking `curl`, not a backgrounded shell that ties up the turn.
+
+## How the wiring works
+
+```
+                    SLACK_API_BASE
+                        │
+slack-acp ──────────────┴────────────► fakeslack HTTP  (Web API)
+   │                                       │
+   │  ws://… (returned by                  │ /control/* (test driver)
+   │   apps.connections.open)              │
+   ▼                                       │
+fakeslack WS  ◄─────────────────────────── │  (POST /control/send → push event)
+   ▲
+   │ stdio ACP (newline-delimited JSON-RPC)
+   ▼
+fakeagent.py
 ```
 
-Equivalent to (proposed Makefile target):
+- `SLACK_API_BASE` redirects slack-go's Web API base from
+  `https://slack.com/api/` to `http://127.0.0.1:NNN/api/`.
+- `apps.connections.open` returns fakeslack's local `ws://` URL, so
+  Socket Mode dials our fake too. No TLS, no `/etc/hosts` tricks.
+- The test drives Slack-side events via `POST /control/send` and
+  asserts on the recorded outbound calls via `GET /control/messages`.
 
-```bash
-go test -tags=e2e -count=1 ./test/e2e/...
-```
+## Drive the harness via tmux
 
-`-count=1` defeats the test cache: e2e tests depend on the binary
-under test, which `go test` doesn't track for cache invalidation.
+The boilerplate every case shares. **Each step is a separate
+foreground `Bash` call**; tmux holds the long-lived processes so
+nothing blocks the agent's turn.
 
-To run a single case:
-
-```bash
-go test -tags=e2e -run TestThreadedFollowupReusesSession ./test/e2e/...
-```
-
-`make e2e V=1` to see subprocess stdout/stderr live (useful when
-debugging a hang — Socket Mode handshake stuck, ACP child not
-spawning, etc.).
-
-## Anatomy of an e2e test
-
-```go
-//go:build e2e
-
-package e2e_test
-
-import (
-    "context"
-    "os"
-    "os/exec"
-    "testing"
-    "time"
-
-    "github.com/kfet/slack-acp/test/e2e/fakeslack"
-)
-
-func TestDMRoundTrip(t *testing.T) {
-    // 1. Start fake Slack.
-    fs := fakeslack.Start(t)
-    defer fs.Stop()
-
-    // 2. Build / locate slack-acp; fakeagent.py ships with the skill.
-    bot := buildBot(t)
-    fakeagent := repoRoot(t) + "/.fir/skills/e2e/fakeagent.py"
-
-    // 3. Spawn slack-acp pointing at fake slack + fake agent.
-    cmd := exec.Command(bot,
-        "--agent-cmd", fakeagent+" --script reply-once",
-        "--state-dir", t.TempDir(),
-    )
-    cmd.Env = append(os.Environ(),
-        "SLACK_BOT_TOKEN=xoxb-test",
-        "SLACK_APP_TOKEN=xapp-test",
-        "SLACK_API_BASE="+fs.WebAPIURL(),  // see "Hooks" below
-        "SLACK_SOCKET_URL="+fs.SocketURL(),
-    )
-    cmd.Stdout, cmd.Stderr = testWriter(t), testWriter(t)
-    must(t, cmd.Start())
-    defer cmd.Process.Kill()
-
-    // 4. Wait for the bot to connect to the fake Socket Mode server.
-    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
-    fs.WaitForConnect(ctx, t)
-
-    // 5. Drive: send a DM event into the websocket.
-    fs.SendMessageIM(t, "U_HUMAN", "C_DM", "T1", "hello")
-
-    // 6. Assert: a chat.postMessage / chat.update lands on the Web API
-    //            with the expected text.
-    msg := fs.WaitForMessage(ctx, t, "C_DM", "T1")
-    if !strings.Contains(msg.Text, "hello back") {
-        t.Fatalf("unexpected reply: %q", msg.Text)
-    }
-}
-```
-
-### Hooks the e2e harness needs
-
-The bot reaches Slack at two URLs: the Web API (`https://slack.com/api/...`)
-and Socket Mode (`wss://wss-primary.slack.com/...`). Both are hard-coded
-in `slack-go/slack`. Two ways to redirect them in tests:
-
-1. **`SLACK_API_BASE` env var.** Add support in
-   `internal/slackproto` to override `slack.SLACK_API` at construction
-   time. This is a cheap one-line change, well-scoped, and useful
-   beyond e2e.
-2. **`/etc/hosts`-style trickery** — don't. Brittle, requires
-   privileges, breaks on macOS sandboxed test runners.
-
-Pick (1). The env-var override should *only* take effect when set; in
-production it's a no-op.
-
-For Socket Mode, `slack-go/slack`'s `socketmode.New(api,
-socketmode.OptionAppLevelToken(...))` calls `apps.connections.open`
-on the Web API to discover the wss URL. The fake Slack server returns
-its own wss URL from that endpoint, so redirecting only the Web API is
-enough.
-
-## Cases worth covering
-
-Drive these from the e2e suite. They are not adequately covered by
-in-package tests:
-
-1. **DM round-trip.** Fake Slack injects `message.im`; expect a
-   `chat.postMessage` then ≥1 `chat.update` carrying agent text.
-2. **`@mention` in channel.** Inject `app_mention`; reply lands in
-   the thread (`thread_ts == ts` of the mention).
-3. **Threaded follow-up reuses session.** Send a second message in
-   the same thread; the fake agent's `session/new` count must stay
-   at 1 (use a counter exposed by `fakeagent`).
-4. **Cancellation on follow-up.** Send a second message before the
-   first prompt finishes; the fake agent must observe a
-   `session/cancel` for the first prompt.
-5. **State-dir persistence.** Stop and restart `slack-acp`. A new
-   message in the same thread must reuse the existing per-thread cwd
-   under `<state_dir>/threads/<channel>/<thread_ts>/`.
-6. **Permission policy.** Run with `--policy read-only`; fake agent
-   requests a write-tool permission; expect the bot's reply on
-   `session/request_permission` to be a `denied` outcome.
-7. **Bot's own messages ignored.** Inject a `message` event whose
-   `bot_id` matches the bot; expect zero ACP traffic.
-8. **Edits / subtype messages ignored.** Inject a message with
-   `subtype: "message_changed"`; expect zero ACP traffic.
-9. **Mid-text mention stripping.** Inject text containing a `<@Uxyz>`
-   reference embedded mid-sentence; the prompt forwarded to the agent
-   must have it removed.
-
-## fakeagent: the scriptable ACP child
-
-A small program that speaks ACP over stdio. **A working
-implementation ships in this skill** as
-[`fakeagent.py`](./fakeagent.py) — stdlib-only Python that runs on
-macOS' built-in `python3.9`. Drive it via flags:
+### 1. Build the binary (once per code change)
 
 ```sh
-.fir/skills/e2e/fakeagent.py --script reply-once
-.fir/skills/e2e/fakeagent.py --script slow --delay-ms 500
-.fir/skills/e2e/fakeagent.py --script request-permission
-.fir/skills/e2e/fakeagent.py --script panic-mid-prompt
+cd "$(git rev-parse --show-toplevel)"
+go build -o bin/slack-acp ./cmd/slack-acp
 ```
 
-Scripts:
+### 2. Start fakeslack in its own tmux window
 
-| script               | behaviour                                                                 |
-| -------------------- | ------------------------------------------------------------------------- |
-| `reply-once`         | one `session/update` text block, then `end_turn`                          |
-| `slow`               | hold the prompt `--delay-ms`; honors `session/cancel` → `cancelled` stop  |
-| `request-permission` | emit a `session/request_permission` then continue (assumes granted)       |
-| `panic-mid-prompt`   | one update, then `os._exit(1)` — exercises slack-acp's child-restart path |
+```sh
+source "$SKILL_DIR/scripts/auto-helpers.sh"   # SKILL_DIR = tmux-driver skill dir
+tm-new slack-acp-e2e fakeslack
+tm-send slack-acp-e2e "cd $(pwd) && exec .fir/skills/e2e/scripts/fakeslack.py --print-urls"
+tm-wait slack-acp-e2e '^http=' 5
+URLS=$(tm-capture slack-acp-e2e 50)
+HTTP=$(printf '%s\n' "$URLS" | grep -m1 ^http= | cut -d= -f2-)
+BASE=${HTTP%/api/}
+echo "$HTTP" > /tmp/slack-acp-e2e.http   # stash for later steps
+echo "$BASE" > /tmp/slack-acp-e2e.base
+```
 
-It honours `session/cancel` (drops the in-flight reply, returns a
-`cancelled` stop reason), which is what makes case #4 below work
-deterministically.
+### 3. Start slack-acp in a second window
 
-Counters can be exposed to the test process via `--status-file
-PATH`; after each event the script atomically rewrites a JSON file:
+```sh
+HTTP=$(cat /tmp/slack-acp-e2e.http)
+STATE=$(mktemp -d) ; echo "$STATE" > /tmp/slack-acp-e2e.state
+STATUS=$(mktemp)   ; echo "$STATUS" > /tmp/slack-acp-e2e.status
+tm-win slack-acp-e2e bot
+tm-send slack-acp-e2e "cd $(pwd) && SLACK_BOT_TOKEN=xoxb-test SLACK_APP_TOKEN=xapp-test SLACK_API_BASE='$HTTP' exec ./bin/slack-acp --agent-cmd '$(pwd)/.fir/skills/e2e/scripts/fakeagent.py --script reply-once --status-file $STATUS' --state-dir '$STATE'"
+```
+
+### 4. Wait for the WS handshake (deterministic)
+
+```sh
+BASE=$(cat /tmp/slack-acp-e2e.base)
+for i in $(seq 1 50); do
+  curl -s "${BASE}/control/connected" | grep -q '"connected": true' && break
+  sleep 0.1
+done
+curl -s "${BASE}/control/connected"   # should print {"connected": true}
+```
+
+### 5. Drive + assert (per-case; see [Cases](#cases))
+
+```sh
+BASE=$(cat /tmp/slack-acp-e2e.base)
+STATUS=$(cat /tmp/slack-acp-e2e.status)
+# inject + poll /control/messages or $STATUS — see each case below
+```
+
+### 6. Tear down
+
+```sh
+tm-kill slack-acp-e2e
+rm -rf "$(cat /tmp/slack-acp-e2e.state)" \
+       "$(cat /tmp/slack-acp-e2e.status)" \
+       /tmp/slack-acp-e2e.{http,base,state,status}
+```
+
+### Inspect / debug
+
+- `tm-capture slack-acp-e2e 200` — last 200 lines of whichever
+  window is active.
+- `tm-select slack-acp-e2e bot && tm-capture slack-acp-e2e 100` —
+  bot logs.
+- `tm-attach slack-acp-e2e` — print attach command for the user
+  to watch live.
+
+### Why tmux
+
+- Each agent step (`tm-send`, `curl`, `tm-capture`) returns
+  immediately. No backgrounded `&` jobs in a single Bash call,
+  no risk of a hung subprocess freezing the turn.
+- The user can `tm-attach slack-acp-e2e` and see fakeslack and
+  bot logs scrolling live.
+- Cleanup is one `tm-kill`; tmux reaps the whole tree.
+
+Avoid wall-clock waits inside assertion loops — poll
+`/control/*` or `$STATUS` with bounded retries, same rule as the
+rest of the codebase
+(see [AGENTS.md "Testing — avoid wall-clock timeouts"](../../../AGENTS.md)).
+
+## fakeslack control plane
+
+| route | purpose |
+|---|---|
+| `POST /control/send` | inject a Socket Mode event (`type`: `app_mention`, `message_im`, or `raw`) |
+| `GET  /control/messages` | dump recorded `chat.postMessage` / `chat.update` calls |
+| `GET  /control/connected` | `{connected: bool}` — true iff the bot's WS is up |
+| `POST /control/clear` | clear the message log + ack set |
+
+`POST /control/send` JSON shapes:
 
 ```json
-{"sessions_created": 1, "prompts": 1, "cancels": 0, "last_prompt": "hi"}
+{"type":"app_mention", "user":"U1", "channel":"C1", "text":"<@UBOT> hi", "ts":"100.0"}
+{"type":"message_im",  "user":"U1", "channel":"D1", "text":"hi", "ts":"100.0", "thread_ts":""}
+{"type":"message_im",  "user":"U1", "channel":"D1", "text":"hi", "ts":"100.0", "bot_id":"B1"}      // bot echo
+{"type":"message_im",  "user":"U1", "channel":"D1", "text":"hi", "ts":"100.0", "subtype":"message_changed"}  // edit
+{"type":"raw", "envelope": { ... }}                                                                // literal envelope
 ```
 
-Tests poll this between sends instead of probing the child's
-internal state. Use a file under `t.TempDir()` so parallel tests
-don't collide.
+The bot's user id is **`UBOT`** (returned by `auth.test`) — use that
+in `<@…>` mention strings.
 
-If a future case needs behaviour the existing scripts don't cover,
-add a new `--script` arm in `fakeagent.py` rather than reaching for
-flags or env vars — keep the surface declarative.
+## fakeagent scripts
 
-## fakeslack: the mock Socket Mode + Web API server
+```sh
+.fir/skills/e2e/scripts/fakeagent.py --script reply-once
+.fir/skills/e2e/scripts/fakeagent.py --script slow --delay-ms 500
+.fir/skills/e2e/scripts/fakeagent.py --script request-permission
+.fir/skills/e2e/scripts/fakeagent.py --script panic-mid-prompt
+```
 
-httptest server with two surfaces:
+| script | behaviour |
+|---|---|
+| `reply-once` | one `session/update` text block, then `end_turn` |
+| `slow` | hold the prompt `--delay-ms`; honors `session/cancel` → `cancelled` stop |
+| `request-permission` | emit a `session/request_permission` then continue |
+| `panic-mid-prompt` | one update, then `os._exit(1)` — exercises child-restart path |
 
-- **Web API** — minimal: `auth.test`, `apps.connections.open`,
-  `users.info`, `chat.postMessage`, `chat.update`. Records every
-  posted message in a buffer that tests can `WaitForMessage` against.
-- **Socket Mode (websocket)** — accepts the connection, responds to
-  ping with pong, accepts ack envelopes, and exposes
-  `SendMessageIM`/`SendAppMention`/`SendRaw` for tests to inject
-  events.
+Optional `--status-file PATH` exposes counters (`sessions_created`,
+`prompts`, `cancels`, `last_prompt`) for tests that need to assert on
+agent-side state. Use a path under `mktemp -d`.
 
-Both use deterministic synchronisation (channels), not `time.Sleep`
-— same rule as the rest of the codebase (see AGENTS.md "Testing —
-avoid wall-clock timeouts").
+If a future case needs new behaviour, **add a `--script` arm in
+`fakeagent.py`** rather than reaching for flags or env vars — keep the
+surface declarative.
 
-## Bootstrap (when `test/e2e/` is empty)
+## Cases
 
-If you find `test/e2e/` empty, create the harness in this order:
+Each case below documents what failure mode it guards against and the
+specific inject/assert step. The boilerplate from
+[Drive the harness via tmux](#drive-the-harness-via-tmux) runs first;
+each case then drives via foreground `curl` against `$BASE`.
 
-1. **Add `SLACK_API_BASE` override** in `internal/slackproto` so the
-   Web API can be redirected. Unit-test the override.
-2. ~~Build a fake ACP child~~ — already shipped. Use
-   [`.fir/skills/e2e/fakeagent.py`](./fakeagent.py) as
-   `--agent-cmd`. Manually smoke it against the real `slack-acp`
-   pointed at a sandbox Slack app to confirm the wiring before
-   moving on.
-3. **Build `test/e2e/fakeslack`** with the Web API surface only;
-   first e2e test asserts `apps.connections.open` is called and the
-   bot exits cleanly when the WS URL it returns is unreachable.
-4. **Add Socket Mode** to `fakeslack`; first DM round-trip test
-   passes (driving the real `slack-acp` binary against fakeslack +
-   `fakeagent.py --script reply-once`).
-5. **Add Makefile target** `e2e` that runs `go test -tags=e2e -count=1
-   ./test/e2e/...`. Wire into `make all` once the suite is stable.
+### 1. DM round-trip
 
-Each step is a separate commit. Don't merge the whole harness in one
-commit — too much surface to review.
+Guards against: Socket Mode → handler → ACP → PostStreamer wiring.
 
-> Why is `fakeagent` Python but `fakeslack` proposed in Go? ACP is
-> JSON-RPC over stdio — trivial in any language, and Python's stdlib
-> covers it without dependencies (mac ships `python3.9`). The Slack
-> side needs a websocket server, which is significantly more code in
-> stdlib Python than in Go with `gorilla/websocket`. Use the right
-> tool for each surface.
+```sh
+# inject
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D1","text":"hello","ts":"100.0"}' \
+  "${BASE}/control/send"
+
+# assert: the agent's reply lands as a postMessage
+for i in $(seq 1 50); do
+  MSGS=$(curl -s "${BASE}/control/messages")
+  echo "$MSGS" | grep -q "hello back from reply-once" && break
+  sleep 0.1
+done
+echo "$MSGS" | grep -q '"kind": "postMessage"' || { echo FAIL; exit 1; }
+```
+
+### 2. `@mention` in channel
+
+Guards against: `app_mention` event path; reply lands in the thread
+(`thread_ts == ts` of the mention).
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"app_mention","user":"U1","channel":"C1","text":"<@UBOT> hi","ts":"200.0"}' \
+  "${BASE}/control/send"
+
+# assert thread_ts is the original ts
+for i in $(seq 1 50); do
+  MSGS=$(curl -s "${BASE}/control/messages")
+  echo "$MSGS" | grep -q '"thread_ts": "200.0"' && break
+  sleep 0.1
+done
+echo "$MSGS" | grep -q '"thread_ts": "200.0"' || { echo FAIL; exit 1; }
+```
+
+### 3. Threaded follow-up reuses session
+
+Guards against: the router losing the (channel, thread_ts) → session
+mapping on follow-ups.
+
+Use `--status-file`:
+
+```sh
+STATUS=$(mktemp)
+# (re-launch slack-acp with --agent-cmd "...fakeagent.py --script reply-once --status-file $STATUS")
+
+# first message
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D1","text":"one","ts":"100.0"}' \
+  "${BASE}/control/send"
+# wait for reply N=1
+for i in $(seq 1 50); do grep -q '"prompts": 1' "$STATUS" && break; sleep 0.1; done
+
+# second message in the same thread
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D1","text":"two","ts":"100.1","thread_ts":"100.0"}' \
+  "${BASE}/control/send"
+for i in $(seq 1 50); do grep -q '"prompts": 2' "$STATUS" && break; sleep 0.1; done
+
+# assert: only ONE session was created
+grep -q '"sessions_created": 1' "$STATUS" || { cat "$STATUS"; echo FAIL; exit 1; }
+```
+
+### 4. Cancellation on follow-up
+
+Guards against: regression of context-cancel + `session/cancel` on a
+new message arriving mid-prompt.
+
+Relaunch slack-acp with `--script slow --delay-ms 3000 --status-file $STATUS`,
+then:
+
+```sh
+# first message — agent will hold for 3s
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D1","text":"first","ts":"400.0"}' \
+  "${BASE}/control/send"
+
+# wait until prompt is in flight
+for i in $(seq 1 30); do grep -q '"prompts": 1' "$STATUS" && break; sleep 0.1; done
+
+# second message in same thread → must cancel the in-flight one
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D1","text":"second","ts":"400.1","thread_ts":"400.0"}' \
+  "${BASE}/control/send"
+
+# assert: cancels bumps to 1
+for i in $(seq 1 50); do grep -q '"cancels": 1' "$STATUS" && break; sleep 0.1; done
+grep -q '"cancels": 1' "$STATUS" || { cat "$STATUS"; echo FAIL; exit 1; }
+```
+
+### 5. State-dir persistence across restart
+
+Guards against: per-thread cwd being recreated (or worse, deleted) on
+restart, breaking agent-side `.fir/` state.
+
+```sh
+# Step A: with slack-acp running, send a message and let it land.
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D1","text":"hi","ts":"100.0"}' \
+  "${BASE}/control/send"
+for i in $(seq 1 50); do grep -q '"prompts": 1' "$STATUS" && break; sleep 0.1; done
+
+THREAD_DIR="$STATE/threads/D1/100.0"
+[ -d "$THREAD_DIR" ] || { echo "no per-thread cwd"; exit 1; }
+INODE_BEFORE=$(stat -f %i "$THREAD_DIR")
+
+# Step B: restart slack-acp with the SAME state-dir.
+tm-killwin slack-acp-e2e bot
+STATUS2=$(mktemp)
+tm-win slack-acp-e2e bot
+tm-send slack-acp-e2e "cd $(pwd) && SLACK_BOT_TOKEN=xoxb-test SLACK_APP_TOKEN=xapp-test SLACK_API_BASE='$HTTP' exec ./bin/slack-acp --agent-cmd '$(pwd)/.fir/skills/e2e/scripts/fakeagent.py --script reply-once --status-file $STATUS2' --state-dir '$STATE'"
+for i in $(seq 1 50); do curl -s "${BASE}/control/connected" | grep -q true && break; sleep 0.1; done
+
+# Step C: follow-up in same thread reuses same dir (inode unchanged).
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D1","text":"again","ts":"100.2","thread_ts":"100.0"}' \
+  "${BASE}/control/send"
+for i in $(seq 1 50); do grep -q '"prompts": 1' "$STATUS2" && break; sleep 0.1; done
+
+INODE_AFTER=$(stat -f %i "$THREAD_DIR")
+[ "$INODE_BEFORE" = "$INODE_AFTER" ] || { echo "cwd inode changed"; exit 1; }
+```
+
+### 6. Permission policy denies write tools
+
+Guards against: `--policy read-only` failing to deny a write-tool
+request from the agent.
+
+Use `--script request-permission`. Run slack-acp with
+`--policy read-only`. Inject a message; the agent will request a
+write-tool permission; the bot must reply with a `denied` outcome
+(observable in `--status-file`'s recorded permission outcomes).
+
+### 7. Bot's own messages ignored
+
+Guards against: feedback loops from the bot reading its own posts.
+
+```sh
+PROMPTS_BEFORE=$(python3 -c "import json; print(json.load(open('$STATUS'))['prompts'])")
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"UBOT","channel":"D9","text":"loop","ts":"700.0","bot_id":"BBOT"}' \
+  "${BASE}/control/send"
+
+# absence-assertion: short bounded sleep, then confirm prompts didn't budge
+sleep 0.5
+PROMPTS_AFTER=$(python3 -c "import json; print(json.load(open('$STATUS'))['prompts'])")
+[ "$PROMPTS_BEFORE" = "$PROMPTS_AFTER" ] || { echo "bot self-message leaked"; exit 1; }
+```
+
+(This is one of two places a small wall-clock wait is unavoidable:
+we're asserting on the *absence* of an effect. Keep it bounded and
+short.)
+
+### 8. Edits / subtype messages ignored
+
+Same shape as case 7, with `"subtype":"message_changed"` in place of
+`bot_id`:
+
+```sh
+PROMPTS_BEFORE=$(python3 -c "import json; print(json.load(open('$STATUS'))['prompts'])")
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D8","text":"edited","ts":"800.0","subtype":"message_changed"}' \
+  "${BASE}/control/send"
+sleep 0.5
+PROMPTS_AFTER=$(python3 -c "import json; print(json.load(open('$STATUS'))['prompts'])")
+[ "$PROMPTS_BEFORE" = "$PROMPTS_AFTER" ] || { echo "edit leaked"; exit 1; }
+```
+
+### 9. Mid-text mention stripping
+
+Guards against: `<@U…>` references mid-sentence leaking into the agent
+prompt.
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"app_mention","user":"U1","channel":"C9","text":"hey <@UBOT> what about <@UBOT> this","ts":"900.0"}' \
+  "${BASE}/control/send"
+
+# assert via fakeagent's --status-file: last_prompt == "hey  what about  this"
+for i in $(seq 1 50); do
+  LP=$(python3 -c "import json; print(json.load(open('$STATUS')).get('last_prompt',''))")
+  [ "$LP" = "hey  what about  this" ] && break
+  sleep 0.1
+done
+[ "$LP" = "hey  what about  this" ] || { echo "got '$LP'"; exit 1; }
+```
+
+### 10. Two distinct threads → two distinct sessions
+
+Guards against: router collapsing distinct (channel, thread_ts) keys
+into one session.
+
+```sh
+SC_BEFORE=$(python3 -c "import json; print(json.load(open('$STATUS'))['sessions_created'])")
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D10A","text":"a","ts":"1010.0"}' \
+  "${BASE}/control/send"
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"message_im","user":"U1","channel":"D10B","text":"b","ts":"1010.1"}' \
+  "${BASE}/control/send"
+
+# assert: sessions_created bumps by exactly 2
+for i in $(seq 1 50); do
+  SC=$(python3 -c "import json; print(json.load(open('$STATUS'))['sessions_created'])")
+  [ "$SC" -ge $((SC_BEFORE+2)) ] && break
+  sleep 0.1
+done
+[ "$SC" = "$((SC_BEFORE+2))" ] || { echo "sessions_created jumped from $SC_BEFORE to $SC"; exit 1; }
+```
+
+### 11. App-mention with explicit `thread_ts` replies in that thread
+
+Guards against: app_mention path ignoring `thread_ts` when the user
+mentioned the bot from inside an existing thread (replying at the
+parent instead of in-thread).
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"type":"app_mention","user":"U1","channel":"C11","text":"<@UBOT> in thread","ts":"1100.5","thread_ts":"1100.0"}' \
+  "${BASE}/control/send"
+
+for i in $(seq 1 50); do
+  MSGS=$(curl -s "${BASE}/control/messages")
+  echo "$MSGS" | grep -q '"thread_ts": "1100.0"' && break
+  sleep 0.1
+done
+echo "$MSGS" | grep -q '"thread_ts": "1100.0"' || { echo FAIL; exit 1; }
+```
 
 ## Pitfalls
 
-- **`go test` caches across binary changes.** Always `-count=1` for
-  e2e, or invoke via `make e2e` which sets it.
-- **Subprocess teardown.** Always `cmd.Process.Kill()` in defer plus
-  a context-bounded `cmd.Wait` with a short timeout, or hung
-  subprocesses will pile up between test runs.
-- **Port allocation.** `httptest.NewServer` picks a free port; never
-  hard-code one. Same for any auxiliary listener.
-- **Wall-clock waits.** No `time.Sleep` in tests. Use channels,
-  `WaitForX(ctx)` helpers, and pass test timeouts via `context.WithTimeout`.
-- **State-dir leakage.** Always pass `--state-dir t.TempDir()`. Two
-  parallel tests sharing a state dir will corrupt each other's
+- **No wall-clock waits.** Use bounded `for i in $(seq …)` loops
+  polling the same `/control/*` endpoint or `--status-file`. The one
+  exception is asserting *absence* (cases 7 & 8).
+- **Long-lived processes go in tmux**, not backgrounded `&` jobs.
+  Backgrounding inside a single `Bash` call ties up the agent's
+  turn until cleanup; tmux makes each step independent.
+- **Subprocess teardown.** `tm-kill slack-acp-e2e` reaps the whole
+  tree. If you do background something locally, trap EXIT.
+- **Port allocation.** fakeslack picks a free port (`--http-port 0
+  --ws-port 0`); never hard-code one.
+- **State-dir leakage.** Always pass `--state-dir "$(mktemp -d)"`.
+  Two parallel runs sharing a state dir corrupt each other's
   `threads/` map.
-- **Real Slack tokens.** Never put a real `xoxb-`/`xapp-` token in an
-  e2e test, ever. The fake server accepts any string-shaped token.
+- **Real Slack tokens.** Never set a real `xoxb-`/`xapp-` token here.
+  fakeslack accepts any string-shaped token.
+- **`SLACK_API_BASE` trailing slash.** Must end with `/api/` —
+  slack-go appends method names directly to it.
 
 ## Live smoke (optional, manual)
 
@@ -305,16 +491,18 @@ Slack workspace:
    reply in the thread, cancel a long-running prompt by sending a
    follow-up.
 
-Document any new bug found by live smoke as a regression case in the
-automated e2e suite before fixing.
+Document any new bug found by live smoke as a regression case in this
+file before fixing.
 
-## Checklist for a new e2e case
+## Checklist for a new case
 
-- [ ] Build tag `//go:build e2e` set on the test file.
-- [ ] Uses `t.TempDir()` for state dir; no shared global state.
-- [ ] No `time.Sleep`; all waits are context-bounded.
-- [ ] Subprocess killed in defer.
-- [ ] Asserts on the *visible* surface (chat.update payload, agent
-      stdin/stdout via fakeagent), not on internal state.
-- [ ] Documents what failure mode it guards against (one-line
-      comment at the top of the test).
+- [ ] Added under [Cases](#cases) above with a one-line statement of
+      the failure mode it guards against.
+- [ ] Uses `mktemp -d` for state dir.
+- [ ] No `time.Sleep` / `sleep N` outside the bounded poll-loop
+      idiom (or absence-assertion in cases 7 & 8).
+- [ ] Subprocesses killed in cleanup.
+- [ ] Asserts on the *visible* surface (`/control/messages`,
+      `--status-file`), not on internal state.
+- [ ] If new agent behaviour is needed, add a `--script` arm to
+      `fakeagent.py` rather than new flags or env vars.

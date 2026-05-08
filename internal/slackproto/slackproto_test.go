@@ -97,6 +97,40 @@ func TestAccessors(t *testing.T) {
 	}
 }
 
+func TestNewHonoursSlackAPIBaseEnv(t *testing.T) {
+	// Start a tiny HTTP server and assert that auth.test goes to it
+	// when SLACK_API_BASE points at it. This proves the override is
+	// actually wired through to the slack.Client, not just that the
+	// branch is taken.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"user_id":"UBOT","user":"bot","team_id":"T0"}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("SLACK_API_BASE", srv.URL+"/api/")
+	c, err := New("xoxb-x", "xapp-x", &stubHandler{})
+	if err != nil {
+		t.Fatalf("New with SLACK_API_BASE: %v", err)
+	}
+	if _, err := c.API().AuthTestContext(context.Background()); err != nil {
+		t.Fatalf("AuthTest against override: %v", err)
+	}
+	if got := hits.Load(); got == 0 {
+		t.Fatalf("override URL not hit (hits=%d)", got)
+	}
+
+	// Unset path: env var empty → no override option, slack.Client
+	// uses its default URL. We just exercise the branch (and confirm
+	// construction still succeeds).
+	t.Setenv("SLACK_API_BASE", "")
+	if _, err := New("xoxb-x", "xapp-x", &stubHandler{}); err != nil {
+		t.Fatalf("New without SLACK_API_BASE: %v", err)
+	}
+}
+
 // ---- handleEventsAPI / deliver ----
 
 func newClientForDispatch(t *testing.T, h Handler) *Client {
