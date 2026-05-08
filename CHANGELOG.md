@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `SLACK_API_BASE` environment variable in `internal/slackproto`
+  redirects slack-go's Web API base URL. No-op when unset; used by
+  the e2e harness to point the bot at a local mock Slack server.
+- `e2e` skill harness: stdlib-only Python mocks for both wire
+  surfaces — `.fir/skills/e2e/scripts/ws.py` (RFC 6455 server) and
+  `.fir/skills/e2e/scripts/fakeslack.py` (Web API + Socket Mode).
+  Tests are described as inline shell recipes in `.fir/skills/e2e/SKILL.md`,
+  driven via tmux windows so each step is non-blocking. Eleven
+  cases covering DM round-trip, app_mention, threaded follow-up,
+  cancellation, state-dir persistence, policy, bot-loop guards,
+  edit/subtype filtering, mention stripping, multi-thread isolation,
+  and in-thread mention replies.
+
 ### Changed
 - Coverage gate now uses the standalone
   [`covgate`](https://github.com/kfet/covgate) tool (MIT,

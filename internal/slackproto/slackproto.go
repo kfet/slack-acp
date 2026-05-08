@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -64,9 +65,20 @@ func New(botToken, appToken string, h Handler) (*Client, error) {
 	if !strings.HasPrefix(appToken, "xapp-") {
 		return nil, fmt.Errorf("slackproto: app_token must start with xapp-")
 	}
-	api := slack.New(botToken, slack.OptionAppLevelToken(appToken))
+	api := slack.New(botToken, slackOptions(appToken)...)
 	sm := socketmode.New(api)
 	return &Client{api: api, sm: sm, handler: h}, nil
+}
+
+// slackOptions builds the slack.Client options, honouring the
+// SLACK_API_BASE env var (test-only redirect of the Web API; production
+// no-op when unset).
+func slackOptions(appToken string) []slack.Option {
+	opts := []slack.Option{slack.OptionAppLevelToken(appToken)}
+	if base := os.Getenv("SLACK_API_BASE"); base != "" {
+		opts = append(opts, slack.OptionAPIURL(base))
+	}
+	return opts
 }
 
 // Run authenticates, captures the bot's user id, and processes events
