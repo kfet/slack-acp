@@ -7,26 +7,6 @@ description: Release a new version of slack-acp. Confirms build/tests pass, upda
 
 Release a new version of `slack-acp`.
 
-## TL;DR
-
-There's a script that does the whole thing:
-
-```bash
-.fir/skills/release/release.py            # auto-bump, no push
-.fir/skills/release/release.py --push     # auto-bump + push to origin
-.fir/skills/release/release.py --version 1.0.0 --push
-.fir/skills/release/release.py --dry-run  # preview, mutate nothing
-```
-
-It runs `make all`, determines the bump from `## [Unreleased]` in
-`CHANGELOG.md` (or accepts an explicit `--version`), rolls the
-CHANGELOG, writes `VERSION`, commits, tags, `make install`s, and
-verifies. Refuses to overwrite an existing tag. Stdlib-only Python
-so it works on any Mac without setup.
-
-The rest of this document explains the same flow manually, in case
-the script needs to be edited or skipped step-by-step.
-
 ## Version determination
 
 If the user provides a version, use it. Otherwise auto-determine:
