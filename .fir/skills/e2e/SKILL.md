@@ -36,14 +36,20 @@ listeners, etc.):
 test/
   e2e/
     e2e_test.go           # //go:build e2e
-    fakeslack/            # mock Slack Socket Mode server
+    fakeslack/            # mock Slack Socket Mode + Web API server
       server.go
-    fakeagent/            # subprocess that speaks ACP over stdio
-      main.go             # small Go binary, scriptable via env vars
+.fir/skills/e2e/
+    fakeagent.py          # scriptable ACP child (ships with this skill)
 ```
 
-If this directory is empty: the harness has not been built yet.
-That's fine; the skill teaches how to build it (see "Bootstrap" below).
+`fakeagent.py` lives next to this SKILL.md so the skill is
+self-contained — drop the binary anywhere via `--agent-cmd` and it
+just works (mac has `python3.9` built-in). `fakeslack` belongs in
+`test/e2e/` because it's a Go-side helper that imports `slack-go/slack`
+types and runs in the same `go test` process as the assertions.
+
+If `test/e2e/` is empty: the harness has not been built yet. That's
+fine; the skill teaches how to build it (see "Bootstrap" below).
 Building it is a one-time effort — once it exists, the rest of the
 skill is just "run / extend".
 
@@ -94,13 +100,13 @@ func TestDMRoundTrip(t *testing.T) {
     fs := fakeslack.Start(t)
     defer fs.Stop()
 
-    // 2. Build / locate slack-acp + fakeagent binaries (helpers below).
+    // 2. Build / locate slack-acp; fakeagent.py ships with the skill.
     bot := buildBot(t)
-    agent := buildFakeAgent(t)
+    fakeagent := repoRoot(t) + "/.fir/skills/e2e/fakeagent.py"
 
     // 3. Spawn slack-acp pointing at fake slack + fake agent.
     cmd := exec.Command(bot,
-        "--agent-cmd", agent+" --script reply-once",
+        "--agent-cmd", fakeagent+" --script reply-once",
         "--state-dir", t.TempDir(),
     )
     cmd.Env = append(os.Environ(),
@@ -183,19 +189,45 @@ in-package tests:
 
 ## fakeagent: the scriptable ACP child
 
-A small Go binary that speaks ACP over stdio. Driven by command-line
-flags or env vars:
+A small program that speaks ACP over stdio. **A working
+implementation ships in this skill** as
+[`fakeagent.py`](./fakeagent.py) — stdlib-only Python that runs on
+macOS' built-in `python3.9`. Drive it via flags:
 
-```
-fakeagent --script reply-once          # reply once with "hello back"
-fakeagent --script slow                # hold the prompt 2s before replying
-fakeagent --script request-permission  # send session/request_permission
-fakeagent --script panic-mid-prompt    # exit 1 mid-stream
+```sh
+.fir/skills/e2e/fakeagent.py --script reply-once
+.fir/skills/e2e/fakeagent.py --script slow --delay-ms 500
+.fir/skills/e2e/fakeagent.py --script request-permission
+.fir/skills/e2e/fakeagent.py --script panic-mid-prompt
 ```
 
-It MUST honour `session/cancel` (drop the in-flight reply, return a
-`cancelled` stop reason) so test #4 passes. Implementing it well is
-the most useful single piece of e2e scaffolding — most tests share it.
+Scripts:
+
+| script               | behaviour                                                                 |
+| -------------------- | ------------------------------------------------------------------------- |
+| `reply-once`         | one `session/update` text block, then `end_turn`                          |
+| `slow`               | hold the prompt `--delay-ms`; honors `session/cancel` → `cancelled` stop  |
+| `request-permission` | emit a `session/request_permission` then continue (assumes granted)       |
+| `panic-mid-prompt`   | one update, then `os._exit(1)` — exercises slack-acp's child-restart path |
+
+It honours `session/cancel` (drops the in-flight reply, returns a
+`cancelled` stop reason), which is what makes case #4 below work
+deterministically.
+
+Counters can be exposed to the test process via `--status-file
+PATH`; after each event the script atomically rewrites a JSON file:
+
+```json
+{"sessions_created": 1, "prompts": 1, "cancels": 0, "last_prompt": "hi"}
+```
+
+Tests poll this between sends instead of probing the child's
+internal state. Use a file under `t.TempDir()` so parallel tests
+don't collide.
+
+If a future case needs behaviour the existing scripts don't cover,
+add a new `--script` arm in `fakeagent.py` rather than reaching for
+flags or env vars — keep the surface declarative.
 
 ## fakeslack: the mock Socket Mode + Web API server
 
@@ -219,19 +251,29 @@ If you find `test/e2e/` empty, create the harness in this order:
 
 1. **Add `SLACK_API_BASE` override** in `internal/slackproto` so the
    Web API can be redirected. Unit-test the override.
-2. **Build `test/e2e/fakeagent`** with one script (`reply-once`).
-   Verify it works with the real `slack-acp` by running it locally
-   against a sandbox Slack app (manual smoke).
+2. ~~Build a fake ACP child~~ — already shipped. Use
+   [`.fir/skills/e2e/fakeagent.py`](./fakeagent.py) as
+   `--agent-cmd`. Manually smoke it against the real `slack-acp`
+   pointed at a sandbox Slack app to confirm the wiring before
+   moving on.
 3. **Build `test/e2e/fakeslack`** with the Web API surface only;
    first e2e test asserts `apps.connections.open` is called and the
    bot exits cleanly when the WS URL it returns is unreachable.
 4. **Add Socket Mode** to `fakeslack`; first DM round-trip test
-   passes.
+   passes (driving the real `slack-acp` binary against fakeslack +
+   `fakeagent.py --script reply-once`).
 5. **Add Makefile target** `e2e` that runs `go test -tags=e2e -count=1
    ./test/e2e/...`. Wire into `make all` once the suite is stable.
 
 Each step is a separate commit. Don't merge the whole harness in one
 commit — too much surface to review.
+
+> Why is `fakeagent` Python but `fakeslack` proposed in Go? ACP is
+> JSON-RPC over stdio — trivial in any language, and Python's stdlib
+> covers it without dependencies (mac ships `python3.9`). The Slack
+> side needs a websocket server, which is significantly more code in
+> stdlib Python than in Go with `gorilla/websocket`. Use the right
+> tool for each surface.
 
 ## Pitfalls
 
