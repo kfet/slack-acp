@@ -49,31 +49,45 @@ If the user provides a version, use it. Otherwise auto-determine:
   Git may try to open vim/nano, which fails non-interactively.
 - **Moving tags**: if you need to move a tag after an extra commit,
   `git tag -d vVERSION` then re-create.
-- **No published release pipeline yet** — slack-acp does not currently
-  ship a GitHub Actions release workflow, GoReleaser config, or
-  Homebrew tap. `make publish` only pushes `main` and the tag. Users
-  install via `go install` or `make deploy`. If/when a release pipeline
-  is added, update this skill.
+- **No PGO here.** Unlike fir, slack-acp does not use PGO, so
+  `make publish` is a straight push — no amend dance.
 
 ## Publishing
 
 After the user confirms, run `make publish`. This pushes `main` and
-`vVERSION` to `origin`.
+`vVERSION` to `origin`. The GitHub `release.yml` workflow then:
 
-```bash
-make publish
-```
+1. Runs `make all` (vet, race, coverage gate, cross-builds, license
+   check).
+2. Invokes GoReleaser: builds the 5 cross-compile targets, creates the
+   GitHub release with binaries + checksums + `THIRD_PARTY_NOTICES.md`,
+   and commits `Formula/slack-acp.rb` to `kfet/homebrew-fir` (the
+   shared tap).
 
-Currently this is a straight push. There is **no post-publish CI
-workflow** to monitor — once the tag lands, users on the same machine
-can `go install github.com/kfet/slack-acp/cmd/slack-acp@vVERSION` and
-remote hosts can be upgraded with the `update` skill.
+After which `brew install kfet/fir/slack-acp` (or `brew upgrade`) will
+pick up the new version.
+
+Alternatively, `make deploy HOST=<host>` pushes the right
+cross-compiled binary directly to a remote host via scp (no GitHub
+release needed) — useful for hotfixing a deployment.
 
 If any step fails, stop and report. Do not push or publish unless the
 user confirms.
 
+## Post-publish: track GitHub Actions
+
+After `make publish` succeeds, poll GitHub Actions until every
+triggered workflow for the release commit finishes:
+
+```bash
+gh run list --limit 10 --json status,conclusion,name,headSha,createdAt,databaseId 2>&1
+```
+
+This must **not** use `--branch` filtering — tag-triggered workflows
+(`release`) do not appear under a branch filter. Match runs by
+`headSha` against the release commit SHA.
+
 ## Post-publish: notify hosts
 
 If you know which hosts run slack-acp, follow up with the `update`
-skill for each, or hand the list back to the user. There's no central
-update mechanism yet.
+skill for each, or hand the list back to the user.

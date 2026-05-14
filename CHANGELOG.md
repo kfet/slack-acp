@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Release pipeline: `.goreleaser.yaml` cross-builds 5 targets and
+  publishes a GitHub release on every `v*` tag push via
+  `.github/workflows/release.yml`, and regenerates
+  `Formula/slack-acp.rb` on the shared `kfet/homebrew-fir` tap so
+  `brew install kfet/fir/slack-acp` works. Reference Formula at
+  `homebrew/slack-acp.rb.template`.
+- `skills/release/SKILL.md` rewritten to drive the new pipeline and
+  poll `gh run list` post-publish. `skills/deploy/SKILL.md` and
+  `skills/update/SKILL.md` document the brew install / upgrade path.
+- README install section leads with `brew install kfet/fir/slack-acp`.
+- `docs/setup-easing-plan.md` tracks the broader setup-easing roadmap.
 - GitHub Actions CI workflow (`.github/workflows/ci.yml`) running
   `make all` (vet, race tests, 100% coverage gate, 5 cross-builds,
   native build, license check) on push to `main` and on PRs.

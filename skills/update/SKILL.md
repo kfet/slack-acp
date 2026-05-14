@@ -40,6 +40,7 @@ prefix with `ssh <host>`; for local run directly.
 
 ```bash
 slack-acp --version 2>/dev/null || echo not-installed
+brew list --versions slack-acp 2>/dev/null       # brew install?
 ls -l ~/.local/bin/slack-acp 2>/dev/null         # direct deploy?
 ls -l "$(go env GOPATH)/bin/slack-acp" 2>/dev/null  # go-installed?
 systemctl --user is-active slack-acp 2>/dev/null # Linux supervisor
@@ -50,6 +51,25 @@ If installed version already equals target, tell the user and stop
 unless they want a forced restart.
 
 ### 3. Pick the upgrade path
+
+**Brew + launchd (typical macOS):**
+```bash
+brew update && brew upgrade slack-acp
+launchctl kickstart -k gui/$UID/<label>
+```
+Find `<label>` in `~/Library/LaunchAgents/dev.*.slack-acp.plist`
+(e.g. `dev.<user>.slack-acp`). On remote, use `gui/$(id -u)/<label>`
+inside the ssh command.
+
+**Brew + systemd (typical Linux):**
+```bash
+brew update && brew upgrade slack-acp
+systemctl --user restart slack-acp
+```
+
+If `brew upgrade` reports "already up-to-date" but the version still
+lags, the tap index is stale — re-run `brew update`. Persistent miss
+→ fall back to `make deploy`.
 
 **Direct deploy (`~/.local/bin`, hotfix or canonical path):**
 From the repo:
