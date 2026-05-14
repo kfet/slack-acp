@@ -40,7 +40,7 @@ func newFakeAgent() *fakeAgent {
 
 func (f *fakeAgent) Caps() acpclient.Caps { return f.caps }
 
-func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink) (acp.SessionId, error) {
+func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	sid := acp.SessionId("sid")
@@ -444,3 +444,59 @@ func anyContains(ss []string, sub string) bool {
 
 // ---- silence unused imports if a refactor drops a code path ----
 var _ = json.Marshal
+
+// TestHandleInlinesSystemPromptOnFirstPrompt: when the router has a
+// SystemPrompt and the agent doesn't advertise the cap, the FIRST user
+// prompt for a thread must be prefixed with the system-prompt text;
+// follow-up prompts on the same thread must not be.
+func TestHandleInlinesSystemPromptOnFirstPrompt(t *testing.T) {
+	fa := newFakeAgent()
+	// caps zero — no SystemPrompt advertised.
+	r, err := router.New(router.Config{
+		Agent: fa, StateDir: t.TempDir(), IdleTimeout: time.Minute,
+		SystemPrompt: "SP-HEADER",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	fs := newFakeSlack()
+	defer fs.close()
+
+	var firstText, secondText string
+	var got int32
+	gotCh := make(chan struct{}, 2)
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
+		n := atomic.AddInt32(&got, 1)
+		if len(blocks) > 0 && blocks[0].Text != nil {
+			if n == 1 {
+				firstText = blocks[0].Text.Text
+			} else {
+				secondText = blocks[0].Text.Text
+			}
+		}
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "ok"}}}},
+		})
+		gotCh <- struct{}{}
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hello"})
+	<-gotCh
+	waitForIdle(t, h)
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "2.0", Text: "again"})
+	<-gotCh
+	waitForIdle(t, h)
+
+	if !strings.HasPrefix(firstText, "SP-HEADER\n\n") || !strings.HasSuffix(firstText, "hello") {
+		t.Fatalf("first prompt not prefixed: %q", firstText)
+	}
+	if secondText != "again" {
+		t.Fatalf("second prompt mangled (must not re-prefix): %q", secondText)
+	}
+}

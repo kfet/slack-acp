@@ -38,19 +38,20 @@ type fakeAgent struct {
 	cancelCalls  int32
 	promptCalls  int32
 
-	lastNewSessSink    acpclient.SessionUpdateSink
-	lastResumeSink     acpclient.SessionUpdateSink
-	lastResumeSID      acp.SessionId
-	lastRebindSID      acp.SessionId
-	lastRebindSink     acpclient.SessionUpdateSink
-	lastDropSID        acp.SessionId
-	lastNewSessCwd     string
-	lastResumeCwd      string
-	lastListCwd        string
-	lastCancelSID      acp.SessionId
-	lastPromptBlocks   []acp.ContentBlock
-	lastPromptSID      acp.SessionId
-	nextSessionCounter int32
+	lastNewSessSink      acpclient.SessionUpdateSink
+	lastNewSessSysBlocks []acp.ContentBlock
+	lastResumeSink       acpclient.SessionUpdateSink
+	lastResumeSID        acp.SessionId
+	lastRebindSID        acp.SessionId
+	lastRebindSink       acpclient.SessionUpdateSink
+	lastDropSID          acp.SessionId
+	lastNewSessCwd       string
+	lastResumeCwd        string
+	lastListCwd          string
+	lastCancelSID        acp.SessionId
+	lastPromptBlocks     []acp.ContentBlock
+	lastPromptSID        acp.SessionId
+	nextSessionCounter   int32
 }
 
 func newFakeAgent() *fakeAgent {
@@ -59,11 +60,12 @@ func newFakeAgent() *fakeAgent {
 
 func (f *fakeAgent) Caps() acpclient.Caps { return f.caps }
 
-func (f *fakeAgent) NewSession(_ context.Context, cwd string, sink acpclient.SessionUpdateSink) (acp.SessionId, error) {
+func (f *fakeAgent) NewSession(_ context.Context, cwd string, sink acpclient.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	atomic.AddInt32(&f.newSessCalls, 1)
 	f.mu.Lock()
 	f.lastNewSessCwd = cwd
 	f.lastNewSessSink = sink
+	f.lastNewSessSysBlocks = sysBlocks
 	f.mu.Unlock()
 	if f.newSessErr != nil {
 		return "", f.newSessErr
@@ -641,5 +643,127 @@ func TestAgentGetter(t *testing.T) {
 	r := newRouter(t, fa)
 	if r.Agent() != fa {
 		t.Fatal("Agent() did not return injected agent")
+	}
+}
+
+// ---- System prompt injection ----
+
+func newRouterWithSP(t *testing.T, fa *fakeAgent, sp string) *Router {
+	t.Helper()
+	dir := t.TempDir()
+	r, err := New(Config{Agent: fa, StateDir: dir, IdleTimeout: time.Minute, SystemPrompt: sp})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+// TestSystemPrompt_CapPath: agent advertises session.systemPrompt → the
+// router must pass it as sysBlocks to NewSession and must NOT mark the
+// session for inline-prefix.
+func TestSystemPrompt_CapPath(t *testing.T) {
+	fa := newFakeAgent()
+	fa.caps = acpclient.Caps{SystemPrompt: true}
+	r := newRouterWithSP(t, fa, "DURABLE-CATALOG-XYZ")
+
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+	s, err := r.GetOrCreate(context.Background(), key, stubSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fa.lastNewSessSysBlocks) != 1 || fa.lastNewSessSysBlocks[0].Text == nil ||
+		fa.lastNewSessSysBlocks[0].Text.Text != "DURABLE-CATALOG-XYZ" {
+		t.Fatalf("sysBlocks not passed: %+v", fa.lastNewSessSysBlocks)
+	}
+	if got := r.TakePendingSystemPrompt(s); got != "" {
+		t.Fatalf("cap path must not arm inline: %q", got)
+	}
+}
+
+// TestSystemPrompt_FallbackPath: agent doesn't advertise the cap →
+// router must NOT pass sysBlocks and MUST arm pending-inline exactly
+// once.
+func TestSystemPrompt_FallbackPath(t *testing.T) {
+	fa := newFakeAgent()
+	// caps zero — no SystemPrompt.
+	r := newRouterWithSP(t, fa, "DURABLE-CATALOG-XYZ")
+
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+	s, err := r.GetOrCreate(context.Background(), key, stubSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.lastNewSessSysBlocks != nil {
+		t.Fatalf("fallback path must not pass sysBlocks: %+v", fa.lastNewSessSysBlocks)
+	}
+	got := r.TakePendingSystemPrompt(s)
+	if got != "DURABLE-CATALOG-XYZ" {
+		t.Fatalf("first take: %q", got)
+	}
+	// Second take must be empty (one-shot).
+	if again := r.TakePendingSystemPrompt(s); again != "" {
+		t.Fatalf("second take must be empty: %q", again)
+	}
+}
+
+// TestSystemPrompt_ResumeFallbackReArms: resumed sessions on a non-cap
+// agent must re-arm pending-inline (intra-session compaction may have
+// dropped the original prefix).
+func TestSystemPrompt_ResumeFallbackReArms(t *testing.T) {
+	fa := newFakeAgent()
+	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	fa.listResult = []acpclient.SessionInfo{{SessionId: "prev"}}
+	r := newRouterWithSP(t, fa, "SP-X")
+
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+	s, err := r.GetOrCreate(context.Background(), key, stubSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.newSessCalls != 0 {
+		t.Fatalf("expected resume only, got NewSession=%d", fa.newSessCalls)
+	}
+	if got := r.TakePendingSystemPrompt(s); got != "SP-X" {
+		t.Fatalf("resume must re-arm inline: %q", got)
+	}
+}
+
+// TestSystemPrompt_ResumeCapPathTrustsAgent: resumed sessions on a cap-
+// advertising agent must NOT re-arm inline; the agent restores system
+// prompt on session/load itself.
+func TestSystemPrompt_ResumeCapPathTrustsAgent(t *testing.T) {
+	fa := newFakeAgent()
+	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true, SystemPrompt: true}
+	fa.listResult = []acpclient.SessionInfo{{SessionId: "prev"}}
+	r := newRouterWithSP(t, fa, "SP-X")
+
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+	s, err := r.GetOrCreate(context.Background(), key, stubSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.TakePendingSystemPrompt(s); got != "" {
+		t.Fatalf("cap-path resume must not arm inline: %q", got)
+	}
+}
+
+// TestSystemPrompt_EmptyConfigNoOp: empty SystemPrompt → never passes
+// sysBlocks, never arms inline.
+func TestSystemPrompt_EmptyConfigNoOp(t *testing.T) {
+	fa := newFakeAgent()
+	fa.caps = acpclient.Caps{SystemPrompt: true}
+	r := newRouterWithSP(t, fa, "")
+
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+	s, err := r.GetOrCreate(context.Background(), key, stubSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.lastNewSessSysBlocks != nil {
+		t.Fatalf("empty config must not pass sysBlocks: %+v", fa.lastNewSessSysBlocks)
+	}
+	if got := r.TakePendingSystemPrompt(s); got != "" {
+		t.Fatalf("empty config must not arm inline: %q", got)
 	}
 }

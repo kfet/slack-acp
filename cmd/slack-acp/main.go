@@ -19,6 +19,7 @@ import (
 	"github.com/kfet/slack-acp/internal/policy"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
+	"github.com/kfet/slack-acp/internal/sysprompt"
 )
 
 var version = "dev"
@@ -100,8 +101,9 @@ func main() {
 	log.Printf("slack-acp %s: agent up (caps=%+v)", version, agent.Caps())
 
 	r, err := router.New(router.Config{
-		Agent:    agent,
-		StateDir: cfg.StateDir,
+		Agent:        agent,
+		StateDir:     cfg.StateDir,
+		SystemPrompt: sysprompt.Resolve(cfg.SystemPrompt, cfg.DisableSystemPrompt),
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)

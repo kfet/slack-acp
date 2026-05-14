@@ -42,6 +42,13 @@ type Session struct {
 	// Mu serialises access to a session's prompt pipeline. ACP allows one
 	// outstanding prompt per session at a time.
 	Mu sync.Mutex
+	// pendingSystemPromptInline, when true, causes the next handler-issued
+	// prompt to prepend the router's SystemPrompt text to the user message.
+	// Set when the router has a SystemPrompt but the agent doesn't advertise
+	// session.systemPrompt; cleared after the first inlined prompt.
+	// Also re-armed on resume (since the resumed session's context may
+	// no longer carry the prior inlined prefix after compaction).
+	pendingSystemPromptInline bool
 }
 
 // Agent is the subset of *acpclient.AgentProc the router depends on.
@@ -49,7 +56,7 @@ type Session struct {
 // *acpclient.AgentProc satisfies it.
 type Agent interface {
 	Caps() acpclient.Caps
-	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink) (acp.SessionId, error)
+	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
 	ListSessions(ctx context.Context, cwd string) ([]acpclient.SessionInfo, error)
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
@@ -60,10 +67,11 @@ type Agent interface {
 
 // Router owns the conv→session map and creates sessions on demand.
 type Router struct {
-	agent       Agent
-	stateDir    string
-	root        *os.Root // sandbox for per-thread cwd creation
-	idleTimeout time.Duration
+	agent        Agent
+	stateDir     string
+	root         *os.Root // sandbox for per-thread cwd creation
+	idleTimeout  time.Duration
+	systemPrompt string
 
 	mu    sync.Mutex
 	byKey map[ConvKey]*Session
@@ -74,6 +82,14 @@ type Config struct {
 	Agent       Agent
 	StateDir    string
 	IdleTimeout time.Duration // 0 → 30 minutes
+	// SystemPrompt is durable per-session instruction text (e.g. "your
+	// replies go to Slack, format using Slack mrkdwn"). If non-empty:
+	//   - When the agent advertises Caps().SystemPrompt, the router
+	//     passes it via session/new._meta["session.systemPrompt"].
+	//   - Otherwise the router prefixes it to the FIRST user prompt of
+	//     the session (and re-prefixes after a resume, since intra-
+	//     session compaction may have dropped the prior inlined copy).
+	SystemPrompt string
 }
 
 // New constructs a Router. The caller should call Run(ctx) to start GC.
@@ -95,11 +111,12 @@ func New(cfg Config) (*Router, error) {
 		cfg.IdleTimeout = 30 * time.Minute
 	}
 	return &Router{
-		agent:       cfg.Agent,
-		stateDir:    cfg.StateDir,
-		root:        root,
-		idleTimeout: cfg.IdleTimeout,
-		byKey:       make(map[ConvKey]*Session),
+		agent:        cfg.Agent,
+		stateDir:     cfg.StateDir,
+		root:         root,
+		idleTimeout:  cfg.IdleTimeout,
+		systemPrompt: cfg.SystemPrompt,
+		byKey:        make(map[ConvKey]*Session),
 	}, nil
 }
 
@@ -214,15 +231,31 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink acpclient.Se
 	// .fir/sessions/). Best-effort: any failure falls through to a
 	// fresh session below.
 	sid, resumed := r.tryResume(ctx, cwd, sink)
+	caps := r.agent.Caps()
+	pendingInline := false
 	if !resumed {
+		var sysBlocks []acp.ContentBlock
+		if r.systemPrompt != "" {
+			if caps.SystemPrompt {
+				sysBlocks = []acp.ContentBlock{{Text: &acp.ContentBlockText{Text: r.systemPrompt}}}
+			} else {
+				pendingInline = true
+			}
+		}
 		var nerr error
-		sid, nerr = r.agent.NewSession(ctx, cwd, sink)
+		sid, nerr = r.agent.NewSession(ctx, cwd, sink, sysBlocks)
 		if nerr != nil {
 			// Stable cwd: leave it on disk for the next attempt.
 			return nil, fmt.Errorf("new acp session: %w", nerr)
 		}
+	} else if r.systemPrompt != "" && !caps.SystemPrompt {
+		// Resumed via the unstable list/resume path on a non-cap agent:
+		// intra-session compaction may have lost the original inlined
+		// prefix, so re-arm it on the next prompt. Cap-path agents are
+		// trusted to restore system prompt on session/load themselves.
+		pendingInline = true
 	}
-	s := &Session{Key: key, SessionID: sid, Cwd: cwd, lastUsed: time.Now()}
+	s := &Session{Key: key, SessionID: sid, Cwd: cwd, lastUsed: time.Now(), pendingSystemPromptInline: pendingInline}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -341,3 +374,18 @@ func (r *Router) Len() int {
 // Agent returns the underlying agent. Handlers use this to send
 // prompts directly while holding Session.Mu.
 func (r *Router) Agent() Agent { return r.agent }
+
+// TakePendingSystemPrompt returns the system-prompt text to prepend to
+// the next user prompt for this session, or "" if none is pending. Must
+// be called with Session.Mu held. Clears the pending flag.
+//
+// Used by the inline-fallback path when the agent doesn't advertise
+// session.systemPrompt: the router's SystemPrompt is prefixed to the
+// first user message of the session (and re-prefixed after a resume).
+func (r *Router) TakePendingSystemPrompt(s *Session) string {
+	if !s.pendingSystemPromptInline {
+		return ""
+	}
+	s.pendingSystemPromptInline = false
+	return r.systemPrompt
+}

@@ -24,16 +24,17 @@ type fakeAgent struct {
 	conn *acp.Connection
 
 	// Behaviour knobs.
-	initRaw     json.RawMessage // raw initialize response body
-	initErr     *acp.RequestError
-	newSessResp acp.NewSessionResponse
-	newSessErr  *acp.RequestError
-	listResp    json.RawMessage
-	listErr     *acp.RequestError
-	resumeErr   *acp.RequestError
-	promptStop  acp.StopReason
-	promptErr   *acp.RequestError
-	updates     []acp.SessionNotification
+	initRaw        json.RawMessage // raw initialize response body
+	initErr        *acp.RequestError
+	newSessResp    acp.NewSessionResponse
+	newSessErr     *acp.RequestError
+	lastNewSessRaw json.RawMessage
+	listResp       json.RawMessage
+	listErr        *acp.RequestError
+	resumeErr      *acp.RequestError
+	promptStop     acp.StopReason
+	promptErr      *acp.RequestError
+	updates        []acp.SessionNotification
 
 	mu             sync.Mutex
 	gotPromptCount int
@@ -52,6 +53,9 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 		}
 		return acp.InitializeResponse{ProtocolVersion: acp.ProtocolVersionNumber}, nil
 	case acp.AgentMethodSessionNew:
+		f.mu.Lock()
+		f.lastNewSessRaw = append([]byte(nil), params...)
+		f.mu.Unlock()
 		if f.newSessErr != nil {
 			return nil, f.newSessErr
 		}
@@ -160,6 +164,7 @@ func TestParseCaps(t *testing.T) {
 		"listSessions":    {raw: `{"agentCapabilities":{"sessionCapabilities":{"list":{}}}}`, want: Caps{ListSessions: true}},
 		"resumeSession":   {raw: `{"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}`, want: Caps{ResumeSession: true}},
 		"listAndResume":   {raw: `{"agentCapabilities":{"sessionCapabilities":{"list":{},"resume":{}}}}`, want: Caps{ListSessions: true, ResumeSession: true}},
+		"systemPrompt":    {raw: `{"agentCapabilities":{"_meta":{"session.systemPrompt":{}}}}`, want: Caps{SystemPrompt: true}},
 		"malformed":       {raw: `{"agentCapabilities":`, want: Caps{}},
 	}
 	for name, c := range cases {
@@ -288,7 +293,7 @@ func TestNewSession(t *testing.T) {
 	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid-1"}}
 	a := startFakeAgent(t, fa, Config{})
 	sink := &capturingSink{}
-	sid, err := a.NewSession(t.Context(), t.TempDir(), sink)
+	sid, err := a.NewSession(t.Context(), t.TempDir(), sink, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,8 +308,43 @@ func TestNewSession(t *testing.T) {
 func TestNewSessionError(t *testing.T) {
 	fa := &fakeAgent{newSessErr: acp.NewInternalError(map[string]any{"x": 1})}
 	a := startFakeAgent(t, fa, Config{})
-	if _, err := a.NewSession(t.Context(), t.TempDir(), &capturingSink{}); err == nil {
+	if _, err := a.NewSession(t.Context(), t.TempDir(), &capturingSink{}, nil); err == nil {
 		t.Fatal("want error")
+	}
+}
+
+// TestNewSessionSystemPromptMeta verifies that systemPromptBlocks are
+// shipped in session/new._meta["session.systemPrompt"].blocks. nil
+// must not produce a _meta key at all (so agents that don't advertise
+// the cap see a clean wire).
+func TestNewSessionSystemPromptMeta(t *testing.T) {
+	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid"}}
+	a := startFakeAgent(t, fa, Config{})
+
+	// No blocks → no _meta.
+	if _, err := a.NewSession(t.Context(), t.TempDir(), &capturingSink{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fa.mu.Lock()
+	rawNo := string(fa.lastNewSessRaw)
+	fa.mu.Unlock()
+	if strings.Contains(rawNo, "session.systemPrompt") {
+		t.Fatalf("nil sysBlocks must not emit _meta key: %s", rawNo)
+	}
+
+	// With blocks → exactly one text block under _meta.
+	blocks := []acp.ContentBlock{{Text: &acp.ContentBlockText{Text: "DURABLE-SP"}}}
+	if _, err := a.NewSession(t.Context(), t.TempDir(), &capturingSink{}, blocks); err != nil {
+		t.Fatal(err)
+	}
+	fa.mu.Lock()
+	rawYes := string(fa.lastNewSessRaw)
+	fa.mu.Unlock()
+	if !strings.Contains(rawYes, `"session.systemPrompt"`) {
+		t.Fatalf("missing _meta key: %s", rawYes)
+	}
+	if !strings.Contains(rawYes, "DURABLE-SP") {
+		t.Fatalf("missing block text in wire: %s", rawYes)
 	}
 }
 
@@ -358,7 +398,7 @@ func TestPromptAndStreamUpdates(t *testing.T) {
 	}
 	a := startFakeAgent(t, fa, Config{})
 	sink := &capturingSink{gotCh: gotCh}
-	sid, err := a.NewSession(t.Context(), t.TempDir(), sink)
+	sid, err := a.NewSession(t.Context(), t.TempDir(), sink, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +422,7 @@ func TestPromptError(t *testing.T) {
 		promptErr:   acp.NewInternalError(nil),
 	}
 	a := startFakeAgent(t, fa, Config{})
-	sid, _ := a.NewSession(t.Context(), t.TempDir(), &capturingSink{})
+	sid, _ := a.NewSession(t.Context(), t.TempDir(), &capturingSink{}, nil)
 	if _, err := a.Prompt(t.Context(), sid, nil); err == nil {
 		t.Fatal("want err")
 	}
@@ -391,7 +431,7 @@ func TestPromptError(t *testing.T) {
 func TestCancel(t *testing.T) {
 	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid-4"}}
 	a := startFakeAgent(t, fa, Config{})
-	sid, _ := a.NewSession(t.Context(), t.TempDir(), &capturingSink{})
+	sid, _ := a.NewSession(t.Context(), t.TempDir(), &capturingSink{}, nil)
 	if err := a.Cancel(t.Context(), sid); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +449,7 @@ func TestDropAndRebindSink(t *testing.T) {
 	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid-5"}}
 	a := startFakeAgent(t, fa, Config{})
 	first := &capturingSink{}
-	sid, _ := a.NewSession(t.Context(), t.TempDir(), first)
+	sid, _ := a.NewSession(t.Context(), t.TempDir(), first, nil)
 	if a.sinkFor(sid) != first {
 		t.Fatal("first sink missing")
 	}
@@ -430,7 +470,7 @@ func TestDispatchSessionUpdate(t *testing.T) {
 	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid"}}
 	a := startFakeAgent(t, fa, Config{})
 	sink := &capturingSink{gotCh: make(chan struct{})}
-	if _, err := a.NewSession(t.Context(), t.TempDir(), sink); err != nil {
+	if _, err := a.NewSession(t.Context(), t.TempDir(), sink, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Have the fake agent push a session/update notification.
@@ -459,7 +499,7 @@ func TestDispatchSessionUpdateSinkError(t *testing.T) {
 	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid"}}
 	a := startFakeAgent(t, fa, Config{})
 	sink := &capturingSink{gotErr: errors.New("sink boom"), gotCh: make(chan struct{})}
-	_, _ = a.NewSession(t.Context(), t.TempDir(), sink)
+	_, _ = a.NewSession(t.Context(), t.TempDir(), sink, nil)
 	if err := fa.conn.SendNotification(t.Context(), acp.ClientMethodSessionUpdate, acp.SessionNotification{
 		SessionId: "sid",
 		Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "boom"}}}},

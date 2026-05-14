@@ -46,6 +46,11 @@ type Caps struct {
 	// (unstable RFD).
 	ResumeSession   bool
 	EmbeddedContext bool
+	// SystemPrompt reflects agentCapabilities._meta["session.systemPrompt"]
+	// (unstable RFD: acp-spec/rfd-system-prompt.md). When advertised, the
+	// client may pass a durable system prompt as session/new._meta blocks
+	// instead of inlining it on every user prompt.
+	SystemPrompt bool
 }
 
 // SessionInfo is one entry from a session/list response.
@@ -168,14 +173,17 @@ func parseCaps(raw json.RawMessage) Caps {
 			PromptCapabilities struct {
 				EmbeddedContext bool `json:"embeddedContext"`
 			} `json:"promptCapabilities"`
+			Meta map[string]json.RawMessage `json:"_meta"`
 		} `json:"agentCapabilities"`
 	}
 	_ = json.Unmarshal(raw, &env)
+	_, sysPrompt := env.AgentCapabilities.Meta["session.systemPrompt"]
 	return Caps{
 		LoadSession:     env.AgentCapabilities.LoadSession,
 		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
 		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
 		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
+		SystemPrompt:    sysPrompt,
 	}
 }
 
@@ -183,11 +191,25 @@ func parseCaps(raw json.RawMessage) Caps {
 func (a *AgentProc) Caps() Caps { return a.caps }
 
 // NewSession creates a new ACP session and wires the given sink.
-func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpdateSink) (acp.SessionId, error) {
-	resp, err := acp.SendRequest[acp.NewSessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, acp.NewSessionRequest{
+//
+// systemPromptBlocks, when non-nil, is sent in the request's _meta under
+// "session.systemPrompt".blocks (RFD: acp-spec/rfd-system-prompt.md).
+// Callers should only pass it when Caps().SystemPrompt is true; agents
+// that haven't advertised the cap will simply ignore the unknown _meta
+// key, but skipping it keeps the wire clean.
+func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error) {
+	req := acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
-	})
+	}
+	if systemPromptBlocks != nil {
+		req.Meta = map[string]any{
+			"session.systemPrompt": map[string]any{
+				"blocks": systemPromptBlocks,
+			},
+		}
+	}
+	resp, err := acp.SendRequest[acp.NewSessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, req)
 	if err != nil {
 		return "", err
 	}

@@ -9,6 +9,15 @@ All notable changes to this project will be documented in this file.
   `make all` (vet, race tests, 100% coverage gate, 5 cross-builds,
   native build, license check) on push to `main` and on PRs.
 - README badges: CI, pkg.go.dev, Go report card, license.
+- Durable system-prompt injection telling the agent that replies go to
+  Slack and must use Slack mrkdwn (single-asterisk bold, `<url|label>`
+  links, no Markdown headings/tables/bullets, etc.). Delivered via
+  `session/new._meta["session.systemPrompt"]` when the agent advertises
+  the cap, or prepended once to the first user prompt of each session
+  on the fallback path. Mirrors sibling project `poe-acp`. New
+  `internal/sysprompt` package owns the prompt text; new
+  `system_prompt` (extra operator text) and `disable_system_prompt`
+  config keys.
 
 ### Changed
 - Skills moved from `.fir/skills/` to top-level `skills/`. `.fir/` is
