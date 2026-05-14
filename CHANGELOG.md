@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `docs/config.example.json` — full key reference; README points at it.
+- `slack-acp --print-paths` resolves and prints the config file, state
+  dir, agent command, and policy without starting the bot. Handy for
+  verifying what a unit file or env will actually pick up.
+- Friendly startup diagnostics for Slack tokens: missing tokens print
+  a multi-line error pointing operators at the right api.slack.com
+  page; a swapped pair (`xapp-` in `bot_token` and vice versa) is
+  detected before any network round-trip. `auth.test` rejections at
+  Socket-Mode connect are wrapped with a hint to re-check the bot
+  token. Logic lives in `config.ValidateTokens` (tested).
 - Release pipeline: `.goreleaser.yaml` cross-builds 5 targets and
   publishes a GitHub release on every `v*` tag push via
   `.github/workflows/release.yml`, and regenerates

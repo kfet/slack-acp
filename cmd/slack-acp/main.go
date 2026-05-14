@@ -30,6 +30,7 @@ func main() {
 	policyName := flag.String("policy", "", "permission policy: allow-all|read-only|deny-all (default allow-all)")
 	stateDir := flag.String("state-dir", "", "root directory for per-thread state (default: $XDG_STATE_HOME/slack-acp)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir, and agent command then exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -68,11 +69,23 @@ func main() {
 		cfg.StateDir = router.DefaultStateDir()
 	}
 
-	// Validate required tokens before doing any disk or network work,
-	// so an operator with missing tokens fails fast rather than seeing
-	// "state dir created" before the real error.
-	if cfg.BotToken == "" || cfg.AppToken == "" {
-		log.Fatalf("slack-acp: bot_token and app_token required (set in config or via SLACK_BOT_TOKEN / SLACK_APP_TOKEN env)")
+	if *printPaths {
+		cp := *configPath
+		if cp == "" {
+			cp = "(none; using env + defaults)"
+		}
+		fmt.Printf("config:     %s\n", cp)
+		fmt.Printf("state-dir:  %s\n", cfg.StateDir)
+		fmt.Printf("agent-cmd:  %s\n", strings.Join(cfg.AgentCmd, " "))
+		fmt.Printf("policy:     %s\n", policyOrDefault(cfg.Policy))
+		return
+	}
+
+	// Validate tokens before any disk/network work so operators see a
+	// targeted error (with hints) rather than an opaque Slack auth
+	// failure later on.
+	if err := config.ValidateTokens(cfg.BotToken, cfg.AppToken); err != nil {
+		log.Fatalf("slack-acp: %v", err)
 	}
 
 	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
@@ -129,8 +142,18 @@ func main() {
 
 	log.Printf("slack-acp: connecting to Slack…")
 	if err := sc.Run(ctx); err != nil && ctx.Err() == nil {
+		if strings.Contains(err.Error(), "invalid_auth") || strings.Contains(err.Error(), "not_authed") || strings.Contains(err.Error(), "account_inactive") {
+			log.Fatalf("slack: %v\n  → Slack rejected the bot token. Re-check SLACK_BOT_TOKEN / bot_token (xoxb-…) at api.slack.com/apps → your app → Install App.", err)
+		}
 		log.Fatalf("slack run: %v", err)
 	}
+}
+
+func policyOrDefault(p string) string {
+	if p == "" {
+		return "allow-all (default)"
+	}
+	return p
 }
 
 func toSet(ss []string) map[string]struct{} {

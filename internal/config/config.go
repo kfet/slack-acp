@@ -74,3 +74,40 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// ValidateTokens returns a multi-line, operator-friendly error when bot
+// or app tokens are missing or have the wrong shape. Slack bot tokens
+// start with "xoxb-" (issued on Install App → Install to Workspace);
+// app-level tokens start with "xapp-" (Basic Information → App-Level
+// Tokens → Generate with the connections:write scope). The shape
+// check is cheap and lets operators catch a swapped-pair mistake
+// before a real network round-trip.
+func ValidateTokens(botToken, appToken string) error {
+	switch {
+	case botToken == "" && appToken == "":
+		return fmt.Errorf("missing Slack tokens.\n" +
+			"  • Bot token (xoxb-…): api.slack.com/apps → your app → Install App → Install to Workspace.\n" +
+			"  • App-level token (xapp-…): same app → Basic Information → App-Level Tokens → Generate with scope connections:write.\n" +
+			"  Set them in config (bot_token / app_token) or via env (SLACK_BOT_TOKEN / SLACK_APP_TOKEN).")
+	case botToken == "":
+		return fmt.Errorf("missing bot token (xoxb-…). Install App → Install to Workspace; set bot_token or SLACK_BOT_TOKEN")
+	case appToken == "":
+		return fmt.Errorf("missing app-level token (xapp-…). Basic Information → App-Level Tokens → Generate with connections:write; set app_token or SLACK_APP_TOKEN")
+	case !strings.HasPrefix(botToken, "xoxb-"):
+		return fmt.Errorf("bot token must start with %q (got %q…); make sure you didn't swap it with the xapp- app-level token", "xoxb-", truncatePrefix(botToken))
+	case !strings.HasPrefix(appToken, "xapp-"):
+		return fmt.Errorf("app token must start with %q (got %q…); make sure you didn't swap it with the xoxb- bot token", "xapp-", truncatePrefix(appToken))
+	}
+	return nil
+}
+
+// truncatePrefix returns the first few non-empty chars of a token so
+// error messages can hint at what was actually supplied without
+// leaking the whole secret to logs.
+func truncatePrefix(tok string) string {
+	const n = 6
+	if len(tok) <= n {
+		return tok
+	}
+	return tok[:n]
+}

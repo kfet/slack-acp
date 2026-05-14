@@ -84,6 +84,15 @@ Or with a config file:
 slack-acp --config /etc/slack-acp.json
 ```
 
+See [`docs/config.example.json`](docs/config.example.json) for a full
+key reference. All keys are optional — tokens may be supplied via env
+(`SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN`) and the rest fall back to
+built-in defaults.
+
+`slack-acp --print-paths` resolves and prints the config file, state
+directory, agent command, and policy without starting the bot — handy
+for verifying what a unit file or env will actually use.
+
 ## Repository layout
 
 ```
