@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,34 @@ func TestValidateAllPolicies(t *testing.T) {
 		if err := c.Validate(); err != nil {
 			t.Fatalf("policy %q: %v", p, err)
 		}
+	}
+}
+
+func TestValidateTokens(t *testing.T) {
+	cases := []struct {
+		name, bot, app string
+		wantErr        string // substring; empty = wantOK
+	}{
+		{"ok", "xoxb-1-abc", "xapp-1-abc", ""},
+		{"both missing", "", "", "missing Slack tokens"},
+		{"bot missing", "", "xapp-1", "missing bot token"},
+		{"app missing", "xoxb-1", "", "missing app-level token"},
+		{"bot wrong shape", "xapp-swapped", "xapp-1", "bot token must start"},
+		{"app wrong shape", "xoxb-1", "xoxb-swapped", "app token must start"},
+		{"bot short hint", "xx", "xapp-1", "\"xx\""}, // truncatePrefix short branch
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateTokens(tc.bot, tc.app)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want ok, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err=%v want substring %q", err, tc.wantErr)
+			}
+		})
 	}
 }
