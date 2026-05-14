@@ -10,7 +10,7 @@ Upgrade `slack-acp` on **one** host (local or remote) and restart the
 supervisor. Use after a release publishes or when a specific host is
 stale.
 
-> Releasing lives in `.fir/skills/release/SKILL.md`. For multi-host
+> Releasing lives in `skills/release/SKILL.md`. For multi-host
 > rollouts, repeat this skill per host.
 
 ## Inputs

@@ -32,7 +32,7 @@ The harness is **all scripts** — no Go test plumbing, no build tags,
 no `test/e2e/` directory:
 
 ```
-.fir/skills/e2e/
+skills/e2e/
   SKILL.md                    # this file (cases described inline below)
   scripts/
     ws.py                     # ~280 LOC RFC 6455 server, stdlib-only
@@ -55,7 +55,7 @@ the case to this file instead. The skill body is the test plan.
 - macOS `python3` (ships with the OS — `python3.9`).
 - `internal/slackproto` honouring `SLACK_API_BASE` env var (already
   wired; see [`slackproto.go`](../../../internal/slackproto/slackproto.go)).
-- The fakes at `.fir/skills/e2e/scripts/{ws,fakeslack,fakeagent}.py`
+- The fakes at `skills/e2e/scripts/{ws,fakeslack,fakeagent}.py`
   are stdlib-only; nothing to install.
 - `tmux-driver` skill loaded — long-lived processes (`fakeslack`,
   `slack-acp`) run in tmux windows so each agent step is a quick
@@ -103,7 +103,7 @@ go build -o bin/slack-acp ./cmd/slack-acp
 ```sh
 source "$SKILL_DIR/scripts/auto-helpers.sh"   # SKILL_DIR = tmux-driver skill dir
 tm-new slack-acp-e2e fakeslack
-tm-send slack-acp-e2e "cd $(pwd) && exec .fir/skills/e2e/scripts/fakeslack.py --print-urls"
+tm-send slack-acp-e2e "cd $(pwd) && exec skills/e2e/scripts/fakeslack.py --print-urls"
 tm-wait slack-acp-e2e '^http=' 5
 URLS=$(tm-capture slack-acp-e2e 50)
 HTTP=$(printf '%s\n' "$URLS" | grep -m1 ^http= | cut -d= -f2-)
@@ -119,7 +119,7 @@ HTTP=$(cat /tmp/slack-acp-e2e.http)
 STATE=$(mktemp -d) ; echo "$STATE" > /tmp/slack-acp-e2e.state
 STATUS=$(mktemp)   ; echo "$STATUS" > /tmp/slack-acp-e2e.status
 tm-win slack-acp-e2e bot
-tm-send slack-acp-e2e "cd $(pwd) && SLACK_BOT_TOKEN=xoxb-test SLACK_APP_TOKEN=xapp-test SLACK_API_BASE='$HTTP' exec ./bin/slack-acp --agent-cmd '$(pwd)/.fir/skills/e2e/scripts/fakeagent.py --script reply-once --status-file $STATUS' --state-dir '$STATE'"
+tm-send slack-acp-e2e "cd $(pwd) && SLACK_BOT_TOKEN=xoxb-test SLACK_APP_TOKEN=xapp-test SLACK_API_BASE='$HTTP' exec ./bin/slack-acp --agent-cmd '$(pwd)/skills/e2e/scripts/fakeagent.py --script reply-once --status-file $STATUS' --state-dir '$STATE'"
 ```
 
 ### 4. Wait for the WS handshake (deterministic)
@@ -198,10 +198,10 @@ in `<@…>` mention strings.
 ## fakeagent scripts
 
 ```sh
-.fir/skills/e2e/scripts/fakeagent.py --script reply-once
-.fir/skills/e2e/scripts/fakeagent.py --script slow --delay-ms 500
-.fir/skills/e2e/scripts/fakeagent.py --script request-permission
-.fir/skills/e2e/scripts/fakeagent.py --script panic-mid-prompt
+skills/e2e/scripts/fakeagent.py --script reply-once
+skills/e2e/scripts/fakeagent.py --script slow --delay-ms 500
+skills/e2e/scripts/fakeagent.py --script request-permission
+skills/e2e/scripts/fakeagent.py --script panic-mid-prompt
 ```
 
 | script | behaviour |
@@ -339,7 +339,7 @@ INODE_BEFORE=$(stat -f %i "$THREAD_DIR")
 tm-killwin slack-acp-e2e bot
 STATUS2=$(mktemp)
 tm-win slack-acp-e2e bot
-tm-send slack-acp-e2e "cd $(pwd) && SLACK_BOT_TOKEN=xoxb-test SLACK_APP_TOKEN=xapp-test SLACK_API_BASE='$HTTP' exec ./bin/slack-acp --agent-cmd '$(pwd)/.fir/skills/e2e/scripts/fakeagent.py --script reply-once --status-file $STATUS2' --state-dir '$STATE'"
+tm-send slack-acp-e2e "cd $(pwd) && SLACK_BOT_TOKEN=xoxb-test SLACK_APP_TOKEN=xapp-test SLACK_API_BASE='$HTTP' exec ./bin/slack-acp --agent-cmd '$(pwd)/skills/e2e/scripts/fakeagent.py --script reply-once --status-file $STATUS2' --state-dir '$STATE'"
 for i in $(seq 1 50); do curl -s "${BASE}/control/connected" | grep -q true && break; sleep 0.1; done
 
 # Step C: follow-up in same thread reuses same dir (inode unchanged).
