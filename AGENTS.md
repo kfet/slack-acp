@@ -84,6 +84,9 @@ The bot spawns the agent as a long-lived child and talks ACP over its stdio:
 - **`thread_ts` vs `ts`** — for top-level messages Slack omits `thread_ts`; we synthesise it from `ts` so subsequent thread replies map to the same session.
 - **Mentions inside text** — strip `<@U…>` references (including mid-text) before passing to the agent.
 - **Edits & subtype messages** — ignore `SubType != ""` to avoid acting on edits, deletes, channel-join events, etc.
+- **App install / scopes** — Slack apps are configured from [`docs/slack-app-manifest.json`](docs/slack-app-manifest.json). When adding a new Slack API call, update the manifest's `oauth_config.scopes.bot` list (and any new `bot_events`) in the same change — operators have to reinstall the app for added scopes to take effect, so undocumented scope drift surfaces as `missing_scope` errors in production.
+- **DM compose box** — requires `features.app_home.messages_tab_enabled: true` in the manifest; without it, users land on a DM with no input field. Don't remove it.
+- **No native typing indicator** — bots can't trigger the "user is typing" dots over the public API. The streaming placeholder message *is* the indicator; `assistant.threads.setStatus` exists but is gated behind the Agents & AI Apps feature and only works in assistant threads.
 
 ## Changelog
 
