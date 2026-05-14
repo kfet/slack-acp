@@ -32,13 +32,16 @@ agent thinks. Built on the same patterns as [poe-acp].
 
 ## Setup
 
-1. Create a Slack app at <https://api.slack.com/apps>.
-2. Enable **Socket Mode** and generate an app-level token (`xapp-…`) with
-   `connections:write`.
-3. Add bot scopes: `app_mentions:read`, `chat:write`, `im:history`,
-   `im:read`, `im:write`, `users:read`. Install to workspace; grab the
-   bot token (`xoxb-…`).
-4. Subscribe to events: `app_mention`, `message.im`.
+The fastest path is the bundled app manifest:
+
+1. Go to <https://api.slack.com/apps> → **Create New App** → **From a manifest**.
+2. Pick your workspace, paste [`docs/slack-app-manifest.json`](docs/slack-app-manifest.json), tweak the name if you want, **Create**.
+3. **Basic Information** → **App-Level Tokens** → **Generate** a token with scope
+   `connections:write`. Save the `xapp-…` token.
+4. **Install App** → **Install to Workspace**. Save the `xoxb-…` bot token.
+
+The manifest already enables Socket Mode, the Messages tab (so DMs have a
+compose box), bot scopes, and the `app_mention` + `message.im` events.
 
 ## Run
 
@@ -75,7 +78,7 @@ internal/handler/     Slack event → ACP prompt + streaming sink
 internal/policy/      allow-all / read-only / deny-all permission gates
 internal/router/      (channel,thread_ts) → ACP session map + GC
 internal/slackproto/  Socket Mode client + throttled message streamer
-docs/                 design notes
+docs/                 design notes + Slack app manifest template
 ```
 
 See [docs/design.md](docs/design.md) for goals, non-goals, and the

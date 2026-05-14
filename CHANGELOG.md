@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `docs/slack-app-manifest.json`: Slack app manifest template covering
+  Socket Mode, bot scopes, event subscriptions, and the Messages tab
+  toggle so DMs have a compose box on first install. README points at it
+  as the recommended setup path.
 - `SLACK_API_BASE` environment variable in `internal/slackproto`
   redirects slack-go's Web API base URL. No-op when unset; used by
   the e2e harness to point the bot at a local mock Slack server.
