@@ -1,5 +1,10 @@
 # slack-acp
 
+[![CI](https://github.com/kfet/slack-acp/actions/workflows/ci.yml/badge.svg)](https://github.com/kfet/slack-acp/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/kfet/slack-acp.svg)](https://pkg.go.dev/github.com/kfet/slack-acp)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kfet/slack-acp)](https://goreportcard.com/report/github.com/kfet/slack-acp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Slack bot that relays each Slack thread to a spawned ACP-compatible agent
 (`fir --mode acp`, claude-code, gemini-cli, etc.) over stdio.
 
@@ -8,9 +13,11 @@ URL needed).
 
 ## Status
 
-v0 — DM and `@mention` work; threaded follow-ups reuse the same ACP session;
-agent output streams back into a single Slack message that updates as the
-agent thinks. Built on the same patterns as [poe-acp].
+Early — `v0.1.x`. DM and `@mention` work; threaded follow-ups reuse the same
+ACP session; agent output streams back into a single Slack message that
+updates as the agent thinks. Tested primarily against `fir --mode acp`;
+other ACP agents (claude-code, gemini-cli) should work but have had less
+shakeout. Built on the same patterns as [poe-acp].
 
 ## How it works
 

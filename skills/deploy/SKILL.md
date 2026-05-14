@@ -191,7 +191,7 @@ Look for: Socket Mode connect, per-thread cwd creation, ACP
 
 ## Upgrading
 
-See `update` skill (`.fir/skills/update/SKILL.md`). Quick reference:
+See `update` skill (`skills/update/SKILL.md`). Quick reference:
 
 - **Direct deploy:** `make deploy HOST=<host> && ssh <host> 'systemctl --user restart slack-acp'`.
 - **Local launchd:** `make install && launchctl kickstart -k gui/$UID/dev.<you>.slack-acp`.

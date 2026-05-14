@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- GitHub Actions CI workflow (`.github/workflows/ci.yml`) running
+  `make all` (vet, race tests, 100% coverage gate, 5 cross-builds,
+  native build, license check) on push to `main` and on PRs.
+- README badges: CI, pkg.go.dev, Go report card, license.
+
+### Changed
+- Skills moved from `.fir/skills/` to top-level `skills/`. `.fir/` is
+  now gitignored; a local `.fir/skills` symlink to `../skills` keeps
+  agent-harness discovery working without shipping `.fir/` in the
+  public tree. Internal doc references updated from `.fir/skills/…`
+  to `skills/…`.
+- README "Status" line clarified: `v0.1.x`, primary agent is
+  `fir --mode acp`; other ACP agents are less shaken out.
+
+### Added
 - `docs/slack-app-manifest.json`: Slack app manifest template covering
   Socket Mode, bot scopes, event subscriptions, and the Messages tab
   toggle so DMs have a compose box on first install. README points at it
@@ -13,9 +28,9 @@ All notable changes to this project will be documented in this file.
   redirects slack-go's Web API base URL. No-op when unset; used by
   the e2e harness to point the bot at a local mock Slack server.
 - `e2e` skill harness: stdlib-only Python mocks for both wire
-  surfaces — `.fir/skills/e2e/scripts/ws.py` (RFC 6455 server) and
-  `.fir/skills/e2e/scripts/fakeslack.py` (Web API + Socket Mode).
-  Tests are described as inline shell recipes in `.fir/skills/e2e/SKILL.md`,
+  surfaces — `skills/e2e/scripts/ws.py` (RFC 6455 server) and
+  `skills/e2e/scripts/fakeslack.py` (Web API + Socket Mode).
+  Tests are described as inline shell recipes in `skills/e2e/SKILL.md`,
   driven via tmux windows so each step is non-blocking. Eleven
   cases covering DM round-trip, app_mention, threaded follow-up,
   cancellation, state-dir persistence, policy, bot-loop guards,
