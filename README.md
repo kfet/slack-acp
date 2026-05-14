@@ -39,6 +39,16 @@ shakeout. Built on the same patterns as [poe-acp].
 
 ## Setup
 
+### Install
+
+```bash
+brew install kfet/fir/slack-acp
+```
+
+Or build from source: `go install github.com/kfet/slack-acp/cmd/slack-acp@latest`.
+
+### Slack app
+
 The fastest path is the bundled app manifest:
 
 1. Go to <https://api.slack.com/apps> → **Create New App** → **From a manifest**.

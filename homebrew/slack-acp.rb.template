@@ -1,0 +1,30 @@
+# This is a template for the kfet/homebrew-fir tap.
+#
+# Formula/slack-acp.rb in the tap is regenerated automatically by
+# GoReleaser on every kfet/slack-acp tag push (see the brews: block
+# in .goreleaser.yaml). This file is kept in the main repo purely as a
+# reference — it is NOT the file Homebrew reads, and edits here do not
+# affect users.
+#
+# Users install with:
+#   brew install kfet/fir/slack-acp
+#   (or: brew tap kfet/fir && brew install slack-acp)
+
+class SlackAcp < Formula
+  desc "Slack bot that relays each thread to a spawned ACP-speaking agent"
+  homepage "https://github.com/kfet/slack-acp"
+  license "MIT"
+
+  # GoReleaser replaces url, sha256, and version on each release.
+  url "https://github.com/kfet/slack-acp/releases/download/v0.1.0/slack-acp-#{OS}-#{ARCH}"
+  version "0.1.0"
+  sha256 "PLACEHOLDER"
+
+  def install
+    bin.install Dir["slack-acp-*"].first => "slack-acp"
+  end
+
+  test do
+    system bin/"slack-acp", "--version"
+  end
+end

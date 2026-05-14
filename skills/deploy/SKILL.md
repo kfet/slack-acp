@@ -44,8 +44,16 @@ Done in the Slack admin UI at https://api.slack.com/apps:
 
 ### 1. Ship the binary
 
-`make deploy` cross-builds, detects remote arch, scp's the right binary
-to `~/.local/bin/slack-acp`, and runs `--version`:
+Pick one:
+
+**Homebrew (recommended, once the host has brew):**
+
+```bash
+ssh <host> 'brew install kfet/fir/slack-acp'
+```
+
+**Cross-built scp (`make deploy`):** detects remote arch, scp's the
+right binary to `~/.local/bin/slack-acp`, and runs `--version`:
 
 ```bash
 make deploy HOST=<host>
