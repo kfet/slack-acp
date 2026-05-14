@@ -147,8 +147,13 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	defer sess.Mu.Unlock()
 	h.cfg.Router.Touch(sess)
 
+	promptText := text
+	if prefix := h.cfg.Router.TakePendingSystemPrompt(sess); prefix != "" {
+		promptText = prefix + "\n\n" + text
+	}
+
 	stop, err := h.cfg.Router.Agent().Prompt(ctx, sess.SessionID, []acp.ContentBlock{
-		{Text: &acp.ContentBlockText{Text: text}},
+		{Text: &acp.ContentBlockText{Text: promptText}},
 	})
 	wcancel()
 	if err != nil {

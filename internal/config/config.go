@@ -34,6 +34,17 @@ type Config struct {
 
 	// SessionIdleTimeoutSeconds: GC sessions idle this long. 0 = default 30m.
 	SessionIdleTimeoutSeconds int `json:"session_idle_timeout_seconds,omitempty"`
+
+	// SystemPrompt, if non-empty, is appended to the built-in Slack-
+	// formatting instructions and injected into every ACP session as a
+	// durable system prompt. Use for operator-specific guidance ("you
+	// are the @ops bot, …"). Leave empty to use only the built-in
+	// Slack-formatting block.
+	SystemPrompt string `json:"system_prompt,omitempty"`
+	// DisableSystemPrompt skips system-prompt injection entirely
+	// (including the built-in Slack-formatting block). Use only if you
+	// have a reason to want raw, unguided agent output in Slack.
+	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`
 }
 
 // Load reads and validates the config file.
