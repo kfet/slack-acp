@@ -18,6 +18,7 @@ import (
 	"github.com/kfet/slack-acp/internal/config"
 	"github.com/kfet/slack-acp/internal/handler"
 	"github.com/kfet/slack-acp/internal/initcmd"
+	"github.com/kfet/slack-acp/internal/installsvc"
 	"github.com/kfet/slack-acp/internal/policy"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/skills"
@@ -30,11 +31,19 @@ var version = "dev"
 func main() {
 	// Subcommand dispatch (must happen before flag.Parse on the main
 	// flagset, since each subcommand has its own flags).
-	if len(os.Args) > 1 && os.Args[1] == "init" {
-		if err := runInit(os.Args[2:]); err != nil {
-			log.Fatalf("init: %v", err)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "init":
+			if err := runInit(os.Args[2:]); err != nil {
+				log.Fatalf("init: %v", err)
+			}
+			return
+		case "install-service":
+			if err := runInstallService(os.Args[2:]); err != nil {
+				log.Fatalf("install-service: %v", err)
+			}
+			return
 		}
-		return
 	}
 
 	configPath := flag.String("config", "", "path to JSON config file")
@@ -225,6 +234,35 @@ func runInit(args []string) error {
 		NonInteractive: *nonInt,
 		SkipVerify:     *skipVerify,
 		Force:          *force,
+	})
+}
+
+// runInstallService drives `slack-acp install-service`. Wraps
+// internal/installsvc with a small flag-parsing shim.
+func runInstallService(args []string) error {
+	fs := flag.NewFlagSet("install-service", flag.ExitOnError)
+	goos := fs.String("goos", "", "target OS: linux | darwin (default: runtime.GOOS)")
+	binary := fs.String("binary", "", "absolute path to the slack-acp binary the supervisor should exec (default: os.Executable)")
+	cfgPath := fs.String("config", "", "config path passed to slack-acp via --config (default: $XDG_CONFIG_HOME/slack-acp/config.json)")
+	envPath := fs.String("env", "", "env file the supervisor sources (default: $XDG_CONFIG_HOME/slack-acp/env)")
+	out := fs.String("out", "", "where to write the unit file (default: conventional per-platform path)")
+	label := fs.String("label", "", "launchd Label (macOS only; default dev.<user>.slack-acp)")
+	agentPATH := fs.String("agent-path", "", "PATH= injected into the launchd plist so the spawned ACP agent is findable (macOS only)")
+	dryRun := fs.Bool("dry-run", false, "print the rendered unit instead of writing it")
+	force := fs.Bool("force", false, "overwrite an existing unit file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return installsvc.Run(installsvc.Options{
+		GOOS:       *goos,
+		BinaryPath: *binary,
+		ConfigPath: *cfgPath,
+		EnvPath:    *envPath,
+		OutPath:    *out,
+		Label:      *label,
+		AgentPATH:  *agentPATH,
+		DryRun:     *dryRun,
+		Force:      *force,
 	})
 }
 

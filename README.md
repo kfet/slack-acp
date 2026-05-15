@@ -73,6 +73,23 @@ units want (`SLACK_BOT_TOKEN=…\nSLACK_APP_TOKEN=…`). Flags:
 `--bot-token` / `--app-token` for non-interactive, `--skip-verify` for
 offline bootstrap, `--force` to overwrite an existing config.
 
+### Supervised service
+
+```bash
+slack-acp install-service --dry-run    # preview the unit
+slack-acp install-service               # write it
+```
+
+Detects the platform and emits a tailored systemd-user unit
+(`~/.config/systemd/user/slack-acp.service`) on Linux or a launchd
+LaunchAgent plist (`~/Library/LaunchAgents/dev.<user>.slack-acp.plist`)
+on macOS, pointing at the binary, config, and env file `init` wrote.
+`--force` to overwrite, `--goos linux|darwin` to render the other
+platform's unit (useful when generating a Linux unit from a Mac dev
+machine before `make deploy`). The command prints the
+`systemctl`/`launchctl` lines you need to enable and start the
+service; it deliberately doesn't run them itself.
+
 ## Run
 
 ```bash
