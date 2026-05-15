@@ -100,13 +100,3 @@ Interactive (or `--non-interactive` with flags) first-run wizard:
 - **OAuth install link** — would require a public HTTP callback,
   defeating the Socket-Mode "no public endpoint" property.
 - **Per-line `.covignore`** — never. File-level only.
-
-## Known backlog issues
-
-- `internal/skills` ported from poe-acp inherits a test-isolation
-  quirk: `TestLoadBuiltin_FSErrorPaths` happy-path writes fixtures
-  (`x/SKILL.md`, `none/SKILL.md`) into the real
-  `$TMPDIR/slack-acp-<binaryhash>/skills/` because `bundleHashFn`
-  isn't swapped alongside `bundleSrc`. No runtime impact — operators
-  never see those — but worth fixing in both repos together by also
-  swapping `bundleHashFn` in the fixture path.

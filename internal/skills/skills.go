@@ -2,7 +2,7 @@
 // subset marked builtin to a per-version dir at startup, and formats a
 // fir-style <available_skills> catalog for injection into ACP agents.
 //
-// Design (see docs/skill-injection-plan.md):
+// Design:
 //   - Bundle = a small set of Markdown SKILL.md files describing
 //     deploy / update / release flows specific to running an agent under
 //     slack-acp. The whole tree is embedded via go:embed so that
