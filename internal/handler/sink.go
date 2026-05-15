@@ -45,7 +45,11 @@ func (s *streamingSink) OnUpdate(ctx context.Context, n acp.SessionNotification)
 			}
 		}
 	case u.Plan != nil:
-		// Render a short plan block.
+		// Render a short plan block. Skip empty/cleared plan updates so we
+		// don't leave a bare "Plan:" trailer in the Slack message.
+		if len(u.Plan.Entries) == 0 {
+			return nil
+		}
 		var b strings.Builder
 		b.WriteString("\n*Plan:*\n")
 		for _, e := range u.Plan.Entries {
