@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Streaming sink no longer emits a bare `*Plan:*` trailer when the
+  agent sends an empty/cleared `plan` session update. Empty plans
+  are now dropped instead of appended to the Slack message.
+
 ### Added
 - `docs/config.example.json` — full key reference; README points at it.
 - `slack-acp --print-paths` resolves and prints the config file, state

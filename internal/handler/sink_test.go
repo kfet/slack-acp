@@ -168,6 +168,18 @@ func TestSinkPlan(t *testing.T) {
 	}
 }
 
+func TestSinkPlanEmptySkipped(t *testing.T) {
+	sink, fs := newSinkAndCapture(t)
+	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{Plan: &acp.SessionUpdatePlan{}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fs.posts != 0 {
+		t.Fatalf("empty plan should not post; bodies=%q", fs.bodies)
+	}
+}
+
 func TestSinkUnknownUpdate(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
 	// All variants nil → switch falls through to default → no-op.
