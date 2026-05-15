@@ -18,6 +18,16 @@ All notable changes to this project will be documented in this file.
   are now dropped instead of appended to the Slack message.
 
 ### Added
+- `slack-acp install-service` writes a tailored systemd-user unit
+  (Linux) or launchd LaunchAgent plist (macOS) pointing at the
+  binary, `config.json`, and `env` file produced by `slack-acp init`.
+  `--dry-run` previews; `--force` overwrites; `--goos linux|darwin`
+  renders the other platform's unit (handy for cross-host setup
+  from a dev machine). Refuses to clobber an existing unit by
+  default. Prints the `systemctl` / `launchctl` lines needed to
+  enable + start the service rather than running them itself
+  (smaller blast radius for `--force`). New `internal/installsvc`
+  package; logic is pure and fully tested under the 100% gate.
 - `slack-acp init` first-run wizard. Prompts (or accepts via
   `--bot-token` / `--app-token` flags) for the two Slack tokens,
   verifies them with `auth.test` (skippable via `--skip-verify`),
