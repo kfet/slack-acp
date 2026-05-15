@@ -10,6 +10,16 @@ All notable changes to this project will be documented in this file.
   are now dropped instead of appended to the Slack message.
 
 ### Added
+- **Skills bundled into the binary.** `internal/skills/` ports
+  poe-acp's `go:embed`-driven skill catalog: SKILL.md files under
+  `internal/skills/bundle/<name>/` declaring `builtin: true` in
+  frontmatter are extracted to `$TMPDIR/slack-acp-<hash>/skills/` on
+  startup and surfaced to spawned ACP agents as a fir-style
+  `<available_skills>` block appended to the system prompt. Operators
+  driving `fir --mode acp` through slack-acp now get the `deploy` and
+  `update` skills automatically. Host-supplied skills under
+  `<dirname(--config)>/skills/` override built-ins by name.
+  `sysprompt.Resolve` extended with a third `catalog` argument.
 - `docs/config.example.json` — full key reference; README points at it.
 - `slack-acp --print-paths` resolves and prints the config file, state
   dir, agent command, and policy without starting the bot. Handy for
@@ -26,9 +36,9 @@ All notable changes to this project will be documented in this file.
   `Formula/slack-acp.rb` on the shared `kfet/homebrew-fir` tap so
   `brew install kfet/fir/slack-acp` works. Reference Formula at
   `homebrew/slack-acp.rb.template`.
-- `skills/release/SKILL.md` rewritten to drive the new pipeline and
-  poll `gh run list` post-publish. `skills/deploy/SKILL.md` and
-  `skills/update/SKILL.md` document the brew install / upgrade path.
+- `skills/release/SKILL.md` (now `internal/skills/bundle/release/SKILL.md`)
+  rewritten to drive the new pipeline and poll `gh run list` post-publish.
+  Deploy and update skills document the brew install / upgrade path.
 - README install section leads with `brew install kfet/fir/slack-acp`.
 - `docs/setup-easing-plan.md` tracks the broader setup-easing roadmap.
 - GitHub Actions CI workflow (`.github/workflows/ci.yml`) running
@@ -46,11 +56,12 @@ All notable changes to this project will be documented in this file.
   config keys.
 
 ### Changed
-- Skills moved from `.fir/skills/` to top-level `skills/`. `.fir/` is
-  now gitignored; a local `.fir/skills` symlink to `../skills` keeps
-  agent-harness discovery working without shipping `.fir/` in the
-  public tree. Internal doc references updated from `.fir/skills/…`
-  to `skills/…`.
+- **Skills relocated** to `internal/skills/bundle/<name>/SKILL.md`
+  (from the previous mixed history under `.fir/skills/` and top-level
+  `skills/`), matching poe-acp's layout. `.fir/skills` (gitignored)
+  is now a symlink into the bundle so fir running inside this repo
+  still discovers them as project-local. Path references inside
+  `e2e`/`deploy`/`update` SKILL bodies updated accordingly.
 - README "Status" line clarified: `v0.1.x`, primary agent is
   `fir --mode acp`; other ACP agents are less shaken out.
 

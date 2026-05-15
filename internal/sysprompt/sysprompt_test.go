@@ -47,14 +47,27 @@ func TestBuild(t *testing.T) {
 }
 
 func TestResolve(t *testing.T) {
-	if Resolve("hi", true) != "" {
+	if Resolve("hi", true, "") != "" {
 		t.Fatal("disabled must return empty")
 	}
-	if Resolve("", false) != Default() {
+	if Resolve("", false, "") != Default() {
 		t.Fatal("enabled+empty must equal Default")
 	}
-	got := Resolve("extra", false)
+	got := Resolve("extra", false, "")
 	if !strings.HasSuffix(got, "\n\nextra") {
 		t.Fatalf("Resolve didn't append extra: %q", got)
+	}
+	// Catalog appended after extra.
+	got = Resolve("extra", false, "  <available_skills/>  ")
+	if !strings.HasSuffix(got, "\n\n<available_skills/>") {
+		t.Fatalf("Resolve didn't append catalog: %q", got)
+	}
+	// Whitespace-only catalog is treated as empty.
+	if Resolve("", false, "  \n  ") != Default() {
+		t.Fatal("whitespace catalog must collapse to empty")
+	}
+	// Disabled wins over catalog.
+	if Resolve("", true, "<x/>") != "" {
+		t.Fatal("disabled must beat catalog")
 	}
 }
