@@ -93,3 +93,32 @@ func TestValidateTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultConfigDir(t *testing.T) {
+	// XDG branch.
+	t.Setenv("XDG_CONFIG_HOME", "/x/cfg")
+	if got := DefaultConfigDir(); got != "/x/cfg/slack-acp" {
+		t.Errorf("XDG branch: %q", got)
+	}
+	if got := DefaultConfigPath(); got != "/x/cfg/slack-acp/config.json" {
+		t.Errorf("ConfigPath: %q", got)
+	}
+	if got := DefaultEnvPath(); got != "/x/cfg/slack-acp/env" {
+		t.Errorf("EnvPath: %q", got)
+	}
+
+	// HOME branch (XDG empty).
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "/h")
+	if got := DefaultConfigDir(); got != "/h/.config/slack-acp" {
+		t.Errorf("HOME branch: %q", got)
+	}
+
+	// $TMPDIR fallback when HOME is empty and UserHomeDir errors. On
+	// Unix os.UserHomeDir uses $HOME; emptying it forces the error.
+	t.Setenv("HOME", "")
+	got := DefaultConfigDir()
+	if !filepath.IsAbs(got) || filepath.Base(got) != "slack-acp" {
+		t.Errorf("tmpdir fallback: %q", got)
+	}
+}

@@ -15,6 +15,12 @@
 # assembly. Anything testable belongs in internal/*.
 ^github.com/kfet/slack-acp/cmd/[^/]+/main\.go:
 
+# initcmd.DefaultVerifier wraps slack-go's AuthTestContext — a single
+# live network call. The wrapper has no logic worth a network-mocked
+# test; the rest of the initcmd package (prompts, validation, file
+# writing) is fully covered with a stubbed Verifier.
+^github.com/kfet/slack-acp/internal/initcmd/verify\.go:
+
 # Per-package "unreachable.go" files. NOTE: this is a legacy pattern
 # kept until the existing internal/acpclient/unreachable.go is
 # refactored away; new exclusions should target the file the code

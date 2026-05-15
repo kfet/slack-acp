@@ -18,6 +18,14 @@ All notable changes to this project will be documented in this file.
   are now dropped instead of appended to the Slack message.
 
 ### Added
+- `slack-acp init` first-run wizard. Prompts (or accepts via
+  `--bot-token` / `--app-token` flags) for the two Slack tokens,
+  verifies them with `auth.test` (skippable via `--skip-verify`),
+  and writes `$XDG_CONFIG_HOME/slack-acp/config.json` + a sibling
+  `env` file (both mode `0600`) shaped for systemd / launchd. New
+  `internal/initcmd` package plus `config.DefaultConfigPath` /
+  `DefaultEnvPath` helpers. `--force` opt-in for overwriting an
+  existing config.
 - **Skills bundled into the binary.** `internal/skills/` ports
   poe-acp's `go:embed`-driven skill catalog: SKILL.md files under
   `internal/skills/bundle/<name>/` declaring `builtin: true` in

@@ -60,6 +60,19 @@ The fastest path is the bundled app manifest:
 The manifest already enables Socket Mode, the Messages tab (so DMs have a
 compose box), bot scopes, and the `app_mention` + `message.im` events.
 
+### One-shot wizard
+
+```bash
+slack-acp init
+```
+
+Prompts for both tokens, verifies them with `auth.test`, and writes
+`$XDG_CONFIG_HOME/slack-acp/config.json` and `$XDG_CONFIG_HOME/slack-acp/env`
+(both mode `0600`). The env file is in the shape systemd / launchd
+units want (`SLACK_BOT_TOKEN=…\nSLACK_APP_TOKEN=…`). Flags:
+`--bot-token` / `--app-token` for non-interactive, `--skip-verify` for
+offline bootstrap, `--force` to overwrite an existing config.
+
 ## Run
 
 ```bash
