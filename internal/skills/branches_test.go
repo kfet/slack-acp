@@ -192,6 +192,11 @@ func TestLoadBuiltin_FSErrorPaths(t *testing.T) {
 		"bundle/other/foo.txt": &fstest.MapFile{Data: []byte("nope")},                                // not a SKILL.md
 	}
 	defer swap[fs.FS](&bundleSrc, mfs)()
+	// Hash the *fixture* FS rather than the real bundleFS so the
+	// extracted tmp dir is isolated from the production binary's
+	// extraction dir (otherwise test runs leak fixture files into
+	// $TMPDIR/slack-acp-<production-hash>/skills/).
+	defer swap(&bundleHashFn, func() (string, error) { return bundleHashFS(mfs) })()
 
 	// MkdirAll fails first.
 	restore := swap(&osMkdirAll, func(string, os.FileMode) error { return errors.New("mkdir-fail") })
@@ -216,6 +221,19 @@ func TestLoadBuiltin_FSErrorPaths(t *testing.T) {
 	}
 	if !contains(got, "x") || !contains(got, "none") {
 		t.Errorf("names = %+v", got)
+	}
+	// Test isolation: the extracted dst path must incorporate a hash
+	// derived from the *fixture* FS, not the real bundleFS — otherwise
+	// running tests pollutes the production binary's extraction dir.
+	wantHash, err := bundleHashFS(mfs)
+	if err != nil {
+		t.Fatalf("bundleHashFS(mfs): %v", err)
+	}
+	wantPrefix := "slack-acp-" + wantHash[:12]
+	for _, s := range got {
+		if !strings.Contains(s.Path, wantPrefix) {
+			t.Errorf("skill %q path %q does not contain fixture hash prefix %q (leaks into production binary's dir)", s.Name, s.Path, wantPrefix)
+		}
 	}
 	// Run again — exercises the "content matches → skip write" branch.
 	if _, err := LoadBuiltin(); err != nil {

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- `internal/skills` test isolation: `TestLoadBuiltin_FSErrorPaths`
+  now also swaps `bundleHashFn` alongside `bundleSrc` so fixture
+  `SKILL.md` files extract under the fixture FS's content hash
+  rather than the production binary's, preventing test runs from
+  leaking fixtures into `$TMPDIR/slack-acp-<production-hash>/`. Same
+  fix should be applied to poe-acp.
+- Stale doc reference in `internal/skills/skills.go` package comment
+  (`docs/skill-injection-plan.md` doesn't exist in slack-acp).
 - Streaming sink no longer emits a bare `*Plan:*` trailer when the
   agent sends an empty/cleared `plan` session update. Empty plans
   are now dropped instead of appended to the Slack message.
