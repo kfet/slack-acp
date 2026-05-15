@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -111,3 +112,24 @@ func truncatePrefix(tok string) string {
 	}
 	return tok[:n]
 }
+
+// DefaultConfigDir is the operator's config root for slack-acp.
+//
+// Order: $XDG_CONFIG_HOME/slack-acp → $HOME/.config/slack-acp →
+// $TMPDIR/slack-acp.
+func DefaultConfigDir() string {
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "slack-acp")
+	}
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		return filepath.Join(h, ".config", "slack-acp")
+	}
+	return filepath.Join(os.TempDir(), "slack-acp")
+}
+
+// DefaultConfigPath is the conventional location for config.json.
+func DefaultConfigPath() string { return filepath.Join(DefaultConfigDir(), "config.json") }
+
+// DefaultEnvPath is the conventional location for the env file used
+// by supervisor units (systemd EnvironmentFile, launchd wrapper).
+func DefaultEnvPath() string { return filepath.Join(DefaultConfigDir(), "env") }

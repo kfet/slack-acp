@@ -17,6 +17,7 @@ import (
 	"github.com/kfet/slack-acp/internal/acpclient"
 	"github.com/kfet/slack-acp/internal/config"
 	"github.com/kfet/slack-acp/internal/handler"
+	"github.com/kfet/slack-acp/internal/initcmd"
 	"github.com/kfet/slack-acp/internal/policy"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/skills"
@@ -27,6 +28,15 @@ import (
 var version = "dev"
 
 func main() {
+	// Subcommand dispatch (must happen before flag.Parse on the main
+	// flagset, since each subcommand has its own flags).
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		if err := runInit(os.Args[2:]); err != nil {
+			log.Fatalf("init: %v", err)
+		}
+		return
+	}
+
 	configPath := flag.String("config", "", "path to JSON config file")
 	agentCmd := flag.String("agent-cmd", "", "agent argv (default: fir --mode acp); space-separated; overrides config")
 	policyName := flag.String("policy", "", "permission policy: allow-all|read-only|deny-all (default allow-all)")
@@ -188,6 +198,34 @@ func buildSkillsCatalog(cfgPath string) string {
 	log.Printf("skills: %d builtin + %d host → injected %d (%s)",
 		len(builtin), len(host), len(merged), strings.Join(names, ","))
 	return skills.FormatCatalog(merged)
+}
+
+// runInit drives the `slack-acp init` subcommand. Kept as a thin
+// flag-parsing shim around internal/initcmd so the wizard logic stays
+// testable in isolation (main is exempt from the coverage gate).
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	bot := fs.String("bot-token", "", "Slack bot token (xoxb-…); empty = prompt")
+	app := fs.String("app-token", "", "Slack app-level token (xapp-…); empty = prompt")
+	cfgPath := fs.String("config", "", "where to write config.json (default $XDG_CONFIG_HOME/slack-acp/config.json)")
+	envPath := fs.String("env", "", "where to write the env file (default $XDG_CONFIG_HOME/slack-acp/env)")
+	nonInt := fs.Bool("non-interactive", false, "fail instead of prompting for missing tokens")
+	skipVerify := fs.Bool("skip-verify", false, "skip the auth.test verification call")
+	force := fs.Bool("force", false, "overwrite existing config / env files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return initcmd.Run(ctx, initcmd.Options{
+		BotToken:       *bot,
+		AppToken:       *app,
+		ConfigPath:     *cfgPath,
+		EnvPath:        *envPath,
+		NonInteractive: *nonInt,
+		SkipVerify:     *skipVerify,
+		Force:          *force,
+	})
 }
 
 func toSet(ss []string) map[string]struct{} {
