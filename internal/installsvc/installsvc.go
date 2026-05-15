@@ -3,12 +3,12 @@
 // a long-lived process supervisor, pointing at the config + env file
 // that `slack-acp init` already wrote.
 //
-// Render() is a pure function that returns (destPath, body, error)
-// given fully-populated Options. Run() handles defaults + filesystem
-// writes + post-write hints. Nothing in this package shells out to
-// systemctl / launchctl — operators copy/paste the printed commands
-// once they've reviewed the unit. Keeping the side effects minimal
-// keeps blast radius small if --force is used carelessly.
+// Render() is a pure function that returns the unit body for a
+// fully-populated Options. Run() handles defaults + filesystem writes
+// + post-write hints. Nothing in this package shells out to systemctl
+// / launchctl — operators copy/paste the printed commands once
+// they've reviewed the unit. Keeping the side effects minimal keeps
+// blast radius small if --force is used carelessly.
 package installsvc
 
 import (
