@@ -26,13 +26,18 @@ func Build(extra string) string {
 }
 
 // Resolve picks the right prompt for operator config: empty string when
-// disabled, otherwise Build(extra). Keeps the disable/extra wiring out
-// of cmd/slack-acp/main.go (which is excluded from coverage).
-func Resolve(extra string, disabled bool) string {
+// disabled, otherwise Build(extra) optionally followed by a skills
+// catalog block. Keeps the disable/extra/catalog wiring out of
+// cmd/slack-acp/main.go (which is excluded from coverage).
+func Resolve(extra string, disabled bool, catalog string) string {
 	if disabled {
 		return ""
 	}
-	return Build(extra)
+	out := Build(extra)
+	if catalog = strings.TrimSpace(catalog); catalog != "" {
+		out += "\n\n" + catalog
+	}
+	return out
 }
 
 // defaultText tells the agent where its output lands and trusts it to

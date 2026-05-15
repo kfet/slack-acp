@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/kfet/slack-acp/internal/handler"
 	"github.com/kfet/slack-acp/internal/policy"
 	"github.com/kfet/slack-acp/internal/router"
+	"github.com/kfet/slack-acp/internal/skills"
 	"github.com/kfet/slack-acp/internal/slackproto"
 	"github.com/kfet/slack-acp/internal/sysprompt"
 )
@@ -116,7 +118,7 @@ func main() {
 	r, err := router.New(router.Config{
 		Agent:        agent,
 		StateDir:     cfg.StateDir,
-		SystemPrompt: sysprompt.Resolve(cfg.SystemPrompt, cfg.DisableSystemPrompt),
+		SystemPrompt: sysprompt.Resolve(cfg.SystemPrompt, cfg.DisableSystemPrompt, buildSkillsCatalog(*configPath)),
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -154,6 +156,38 @@ func policyOrDefault(p string) string {
 		return "allow-all (default)"
 	}
 	return p
+}
+
+// buildSkillsCatalog merges embedded built-in skills with optional
+// host-supplied skills from <dirname(cfgPath)>/skills/ and returns a
+// fir-style <available_skills> block ready for injection. Best-effort:
+// extraction failures degrade to whatever layers succeeded (the bot is
+// still usable without a catalog). Host skills with the same name as
+// a built-in override the built-in.
+func buildSkillsCatalog(cfgPath string) string {
+	builtin, err := skills.LoadBuiltin()
+	if err != nil {
+		log.Printf("skills: builtin load failed (continuing): %v", err)
+	}
+	var host []skills.Skill
+	if cfgPath != "" {
+		hostDir := filepath.Join(filepath.Dir(cfgPath), "skills")
+		host, err = skills.LoadDir(hostDir)
+		if err != nil {
+			log.Printf("skills: host dir %s: %v (continuing)", hostDir, err)
+		}
+	}
+	merged := skills.Merge([][]skills.Skill{builtin, host}, nil)
+	if len(merged) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(merged))
+	for _, s := range merged {
+		names = append(names, s.Name)
+	}
+	log.Printf("skills: %d builtin + %d host → injected %d (%s)",
+		len(builtin), len(host), len(merged), strings.Join(names, ","))
+	return skills.FormatCatalog(merged)
 }
 
 func toSet(ss []string) map[string]struct{} {
