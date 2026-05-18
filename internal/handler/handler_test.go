@@ -106,10 +106,16 @@ type fakeSlack struct {
 	updateErr bool
 	postedTS  string
 	bodies    []string
+
+	// updated is a non-blocking signal channel that receives once per
+	// chat.update call. Tests wait on it instead of polling
+	// fs.updates with sleeps. Buffered so the handler never blocks
+	// when no one is listening.
+	updated chan struct{}
 }
 
 func newFakeSlack() *fakeSlack {
-	fs := &fakeSlack{postedTS: "1.0"}
+	fs := &fakeSlack{postedTS: "1.0", updated: make(chan struct{}, 16)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
 		fs.mu.Lock()
@@ -132,6 +138,12 @@ func newFakeSlack() *fakeSlack {
 		fs.bodies = append(fs.bodies, r.FormValue("text"))
 		err := fs.updateErr
 		fs.mu.Unlock()
+		// Non-blocking signal so the chat.update path never stalls
+		// even if nobody is reading fs.updated.
+		select {
+		case fs.updated <- struct{}{}:
+		default:
+		}
 		if err {
 			_, _ = w.Write([]byte(`{"ok":false,"error":"nope"}`))
 			return
@@ -400,18 +412,13 @@ func TestWatchdogTickFlushes(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go watchdog(ctx, stream)
-	// Tick is 1s. Wait for an update to land.
-	for i := 0; i < 50; i++ {
-		fs.mu.Lock()
-		u := fs.updates
-		fs.mu.Unlock()
-		if u >= 1 {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	go watchdogWithTick(ctx, stream, time.Millisecond)
+	// Wait deterministically for the first chat.update via fs.updated.
+	select {
+	case <-fs.updated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchdog never flushed")
 	}
-	t.Fatal("watchdog never flushed")
 }
 
 // ---- helpers used above ----
@@ -424,13 +431,11 @@ func (h *Handler) inflightCount() int {
 
 func waitForIdle(t *testing.T, h *Handler) {
 	t.Helper()
-	for i := 0; i < 200; i++ {
-		if h.inflightCount() == 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.WaitIdle(ctx); err != nil {
+		t.Fatalf("handler never went idle: %v", err)
 	}
-	t.Fatal("handler never went idle")
 }
 
 func anyContains(ss []string, sub string) bool {

@@ -333,11 +333,18 @@ func (r *Router) Cancel(ctx context.Context, key ConvKey) {
 func (r *Router) Run(ctx context.Context) {
 	t := time.NewTicker(r.idleTimeout / 4)
 	defer t.Stop()
+	r.runLoop(ctx, t.C)
+}
+
+// runLoop is the testable core: takes the tick channel as a parameter
+// so tests can drive gcOnce deterministically (by sending on the
+// channel) rather than racing against a real ticker.
+func (r *Router) runLoop(ctx context.Context, tick <-chan time.Time) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-tick:
 			r.gcOnce()
 		}
 	}

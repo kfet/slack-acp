@@ -351,11 +351,17 @@ func TestConsumeDispatchesEvents(t *testing.T) {
 	ch := make(chan socketmode.Event, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.consume(ctx, ch)
+	done := make(chan struct{})
+	go func() { c.consume(ctx, ch); close(done) }()
 	ch <- socketmode.Event{Type: socketmode.EventTypeHello}
+	close(ch) // consume returns after draining
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consume did not return after channel close")
+	}
 	// No assertion beyond "doesn't panic / dispatch fires" — the Hello
 	// branch is debug-logged and produces no handler call.
-	time.Sleep(20 * time.Millisecond)
 }
 
 // TestDispatchEventsAPIHappy drives the EventsAPI branch end-to-end so
@@ -452,6 +458,10 @@ func TestPostStreamerThrottlesAndFlushes(t *testing.T) {
 	defer fs.close()
 	s := NewPostStreamer(fs.client(), "C1", "100.0")
 	s.minInterval = 100 * time.Millisecond
+	// Inject a fake clock so the test doesn't sleep.
+	var clock atomic.Int64 // ns since epoch
+	clock.Store(time.Now().UnixNano())
+	s.now = func() time.Time { return time.Unix(0, clock.Load()) }
 
 	// First Append posts.
 	if err := s.Append(context.Background(), "a"); err != nil {
@@ -471,7 +481,8 @@ func TestPostStreamerThrottlesAndFlushes(t *testing.T) {
 	if atomic.LoadInt32(&fs.updates) != 0 {
 		t.Fatal("flush before interval should be no-op")
 	}
-	time.Sleep(120 * time.Millisecond)
+	// Advance the clock past minInterval; flush should now fire.
+	clock.Add(int64(120 * time.Millisecond))
 	if err := s.FlushIfPending(context.Background()); err != nil {
 		t.Fatal(err)
 	}

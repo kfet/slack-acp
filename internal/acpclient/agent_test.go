@@ -40,6 +40,12 @@ type fakeAgent struct {
 	gotPromptCount int
 	gotCancelCount int32
 	cancelled      atomic.Bool
+
+	// cancelSig is a non-blocking signal: one send per session/cancel
+	// the fake receives. Buffered so the handler never stalls when
+	// nobody is listening; tests that want to synchronise on cancel
+	// arrival drain it.
+	cancelSig chan struct{}
 }
 
 func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMessage) (any, *acp.RequestError) {
@@ -81,6 +87,12 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 	case acp.AgentMethodSessionCancel:
 		atomic.AddInt32(&f.gotCancelCount, 1)
 		f.cancelled.Store(true)
+		if f.cancelSig != nil {
+			select {
+			case f.cancelSig <- struct{}{}:
+			default:
+			}
+		}
 		return nil, nil
 	case "session/list":
 		if f.listErr != nil {
@@ -429,20 +441,21 @@ func TestPromptError(t *testing.T) {
 }
 
 func TestCancel(t *testing.T) {
-	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid-4"}}
+	fa := &fakeAgent{newSessResp: acp.NewSessionResponse{SessionId: "sid-4"}, cancelSig: make(chan struct{}, 1)}
 	a := startFakeAgent(t, fa, Config{})
 	sid, _ := a.NewSession(t.Context(), t.TempDir(), &capturingSink{}, nil)
 	if err := a.Cancel(t.Context(), sid); err != nil {
 		t.Fatal(err)
 	}
 	// Wait for the notification to drain through the pipe.
-	for i := 0; i < 100; i++ {
-		if atomic.LoadInt32(&fa.gotCancelCount) == 1 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-fa.cancelSig:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel notification not received")
 	}
-	t.Fatal("cancel notification not received")
+	if atomic.LoadInt32(&fa.gotCancelCount) != 1 {
+		t.Fatalf("gotCancelCount = %d", atomic.LoadInt32(&fa.gotCancelCount))
+	}
 }
 
 func TestDropAndRebindSink(t *testing.T) {
@@ -763,8 +776,7 @@ func runFakeAgentLoop() {
 			// Idle until SIGKILL: don't return on EOF or stdin close,
 			// otherwise Close's first SIGINT might happen to coincide
 			// with a clean exit.
-			time.Sleep(time.Hour)
-			continue
+			select {}
 		}
 		if req.Method == "initialize" {
 			b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(req.ID), "result": map[string]any{}})
