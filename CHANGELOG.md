@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- `slack-acp install-service --goos <other>` now auto-switches to
+  dry-run output and prints a "preview only — ssh to the target host
+  and run there" banner. Previously it wrote the rendered unit to
+  the local Mac's `~/.config/systemd/user/...`, which never matches
+  the remote box's user/home/binary layout.
 - `internal/skills` test isolation: `TestLoadBuiltin_FSErrorPaths`
   now also swaps `bundleHashFn` alongside `bundleSrc` so fixture
   `SKILL.md` files extract under the fixture FS's content hash

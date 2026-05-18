@@ -71,9 +71,24 @@ type Options struct {
 // Run fills defaults, renders the unit, and either prints it (DryRun)
 // or writes it to disk. Post-write it prints the operator-facing
 // commands to enable + start the service.
+//
+// Cross-GOOS shortcut: if opts.GOOS targets a different platform from
+// runtime.GOOS and the operator hasn't supplied an explicit OutPath,
+// Run auto-switches to dry-run output (writing the rendered unit to
+// Out). The default unit path is meaningless on the wrong host —
+// operators using `--goos linux` from a Mac dev box are virtually
+// always piping the result to `ssh <host> 'cat > …'`.
 func Run(opts Options) error {
+	explicitOut := opts.OutPath != ""
 	if err := fillDefaults(&opts); err != nil {
 		return err
+	}
+	if !opts.DryRun && !explicitOut && opts.GOOS != runtime.GOOS {
+		opts.DryRun = true
+		fmt.Fprintf(opts.Out, "# cross-GOOS render (%s on %s) — preview only.\n", opts.GOOS, runtime.GOOS)
+		fmt.Fprintln(opts.Out, "# Embedded paths (binary, config, env) reflect this host. For a real")
+		fmt.Fprintln(opts.Out, "# install on the target box, ssh there and run `slack-acp install-service`")
+		fmt.Fprintln(opts.Out, "# directly so paths match that host's layout.")
 	}
 	body, err := Render(opts)
 	if err != nil {
