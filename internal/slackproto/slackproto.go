@@ -208,6 +208,10 @@ type PostStreamer struct {
 	maxChars    int
 	doneSuffix  string
 
+	// now is the clock. Swapped in tests so throttle behaviour can be
+	// exercised without wall-clock sleeps. Defaults to time.Now.
+	now func() time.Time
+
 	mu       sync.Mutex
 	ts       string // ts of the message we own (after first post)
 	full     strings.Builder
@@ -226,6 +230,7 @@ func NewPostStreamer(api *slack.Client, channel, threadTS string) *PostStreamer 
 		threadTS:    threadTS,
 		minInterval: time.Second,
 		maxChars:    35000,
+		now:         time.Now,
 	}
 }
 
@@ -240,7 +245,7 @@ func (s *PostStreamer) Append(ctx context.Context, chunk string) error {
 		return nil
 	}
 	s.full.WriteString(chunk)
-	now := time.Now()
+	now := s.now()
 	due := s.ts == "" || now.Sub(s.lastSent) >= s.minInterval
 	s.pending = !due
 	s.mu.Unlock()
@@ -292,7 +297,7 @@ func (s *PostStreamer) flush(ctx context.Context) error {
 		}
 		s.mu.Lock()
 		s.ts = ts
-		s.lastSent = time.Now()
+		s.lastSent = s.now()
 		s.pending = false
 		s.mu.Unlock()
 		return nil
@@ -305,7 +310,7 @@ func (s *PostStreamer) flush(ctx context.Context) error {
 		return fmt.Errorf("update: %w", err)
 	}
 	s.mu.Lock()
-	s.lastSent = time.Now()
+	s.lastSent = s.now()
 	s.pending = false
 	s.mu.Unlock()
 	return nil
@@ -315,7 +320,7 @@ func (s *PostStreamer) flush(ctx context.Context) error {
 func (s *PostStreamer) FlushIfPending(ctx context.Context) error {
 	s.mu.Lock()
 	pending := s.pending && !s.closed
-	due := time.Since(s.lastSent) >= s.minInterval
+	due := s.now().Sub(s.lastSent) >= s.minInterval
 	s.mu.Unlock()
 	if pending && due {
 		return s.flush(ctx)

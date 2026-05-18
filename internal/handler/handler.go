@@ -43,8 +43,9 @@ type Handler struct {
 
 	// inflight maps ConvKey → entry of the goroutine processing it,
 	// so a follow-up message in the same thread can cancel the prior run.
-	inflightMu sync.Mutex
-	inflight   map[router.ConvKey]*inflightEntry
+	inflightMu   sync.Mutex
+	inflightCond *sync.Cond // broadcast when inflight is mutated
+	inflight     map[router.ConvKey]*inflightEntry
 }
 
 // New constructs a handler.
@@ -52,7 +53,33 @@ func New(cfg Config) *Handler {
 	if cfg.PromptTimeout == 0 {
 		cfg.PromptTimeout = 10 * time.Minute
 	}
-	return &Handler{cfg: cfg, inflight: make(map[router.ConvKey]*inflightEntry)}
+	h := &Handler{cfg: cfg, inflight: make(map[router.ConvKey]*inflightEntry)}
+	h.inflightCond = sync.NewCond(&h.inflightMu)
+	return h
+}
+
+// WaitIdle blocks until the handler has no in-flight prompts or ctx
+// is done. Used by tests to synchronise on the inflight-empty
+// transition without wall-clock polling; also useful for graceful
+// shutdown paths.
+//
+// Implementation note: Cond.Wait can't accept a context, so we spawn
+// a helper goroutine that broadcasts when ctx fires. The helper will
+// exit on its own once ctx is cancelled — typically when the calling
+// test's deferred cancel runs, so no real leak.
+func (h *Handler) WaitIdle(ctx context.Context) error {
+	go func() {
+		<-ctx.Done()
+		h.inflightMu.Lock()
+		h.inflightCond.Broadcast()
+		h.inflightMu.Unlock()
+	}()
+	h.inflightMu.Lock()
+	defer h.inflightMu.Unlock()
+	for len(h.inflight) > 0 && ctx.Err() == nil {
+		h.inflightCond.Wait()
+	}
+	return ctx.Err()
 }
 
 // SetAPI installs the Slack API client (used for posting/updating messages).
@@ -104,6 +131,7 @@ func (h *Handler) cancelInflight(ctx context.Context, key router.ConvKey) {
 	e, ok := h.inflight[key]
 	if ok {
 		delete(h.inflight, key)
+		h.inflightCond.Broadcast()
 	}
 	h.inflightMu.Unlock()
 	if ok {
@@ -123,6 +151,7 @@ func (h *Handler) clearInflight(key router.ConvKey, e *inflightEntry) {
 	h.inflightMu.Lock()
 	if cur, ok := h.inflight[key]; ok && cur == e {
 		delete(h.inflight, key)
+		h.inflightCond.Broadcast()
 	}
 	h.inflightMu.Unlock()
 }
@@ -168,7 +197,14 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 }
 
 func watchdog(ctx context.Context, s *slackproto.PostStreamer) {
-	t := time.NewTicker(time.Second)
+	watchdogWithTick(ctx, s, time.Second)
+}
+
+// watchdogWithTick is the testable core: takes the tick duration as a
+// parameter so tests don't need to wall-clock-poll for a 1-second
+// flush.
+func watchdogWithTick(ctx context.Context, s *slackproto.PostStreamer, tick time.Duration) {
+	t := time.NewTicker(tick)
 	defer t.Stop()
 	for {
 		select {

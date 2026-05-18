@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- All wall-clock `time.Sleep` calls removed from tests (per
+  `AGENTS.md` "No time.Sleep in tests"). Replaced with:
+  `handler.WaitIdle` (new public method, sync.Cond on the inflight
+  map) for handler tests; `fakeSlack.updated` + `fakeAgent.cancelSig`
+  signal channels for protocol-level tests; `PostStreamer.now`
+  clock injection for the throttle test; an injectable tick channel
+  in `router.runLoop` for the GC test (uses unbuffered chan +
+  double-send for pure channel-sync); `select{}` in the fake-agent
+  idle loop. `watchdog` split into `watchdogWithTick(dur)` so the
+  flush-watchdog test runs at 1ms instead of 1s. 8 sleeps eliminated.
 - `slack-acp install-service --goos <other>` now auto-switches to
   dry-run output and prints a "preview only — ssh to the target host
   and run there" banner. Previously it wrote the rendered unit to

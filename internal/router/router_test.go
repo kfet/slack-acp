@@ -571,8 +571,11 @@ func TestTouch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := s.lastUsed
-	time.Sleep(2 * time.Millisecond)
+	// Backdate the timestamp so Touch's time.Now() is guaranteed to be
+	// strictly later — avoids a wall-clock sleep to coax monotonic
+	// time forward.
+	old := time.Now().Add(-time.Hour)
+	s.lastUsed = old
 	r.Touch(s)
 	if !s.lastUsed.After(old) {
 		t.Fatal("Touch did not advance lastUsed")
@@ -627,13 +630,38 @@ func TestRunCancels(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.Run(ctx); close(done) }()
-	time.Sleep(10 * time.Millisecond)
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not return after cancel")
 	}
+}
+
+func TestRunLoopGCsOnTick(t *testing.T) {
+	// Drive runLoop with a hand-rolled tick channel so gcOnce fires
+	// deterministically (no wall-clock dependence on time.NewTicker).
+	fa := newFakeAgent()
+	r := newRouter(t, fa)
+	r.idleTimeout = time.Nanosecond // every session is immediately stale
+	key := ConvKey{ChannelID: "C1", ThreadTS: "1.0"}
+	if _, err := r.GetOrCreate(context.Background(), key, stubSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if r.Len() != 1 {
+		t.Fatalf("pre-tick Len = %d", r.Len())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time) // unbuffered → second send blocks until runLoop reads it
+	done := make(chan struct{})
+	go func() { r.runLoop(ctx, tick); close(done) }()
+	tick <- time.Now() // first tick: runLoop reads, then runs gcOnce
+	tick <- time.Now() // second send blocks until runLoop is back at select → first gcOnce has returned
+	if r.Len() != 0 {
+		t.Fatalf("post-tick Len = %d, want 0", r.Len())
+	}
+	cancel()
+	<-done
 }
 
 // ---- Agent() getter ----
