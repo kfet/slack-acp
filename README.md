@@ -84,11 +84,12 @@ Detects the platform and emits a tailored systemd-user unit
 (`~/.config/systemd/user/slack-acp.service`) on Linux or a launchd
 LaunchAgent plist (`~/Library/LaunchAgents/dev.<user>.slack-acp.plist`)
 on macOS, pointing at the binary, config, and env file `init` wrote.
-`--force` to overwrite, `--goos linux|darwin` to render the other
-platform's unit (useful when generating a Linux unit from a Mac dev
-machine before `make deploy`). The command prints the
-`systemctl`/`launchctl` lines you need to enable and start the
-service; it deliberately doesn't run them itself.
+`--force` to overwrite, `--goos linux|darwin` to preview the other
+platform's unit (for production installs, ssh to the target host and
+run the command there so embedded paths match that host's layout).
+The command prints the `systemctl`/`launchctl` lines you need to
+enable and start the service; it deliberately doesn't run them
+itself.
 
 ## Run
 

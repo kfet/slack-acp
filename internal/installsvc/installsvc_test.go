@@ -326,6 +326,74 @@ func TestEnableHints_Unsupported(t *testing.T) {
 	}
 }
 
+func TestRun_CrossGOOSAutoSwitchesToDryRun(t *testing.T) {
+	// Pick a target GOOS that isn't the host's.
+	other := "linux"
+	if runtime.GOOS == "linux" {
+		other = "darwin"
+	}
+	dir := t.TempDir()
+	out := &bytes.Buffer{}
+	opts := fullOpts(other, dir)
+	opts.OutPath = "" // operator didn't pass --out
+	opts.Out = out
+	if err := Run(opts); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "cross-GOOS render") {
+		t.Errorf("missing cross-GOOS banner: %q", got)
+	}
+	if !strings.Contains(got, "ssh there and run") {
+		t.Errorf("missing remote-install guidance: %q", got)
+	}
+	if !strings.Contains(got, "# would write ") {
+		t.Errorf("should have fallen through to dry-run output: %q", got)
+	}
+}
+
+func TestRun_CrossGOOSExplicitOutWrites(t *testing.T) {
+	// With an explicit --out, cross-GOOS should actually write.
+	other := "linux"
+	if runtime.GOOS == "linux" {
+		other = "darwin"
+	}
+	dir := t.TempDir()
+	out := &bytes.Buffer{}
+	opts := fullOpts(other, dir)
+	opts.OutPath = filepath.Join(dir, "explicit-unit")
+	opts.Out = out
+	if err := Run(opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(opts.OutPath); err != nil {
+		t.Errorf("expected file to be written: %v", err)
+	}
+	if strings.Contains(out.String(), "cross-GOOS render") {
+		t.Errorf("explicit --out should suppress cross-GOOS auto-dry-run: %q", out.String())
+	}
+}
+
+func TestRun_CrossGOOSExplicitDryRunStaysDryRun(t *testing.T) {
+	// --dry-run with cross-GOOS shouldn't double-up the banner.
+	other := "linux"
+	if runtime.GOOS == "linux" {
+		other = "darwin"
+	}
+	out := &bytes.Buffer{}
+	opts := fullOpts(other, t.TempDir())
+	opts.OutPath = ""
+	opts.DryRun = true
+	opts.Out = out
+	if err := Run(opts); err != nil {
+		t.Fatal(err)
+	}
+	// Banner should NOT appear when operator already asked for dry-run.
+	if strings.Contains(out.String(), "cross-GOOS render") {
+		t.Errorf("explicit --dry-run shouldn't trigger the auto-dry-run banner: %q", out.String())
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{
 		"plain":          `'plain'`,
