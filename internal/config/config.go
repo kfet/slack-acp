@@ -2,11 +2,13 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Config is the operator-facing JSON config.
@@ -54,7 +56,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var c Config
 	if err := dec.Decode(&c); err != nil {
@@ -66,6 +68,9 @@ func Load(path string) (*Config, error) {
 // Validate checks required fields. Tokens may be supplied via env at runtime
 // instead of config, so they're not required here.
 func (c *Config) Validate() error {
+	if c.SessionIdleTimeoutSeconds < 0 {
+		return fmt.Errorf("session_idle_timeout_seconds must be >= 0")
+	}
 	if c.Policy != "" {
 		switch strings.ToLower(c.Policy) {
 		case "allow-all", "allow", "read-only", "readonly", "deny-all", "deny":
@@ -74,6 +79,15 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// IdleTimeout returns the configured router idle timeout. Zero means use
+// router.New's default.
+func (c *Config) IdleTimeout() time.Duration {
+	if c.SessionIdleTimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(c.SessionIdleTimeoutSeconds) * time.Second
 }
 
 // ValidateTokens returns a multi-line, operator-friendly error when bot

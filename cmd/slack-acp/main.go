@@ -51,7 +51,7 @@ func main() {
 	policyName := flag.String("policy", "", "permission policy: allow-all|read-only|deny-all (default allow-all)")
 	stateDir := flag.String("state-dir", "", "root directory for per-thread state (default: $XDG_STATE_HOME/slack-acp)")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir, and agent command then exit")
+	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir, agent command, and policy then exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -137,6 +137,7 @@ func main() {
 	r, err := router.New(router.Config{
 		Agent:        agent,
 		StateDir:     cfg.StateDir,
+		IdleTimeout:  cfg.IdleTimeout(),
 		SystemPrompt: sysprompt.Resolve(cfg.SystemPrompt, cfg.DisableSystemPrompt, buildSkillsCatalog(*configPath)),
 	})
 	if err != nil {

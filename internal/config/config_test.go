@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, body string) string {
@@ -120,5 +121,18 @@ func TestDefaultConfigDir(t *testing.T) {
 	got := DefaultConfigDir()
 	if !filepath.IsAbs(got) || filepath.Base(got) != "slack-acp" {
 		t.Errorf("tmpdir fallback: %q", got)
+	}
+}
+
+func TestSessionIdleTimeout(t *testing.T) {
+	if got := (&Config{}).IdleTimeout(); got != 0 {
+		t.Fatalf("zero timeout: got %v", got)
+	}
+	c := &Config{SessionIdleTimeoutSeconds: 7}
+	if got := c.IdleTimeout(); got != 7*time.Second {
+		t.Fatalf("timeout: got %v", got)
+	}
+	if err := (&Config{SessionIdleTimeoutSeconds: -1}).Validate(); err == nil {
+		t.Fatal("negative timeout should fail validation")
 	}
 }
