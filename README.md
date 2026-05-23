@@ -134,6 +134,7 @@ internal/debuglog/    SLACK_ACP_DEBUG logger
 internal/handler/     Slack event → ACP prompt + streaming sink
 internal/policy/      allow-all / read-only / deny-all permission gates
 internal/router/      (channel,thread_ts) → ACP session map + GC
+internal/skills/      embedded skill bundle + fir-style catalog
 internal/slackproto/  Socket Mode client + throttled message streamer
 docs/                 design notes + Slack app manifest template
 ```

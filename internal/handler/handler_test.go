@@ -429,6 +429,45 @@ func (h *Handler) inflightCount() int {
 	return len(h.inflight)
 }
 
+// TestWaitIdleCancel covers the ctx-cancellation branch: an inflight
+// entry is held; WaitIdle blocks; the caller cancels its ctx and the
+// helper goroutine broadcasts to unblock the Cond.Wait loop.
+func TestWaitIdleCancel(t *testing.T) {
+	h := New(Config{})
+	key := router.ConvKey{ChannelID: "C", ThreadTS: "T"}
+	_, c := context.WithCancel(context.Background())
+	h.setInflight(key, &inflightEntry{cancel: c})
+	defer func() {
+		h.inflightMu.Lock()
+		delete(h.inflight, key)
+		h.inflightCond.Broadcast()
+		h.inflightMu.Unlock()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.WaitIdle(ctx) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want ctx error from cancelled WaitIdle")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitIdle did not return after cancel")
+	}
+}
+
+// TestWaitIdleAlreadyIdle covers the fast-path return when there's
+// nothing inflight: WaitIdle returns immediately and the helper
+// goroutine exits via the close(stop) signal (not via ctx).
+func TestWaitIdleAlreadyIdle(t *testing.T) {
+	h := New(Config{})
+	if err := h.WaitIdle(context.Background()); err != nil {
+		t.Fatalf("WaitIdle on empty handler: %v", err)
+	}
+}
+
 func waitForIdle(t *testing.T, h *Handler) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

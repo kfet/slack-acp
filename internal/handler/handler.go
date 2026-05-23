@@ -63,13 +63,20 @@ func New(cfg Config) *Handler {
 // transition without wall-clock polling; also useful for graceful
 // shutdown paths.
 //
-// Implementation note: Cond.Wait can't accept a context, so we spawn
-// a helper goroutine that broadcasts when ctx fires. The helper will
-// exit on its own once ctx is cancelled — typically when the calling
-// test's deferred cancel runs, so no real leak.
+// Implementation note: sync.Cond.Wait can't accept a context, so a
+// helper goroutine bridges ctx → Broadcast. The helper exits as soon
+// as WaitIdle returns (either because the map drained or ctx fired)
+// — see the deferred close(stop) below — so there's no goroutine leak
+// even on long-lived ctx.
 func (h *Handler) WaitIdle(ctx context.Context) error {
+	stop := make(chan struct{})
+	defer close(stop)
 	go func() {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-stop:
+			return
+		}
 		h.inflightMu.Lock()
 		h.inflightCond.Broadcast()
 		h.inflightMu.Unlock()

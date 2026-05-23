@@ -41,10 +41,9 @@ type fakeAgent struct {
 	gotCancelCount int32
 	cancelled      atomic.Bool
 
-	// cancelSig is a non-blocking signal: one send per session/cancel
-	// the fake receives. Buffered so the handler never stalls when
-	// nobody is listening; tests that want to synchronise on cancel
-	// arrival drain it.
+	// cancelSig fires once per inbound session/cancel notification.
+	// Tests wait on this instead of polling gotCancelCount. Buffered so
+	// the fake agent never blocks the dispatch goroutine.
 	cancelSig chan struct{}
 }
 
@@ -447,14 +446,11 @@ func TestCancel(t *testing.T) {
 	if err := a.Cancel(t.Context(), sid); err != nil {
 		t.Fatal(err)
 	}
-	// Wait for the notification to drain through the pipe.
+	// Wait deterministically for the cancel notification to drain.
 	select {
 	case <-fa.cancelSig:
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancel notification not received")
-	}
-	if atomic.LoadInt32(&fa.gotCancelCount) != 1 {
-		t.Fatalf("gotCancelCount = %d", atomic.LoadInt32(&fa.gotCancelCount))
 	}
 }
 

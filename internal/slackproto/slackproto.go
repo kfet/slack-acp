@@ -206,7 +206,6 @@ type PostStreamer struct {
 	threadTS    string
 	minInterval time.Duration
 	maxChars    int
-	doneSuffix  string
 
 	// now is the clock. Swapped in tests so throttle behaviour can be
 	// exercised without wall-clock sleeps. Defaults to time.Now.
