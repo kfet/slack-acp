@@ -12,17 +12,17 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/slack-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 )
 
 // ---- fake agent ----
 
 type fakeAgent struct {
 	mu    sync.Mutex
-	sinks map[acp.SessionId]acpclient.SessionUpdateSink
+	sinks map[acp.SessionId]client.SessionUpdateSink
 
-	caps         acpclient.Caps
-	listResult   []acpclient.SessionInfo
+	caps         client.Caps
+	listResult   []client.SessionInfo
 	listErr      error
 	resumeErr    error
 	newSessErr   error
@@ -38,12 +38,12 @@ type fakeAgent struct {
 	cancelCalls  int32
 	promptCalls  int32
 
-	lastNewSessSink      acpclient.SessionUpdateSink
+	lastNewSessSink      client.SessionUpdateSink
 	lastNewSessSysBlocks []acp.ContentBlock
-	lastResumeSink       acpclient.SessionUpdateSink
+	lastResumeSink       client.SessionUpdateSink
 	lastResumeSID        acp.SessionId
 	lastRebindSID        acp.SessionId
-	lastRebindSink       acpclient.SessionUpdateSink
+	lastRebindSink       client.SessionUpdateSink
 	lastDropSID          acp.SessionId
 	lastNewSessCwd       string
 	lastResumeCwd        string
@@ -55,12 +55,12 @@ type fakeAgent struct {
 }
 
 func newFakeAgent() *fakeAgent {
-	return &fakeAgent{sinks: map[acp.SessionId]acpclient.SessionUpdateSink{}}
+	return &fakeAgent{sinks: map[acp.SessionId]client.SessionUpdateSink{}}
 }
 
-func (f *fakeAgent) Caps() acpclient.Caps { return f.caps }
+func (f *fakeAgent) Caps() client.Caps { return f.caps }
 
-func (f *fakeAgent) NewSession(_ context.Context, cwd string, sink acpclient.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
+func (f *fakeAgent) NewSession(_ context.Context, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	atomic.AddInt32(&f.newSessCalls, 1)
 	f.mu.Lock()
 	f.lastNewSessCwd = cwd
@@ -83,7 +83,7 @@ func (f *fakeAgent) NewSession(_ context.Context, cwd string, sink acpclient.Ses
 	return sid, nil
 }
 
-func (f *fakeAgent) ListSessions(_ context.Context, cwd string) ([]acpclient.SessionInfo, error) {
+func (f *fakeAgent) ListSessions(_ context.Context, cwd string) ([]client.SessionInfo, error) {
 	atomic.AddInt32(&f.listCalls, 1)
 	f.mu.Lock()
 	f.lastListCwd = cwd
@@ -91,7 +91,7 @@ func (f *fakeAgent) ListSessions(_ context.Context, cwd string) ([]acpclient.Ses
 	return f.listResult, f.listErr
 }
 
-func (f *fakeAgent) ResumeSession(_ context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error {
+func (f *fakeAgent) ResumeSession(_ context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error {
 	atomic.AddInt32(&f.resumeCalls, 1)
 	f.mu.Lock()
 	f.lastResumeCwd = cwd
@@ -132,7 +132,7 @@ func (f *fakeAgent) DropSession(sid acp.SessionId) {
 	f.mu.Unlock()
 }
 
-func (f *fakeAgent) RebindSink(sid acp.SessionId, sink acpclient.SessionUpdateSink) {
+func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink) {
 	atomic.AddInt32(&f.rebindCalls, 1)
 	f.mu.Lock()
 	f.sinks[sid] = sink
@@ -484,7 +484,7 @@ func TestTryResumeNoCaps(t *testing.T) {
 
 func TestTryResumeListErr(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	fa.caps = client.Caps{ListSessions: true, ResumeSession: true}
 	fa.listErr = errors.New("list boom")
 	r := newRouter(t, fa)
 	if _, err := r.GetOrCreate(context.Background(), ConvKey{ChannelID: "C1", ThreadTS: "1.0"}, stubSink{}); err != nil {
@@ -500,7 +500,7 @@ func TestTryResumeListErr(t *testing.T) {
 
 func TestTryResumeEmpty(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	fa.caps = client.Caps{ListSessions: true, ResumeSession: true}
 	r := newRouter(t, fa)
 	if _, err := r.GetOrCreate(context.Background(), ConvKey{ChannelID: "C1", ThreadTS: "1.0"}, stubSink{}); err != nil {
 		t.Fatal(err)
@@ -515,8 +515,8 @@ func TestTryResumeEmpty(t *testing.T) {
 
 func TestTryResumeError(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
-	fa.listResult = []acpclient.SessionInfo{{SessionId: "old"}}
+	fa.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	fa.listResult = []client.SessionInfo{{SessionId: "old"}}
 	fa.resumeErr = errors.New("nope")
 	r := newRouter(t, fa)
 	if _, err := r.GetOrCreate(context.Background(), ConvKey{ChannelID: "C1", ThreadTS: "1.0"}, stubSink{}); err != nil {
@@ -529,8 +529,8 @@ func TestTryResumeError(t *testing.T) {
 
 func TestTryResumeSuccess(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
-	fa.listResult = []acpclient.SessionInfo{{SessionId: "prior"}, {SessionId: "older"}}
+	fa.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	fa.listResult = []client.SessionInfo{{SessionId: "prior"}, {SessionId: "older"}}
 	r := newRouter(t, fa)
 	s, err := r.GetOrCreate(context.Background(), ConvKey{ChannelID: "C1", ThreadTS: "1.0"}, stubSink{})
 	if err != nil {
@@ -692,7 +692,7 @@ func newRouterWithSP(t *testing.T, fa *fakeAgent, sp string) *Router {
 // session for inline-prefix.
 func TestSystemPrompt_CapPath(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{SystemPrompt: true}
+	fa.caps = client.Caps{SystemPrompt: true}
 	r := newRouterWithSP(t, fa, "DURABLE-CATALOG-XYZ")
 
 	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
@@ -740,8 +740,8 @@ func TestSystemPrompt_FallbackPath(t *testing.T) {
 // dropped the original prefix).
 func TestSystemPrompt_ResumeFallbackReArms(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
-	fa.listResult = []acpclient.SessionInfo{{SessionId: "prev"}}
+	fa.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	fa.listResult = []client.SessionInfo{{SessionId: "prev"}}
 	r := newRouterWithSP(t, fa, "SP-X")
 
 	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
@@ -762,8 +762,8 @@ func TestSystemPrompt_ResumeFallbackReArms(t *testing.T) {
 // prompt on session/load itself.
 func TestSystemPrompt_ResumeCapPathTrustsAgent(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{ListSessions: true, ResumeSession: true, SystemPrompt: true}
-	fa.listResult = []acpclient.SessionInfo{{SessionId: "prev"}}
+	fa.caps = client.Caps{ListSessions: true, ResumeSession: true, SystemPrompt: true}
+	fa.listResult = []client.SessionInfo{{SessionId: "prev"}}
 	r := newRouterWithSP(t, fa, "SP-X")
 
 	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
@@ -780,7 +780,7 @@ func TestSystemPrompt_ResumeCapPathTrustsAgent(t *testing.T) {
 // sysBlocks, never arms inline.
 func TestSystemPrompt_EmptyConfigNoOp(t *testing.T) {
 	fa := newFakeAgent()
-	fa.caps = acpclient.Caps{SystemPrompt: true}
+	fa.caps = client.Caps{SystemPrompt: true}
 	r := newRouterWithSP(t, fa, "")
 
 	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}

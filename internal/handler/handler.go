@@ -13,7 +13,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/slack-go/slack"
 
-	"github.com/kfet/slack-acp/internal/debuglog"
+	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
 )
@@ -43,9 +43,10 @@ type Handler struct {
 
 	// inflight maps ConvKey → entry of the goroutine processing it,
 	// so a follow-up message in the same thread can cancel the prior run.
-	inflightMu   sync.Mutex
-	inflightCond *sync.Cond // broadcast when inflight is mutated
-	inflight     map[router.ConvKey]*inflightEntry
+	inflightMu    sync.Mutex
+	inflightCond  *sync.Cond // broadcast when inflight is mutated
+	inflight      map[router.ConvKey]*inflightEntry
+	waitIdleWaits int // # goroutines parked in WaitIdle's Cond.Wait (test sync)
 }
 
 // New constructs a handler.
@@ -84,7 +85,9 @@ func (h *Handler) WaitIdle(ctx context.Context) error {
 	h.inflightMu.Lock()
 	defer h.inflightMu.Unlock()
 	for len(h.inflight) > 0 && ctx.Err() == nil {
+		h.waitIdleWaits++
 		h.inflightCond.Wait()
+		h.waitIdleWaits--
 	}
 	return ctx.Err()
 }
@@ -96,7 +99,7 @@ func (h *Handler) SetAPI(api *slack.Client) { h.cfg.API = api }
 // Handle is called by slackproto.Client for each inbound event.
 func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	if !h.allowed(ev) {
-		debuglog.Logf("handler: drop ev from user=%s channel=%s (not allowed)", ev.UserID, ev.ChannelID)
+		kitlog.Debugf("handler: drop ev from user=%s channel=%s (not allowed)", ev.UserID, ev.ChannelID)
 		return
 	}
 	text := strings.TrimSpace(ev.Text)
@@ -114,7 +117,7 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 		defer h.clearInflight(key, entry)
 		defer cancel()
 		if err := h.run(pctx, ev, key, text); err != nil {
-			debuglog.Logf("handler: prompt error: %v", err)
+			kitlog.Debugf("handler: prompt error: %v", err)
 		}
 	}()
 }

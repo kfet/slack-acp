@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,7 +16,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/slack-go/slack"
 
-	"github.com/kfet/slack-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
 )
@@ -24,9 +25,9 @@ import (
 
 type fakeAgent struct {
 	mu    sync.Mutex
-	sinks map[acp.SessionId]acpclient.SessionUpdateSink
+	sinks map[acp.SessionId]client.SessionUpdateSink
 
-	caps        acpclient.Caps
+	caps        client.Caps
 	promptStop  acp.StopReason
 	promptErr   error
 	promptHook  func(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error)
@@ -35,12 +36,12 @@ type fakeAgent struct {
 }
 
 func newFakeAgent() *fakeAgent {
-	return &fakeAgent{sinks: map[acp.SessionId]acpclient.SessionUpdateSink{}}
+	return &fakeAgent{sinks: map[acp.SessionId]client.SessionUpdateSink{}}
 }
 
-func (f *fakeAgent) Caps() acpclient.Caps { return f.caps }
+func (f *fakeAgent) Caps() client.Caps { return f.caps }
 
-func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
+func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	sid := acp.SessionId("sid")
@@ -48,11 +49,11 @@ func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.Sessi
 	return sid, nil
 }
 
-func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]acpclient.SessionInfo, error) {
+func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]client.SessionInfo, error) {
 	return nil, nil
 }
 
-func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, _ acpclient.SessionUpdateSink) error {
+func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, _ client.SessionUpdateSink) error {
 	return nil
 }
 
@@ -78,7 +79,7 @@ func (f *fakeAgent) DropSession(sid acp.SessionId) {
 	f.mu.Unlock()
 }
 
-func (f *fakeAgent) RebindSink(sid acp.SessionId, sink acpclient.SessionUpdateSink) {
+func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink) {
 	f.mu.Lock()
 	f.sinks[sid] = sink
 	f.mu.Unlock()
@@ -447,6 +448,18 @@ func TestWaitIdleCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- h.WaitIdle(ctx) }()
+	// Wait until WaitIdle has parked in Cond.Wait, so cancel is guaranteed
+	// to wake it through the helper goroutine (no race where ctx is already
+	// cancelled when WaitIdle's loop first checks it).
+	for {
+		h.inflightMu.Lock()
+		w := h.waitIdleWaits
+		h.inflightMu.Unlock()
+		if w > 0 {
+			break
+		}
+		runtime.Gosched()
+	}
 	cancel()
 	select {
 	case err := <-done:
