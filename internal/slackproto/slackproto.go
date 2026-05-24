@@ -22,7 +22,7 @@ import (
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 
-	"github.com/kfet/slack-acp/internal/debuglog"
+	kitlog "github.com/kfet/acp-kit/log"
 )
 
 // Event is a normalised inbound message the handler cares about.
@@ -89,7 +89,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("slack auth.test: %w", err)
 	}
 	c.botUserID = auth.UserID
-	debuglog.Logf("slack: connected as %s (%s)", auth.User, auth.UserID)
+	kitlog.Debugf("slack: connected as %s (%s)", auth.User, auth.UserID)
 
 	go c.consume(ctx, c.sm.Events)
 	return c.sm.RunContext(ctx)
@@ -118,7 +118,7 @@ func (c *Client) consume(ctx context.Context, events <-chan socketmode.Event) {
 func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 	switch evt.Type {
 	case socketmode.EventTypeConnecting, socketmode.EventTypeConnected, socketmode.EventTypeHello:
-		debuglog.Logf("slack: %s", evt.Type)
+		kitlog.Debugf("slack: %s", evt.Type)
 	case socketmode.EventTypeEventsAPI:
 		api, ok := evt.Data.(slackevents.EventsAPIEvent)
 		if !ok {
@@ -127,9 +127,9 @@ func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 		c.sm.Ack(*evt.Request)
 		c.handleEventsAPI(ctx, api)
 	case socketmode.EventTypeDisconnect:
-		debuglog.Logf("slack: disconnected")
+		kitlog.Debugf("slack: disconnected")
 	default:
-		debuglog.Logf("slack: ignoring %s", evt.Type)
+		kitlog.Debugf("slack: ignoring %s", evt.Type)
 	}
 }
 

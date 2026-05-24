@@ -14,12 +14,12 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/kfet/slack-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
+	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/slack-acp/internal/config"
 	"github.com/kfet/slack-acp/internal/handler"
 	"github.com/kfet/slack-acp/internal/initcmd"
 	"github.com/kfet/slack-acp/internal/installsvc"
-	"github.com/kfet/slack-acp/internal/policy"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/skills"
 	"github.com/kfet/slack-acp/internal/slackproto"
@@ -48,11 +48,12 @@ func main() {
 
 	configPath := flag.String("config", "", "path to JSON config file")
 	agentCmd := flag.String("agent-cmd", "", "agent argv (default: fir --mode acp); space-separated; overrides config")
-	policyName := flag.String("policy", "", "permission policy: allow-all|read-only|deny-all (default allow-all)")
 	stateDir := flag.String("state-dir", "", "root directory for per-thread state (default: $XDG_STATE_HOME/slack-acp)")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir, agent command, and policy then exit")
+	printPaths := flag.Bool("print-paths", false, "print resolved config, state dir, and agent command then exit")
 	flag.Parse()
+
+	kitlog.Register("SLACK_ACP_DEBUG")
 
 	if *showVersion {
 		fmt.Println(version)
@@ -80,9 +81,6 @@ func main() {
 	if len(cfg.AgentCmd) == 0 {
 		cfg.AgentCmd = []string{"fir", "--mode", "acp"}
 	}
-	if *policyName != "" {
-		cfg.Policy = *policyName
-	}
 	if *stateDir != "" {
 		cfg.StateDir = *stateDir
 	}
@@ -98,7 +96,6 @@ func main() {
 		fmt.Printf("config:     %s\n", cp)
 		fmt.Printf("state-dir:  %s\n", cfg.StateDir)
 		fmt.Printf("agent-cmd:  %s\n", strings.Join(cfg.AgentCmd, " "))
-		fmt.Printf("policy:     %s\n", policyOrDefault(cfg.Policy))
 		return
 	}
 
@@ -114,18 +111,12 @@ func main() {
 	}
 	log.Printf("slack-acp: state dir %s", cfg.StateDir)
 
-	pol, err := policy.Parse(cfg.Policy)
-	if err != nil {
-		log.Fatalf("policy: %v", err)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	agent, err := acpclient.Start(ctx, acpclient.Config{
+	agent, err := client.Start(ctx, client.Config{
 		Command: cfg.AgentCmd,
 		Cwd:     cfg.StateDir,
-		Policy:  pol,
 		Stderr:  os.Stderr,
 	})
 	if err != nil {
@@ -169,13 +160,6 @@ func main() {
 		}
 		log.Fatalf("slack run: %v", err)
 	}
-}
-
-func policyOrDefault(p string) string {
-	if p == "" {
-		return "allow-all (default)"
-	}
-	return p
 }
 
 // buildSkillsCatalog merges embedded built-in skills with optional

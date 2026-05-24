@@ -27,9 +27,6 @@ type Config struct {
 	// $XDG_STATE_HOME/slack-acp (or ~/.local/state/slack-acp).
 	StateDir string `json:"state_dir,omitempty"`
 
-	// Policy is one of allow-all|read-only|deny-all (default allow-all).
-	Policy string `json:"policy,omitempty"`
-
 	// AllowedUserIDs, if non-empty, restricts who can talk to the bot.
 	AllowedUserIDs []string `json:"allowed_user_ids,omitempty"`
 	// AllowedChannelIDs, if non-empty, restricts where the bot will respond.
@@ -70,13 +67,6 @@ func Load(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	if c.SessionIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("session_idle_timeout_seconds must be >= 0")
-	}
-	if c.Policy != "" {
-		switch strings.ToLower(c.Policy) {
-		case "allow-all", "allow", "read-only", "readonly", "deny-all", "deny":
-		default:
-			return fmt.Errorf("invalid policy %q", c.Policy)
-		}
 	}
 	return nil
 }

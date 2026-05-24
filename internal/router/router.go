@@ -20,8 +20,8 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/slack-acp/internal/acpclient"
-	"github.com/kfet/slack-acp/internal/debuglog"
+	"github.com/kfet/acp-kit/client"
+	kitlog "github.com/kfet/acp-kit/log"
 )
 
 // ConvKey identifies a conversation: a Slack thread.
@@ -51,18 +51,18 @@ type Session struct {
 	pendingSystemPromptInline bool
 }
 
-// Agent is the subset of *acpclient.AgentProc the router depends on.
+// Agent is the subset of *client.AgentProc the router depends on.
 // Exposed as an interface so tests can substitute a fake. The real
-// *acpclient.AgentProc satisfies it.
+// *client.AgentProc satisfies it.
 type Agent interface {
-	Caps() acpclient.Caps
-	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
-	ListSessions(ctx context.Context, cwd string) ([]acpclient.SessionInfo, error)
-	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
+	Caps() client.Caps
+	NewSession(ctx context.Context, cwd string, sink client.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
+	ListSessions(ctx context.Context, cwd string) ([]client.SessionInfo, error)
+	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	DropSession(sid acp.SessionId)
-	RebindSink(sid acp.SessionId, sink acpclient.SessionUpdateSink)
+	RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 }
 
 // Router owns the conv→session map and creates sessions on demand.
@@ -207,7 +207,7 @@ func validateKeyComponent(s string) error {
 
 // GetOrCreate returns the existing session for key, or creates one with
 // the given sink installed for streaming updates.
-func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink acpclient.SessionUpdateSink) (*Session, error) {
+func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.SessionUpdateSink) (*Session, error) {
 	r.mu.Lock()
 	if s, ok := r.byKey[key]; ok {
 		s.lastUsed = time.Now()
@@ -269,9 +269,9 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink acpclient.Se
 	}
 	r.byKey[key] = s
 	if resumed {
-		debuglog.Logf("router: resumed session %s for %s in %s", sid, key, cwd)
+		kitlog.Debugf("router: resumed session %s for %s in %s", sid, key, cwd)
 	} else {
-		debuglog.Logf("router: new session %s for %s in %s", sid, key, cwd)
+		kitlog.Debugf("router: new session %s for %s in %s", sid, key, cwd)
 	}
 	return s, nil
 }
@@ -286,14 +286,14 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink acpclient.Se
 // fall back to the standard session/load. That path needs a persisted
 // (ConvKey → SessionId) map under StateDir, since session/load takes a
 // sessionId and there is no standard list method.
-func (r *Router) tryResume(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink) (acp.SessionId, bool) {
+func (r *Router) tryResume(ctx context.Context, cwd string, sink client.SessionUpdateSink) (acp.SessionId, bool) {
 	caps := r.agent.Caps()
 	if !caps.ListSessions || !caps.ResumeSession {
 		return "", false
 	}
 	sessions, err := r.agent.ListSessions(ctx, cwd)
 	if err != nil {
-		debuglog.Logf("router: list sessions for %s: %v", cwd, err)
+		kitlog.Debugf("router: list sessions for %s: %v", cwd, err)
 		return "", false
 	}
 	if len(sessions) == 0 {
@@ -305,7 +305,7 @@ func (r *Router) tryResume(ctx context.Context, cwd string, sink acpclient.Sessi
 	// to NewSession on the next message.
 	sid := acp.SessionId(sessions[0].SessionId)
 	if err := r.agent.ResumeSession(ctx, cwd, sid, sink); err != nil {
-		debuglog.Logf("router: resume %s in %s: %v", sid, cwd, err)
+		kitlog.Debugf("router: resume %s in %s: %v", sid, cwd, err)
 		return "", false
 	}
 	return sid, true
@@ -364,7 +364,7 @@ func (r *Router) gcOnce() {
 	}
 	r.mu.Unlock()
 	for _, s := range stale {
-		debuglog.Logf("router: GC session %s (%s); cwd %s retained", s.SessionID, s.Key, s.Cwd)
+		kitlog.Debugf("router: GC session %s (%s); cwd %s retained", s.SessionID, s.Key, s.Cwd)
 		r.agent.DropSession(s.SessionID)
 		// Stable cwd: keep on disk so the agent's state (e.g. .fir/)
 		// survives for future resumption.

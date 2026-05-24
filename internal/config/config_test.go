@@ -18,25 +18,18 @@ func write(t *testing.T, body string) string {
 }
 
 func TestLoadOK(t *testing.T) {
-	p := write(t, `{"bot_token":"xoxb-x","app_token":"xapp-x","agent_cmd":["fir","--mode","acp"],"policy":"read-only"}`)
+	p := write(t, `{"bot_token":"xoxb-x","app_token":"xapp-x","agent_cmd":["fir","--mode","acp"]}`)
 	c, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Policy != "read-only" || len(c.AgentCmd) != 3 {
+	if len(c.AgentCmd) != 3 {
 		t.Fatalf("bad: %+v", c)
 	}
 }
 
 func TestLoadUnknownField(t *testing.T) {
 	p := write(t, `{"nope":1}`)
-	if _, err := Load(p); err == nil {
-		t.Fatal("want err")
-	}
-}
-
-func TestLoadBadPolicy(t *testing.T) {
-	p := write(t, `{"policy":"weird"}`)
 	if _, err := Load(p); err == nil {
 		t.Fatal("want err")
 	}
@@ -52,17 +45,6 @@ func TestLoadMalformedJSON(t *testing.T) {
 	p := write(t, `{not json`)
 	if _, err := Load(p); err == nil {
 		t.Fatal("want parse error")
-	}
-}
-
-func TestValidateAllPolicies(t *testing.T) {
-	// All accepted spellings exercise the explicit allow branches in the
-	// switch — the rejected case is covered by TestLoadBadPolicy above.
-	for _, p := range []string{"", "allow-all", "allow", "read-only", "readonly", "deny-all", "deny"} {
-		c := &Config{Policy: p}
-		if err := c.Validate(); err != nil {
-			t.Fatalf("policy %q: %v", p, err)
-		}
 	}
 }
 
