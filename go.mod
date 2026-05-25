@@ -6,7 +6,7 @@ tool github.com/kfet/covgate/cmd/covgate
 
 require (
 	github.com/coder/acp-go-sdk v0.12.2
-	github.com/kfet/acp-kit v0.1.0
+	github.com/kfet/acp-kit v0.1.1
 	github.com/slack-go/slack v0.23.0
 )
 
