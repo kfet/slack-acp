@@ -16,28 +16,32 @@ See [docs/design.md](docs/design.md) for the full design, goals, non-goals, and 
 
 ```
 cmd/slack-acp/        entry point: flags + wiring
-internal/acpclient/   acp.Client wrapper + stdio agent process
 internal/config/      JSON config loader (DisallowUnknownFields)
-internal/debuglog/    SLACK_ACP_DEBUG logger
 internal/handler/     Slack event → ACP prompt + streaming sink
-internal/policy/      allow-all / read-only / deny-all permission gates
+internal/initcmd/     `slack-acp init` first-run wizard
+internal/installsvc/  systemd / launchd supervisor unit generator
 internal/router/      (channel,thread_ts) → ACP session map + GC
-internal/skills/      embedded skill bundle + fir-style catalog
+internal/skills/      embedded skill bundle + fir-style catalog (wraps `acp-kit/skills`)
 internal/slackproto/  Socket Mode client + throttled message streamer
+internal/sysprompt/   Slack-mrkdwn sysprompt composer injected per session
 ```
 
-The handler owns `(channel,thread_ts) → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: Slack framing in `slackproto`, agent + ACP in `acpclient`, session lifecycle in `router`, policy in `policy`, glue in `handler`.
+Shared ACP primitives live in [`github.com/kfet/acp-kit`](https://github.com/kfet/acp-kit): `client` (acp.Client wrapper + stdio agent process + permission gates `AllowAll`/`ReadOnly`/`DenyAll`), `log` (debug logger), `skills` (skill loader + catalog formatter). The same primitives back `poe-acp`, so wire-level fixes land once.
+
+The handler owns `(channel,thread_ts) → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: Slack framing in `slackproto`, agent + ACP via `acp-kit/client`, session lifecycle in `router`, glue in `handler`.
 
 ## Think before you specialise
 
 Before implementing a fix or feature inside a specific package, stop and ask: **is this actually unique to this layer, or does it belong elsewhere?**
 
-- Slack protocol concerns (event shape, message framing) → `slackproto`.
-- Agent-process concerns (spawn, stdio, ACP framing) → `acpclient`.
+For every non-trivial change, first ask the cross-repo question: **does this belong in `acp-kit`?** acp-kit is the shared home for primitives both `slack-acp` and `poe-acp` need — ACP client wrapper, permission gates, debug log, skill loader/catalog, attachments, sysprompt helpers. If the change is about how the relay talks to an ACP agent (handshake, capabilities, permission decisions, model probing, skill catalog shape, ACP framing), make it in `acp-kit` so both relays get it. Slack-specific surfaces (Block Kit shapes, Socket Mode framing, thread routing, `chat.update` rate limits, mrkdwn rendering) stay here.
+
+- Slack protocol concerns (event shape, message framing, Block Kit) → `slackproto`.
+- Agent-process concerns (spawn, stdio, ACP framing, permission gates) → `acp-kit/client` (upstream, not local).
 - Session lifecycle (cwd, GC, cancel) → `router`.
-- Policy (tool permission decisions) → `policy`.
 - Operator-facing config (defaults, identity) → `config`.
-- When fixing a bug, check whether the same bug exists in sibling code paths. Fix it at the root, not per-site.
+- Sysprompt composition (Slack-mrkdwn guidance) → `sysprompt` here; generic ACP-side sysprompt helpers → `acp-kit`.
+- When fixing a bug, check whether the same bug exists in sibling code paths — both within this repo *and* in `poe-acp` / `acp-kit`. Fix it at the root, not per-site.
 
 ## Build and test
 
