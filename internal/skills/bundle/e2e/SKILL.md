@@ -8,7 +8,7 @@ description: Run and extend slack-acp's end-to-end smoke tests — black-box exe
 End-to-end testing for `slack-acp`. The bot has three wire surfaces:
 
 ```
-Slack ── ws ── slackproto ── handler ── router ── acpclient ── stdio ── agent
+Slack ── ws ── slackproto ── handler ── router ── acp-kit/client ── stdio ── agent
 ```
 
 Unit tests in `internal/*/...` cover each layer in isolation with
@@ -20,7 +20,6 @@ catch wiring bugs in-package tests can't see:
 - ACP `initialize` handshake edge cases.
 - Process-lifecycle bugs (signal handling, child cleanup, restart).
 - State-dir layout regressions (per-thread cwd, reuse across restart).
-- Permission-policy decisions returned to the agent.
 
 If a unit test in `internal/handler/handler_test.go` *could* express
 the case, write it there. e2e is for "the binary itself", not handler
@@ -352,17 +351,7 @@ INODE_AFTER=$(stat -f %i "$THREAD_DIR")
 [ "$INODE_BEFORE" = "$INODE_AFTER" ] || { echo "cwd inode changed"; exit 1; }
 ```
 
-### 6. Permission policy denies write tools
-
-Guards against: `--policy read-only` failing to deny a write-tool
-request from the agent.
-
-Use `--script request-permission`. Run slack-acp with
-`--policy read-only`. Inject a message; the agent will request a
-write-tool permission; the bot must reply with a `denied` outcome
-(observable in `--status-file`'s recorded permission outcomes).
-
-### 7. Bot's own messages ignored
+### 6. Bot's own messages ignored
 
 Guards against: feedback loops from the bot reading its own posts.
 
@@ -382,7 +371,7 @@ PROMPTS_AFTER=$(python3 -c "import json; print(json.load(open('$STATUS'))['promp
 we're asserting on the *absence* of an effect. Keep it bounded and
 short.)
 
-### 8. Edits / subtype messages ignored
+### 7. Edits / subtype messages ignored
 
 Same shape as case 7, with `"subtype":"message_changed"` in place of
 `bot_id`:
@@ -397,7 +386,7 @@ PROMPTS_AFTER=$(python3 -c "import json; print(json.load(open('$STATUS'))['promp
 [ "$PROMPTS_BEFORE" = "$PROMPTS_AFTER" ] || { echo "edit leaked"; exit 1; }
 ```
 
-### 9. Mid-text mention stripping
+### 8. Mid-text mention stripping
 
 Guards against: `<@U…>` references mid-sentence leaking into the agent
 prompt.
@@ -416,7 +405,7 @@ done
 [ "$LP" = "hey  what about  this" ] || { echo "got '$LP'"; exit 1; }
 ```
 
-### 10. Two distinct threads → two distinct sessions
+### 9. Two distinct threads → two distinct sessions
 
 Guards against: router collapsing distinct (channel, thread_ts) keys
 into one session.
@@ -439,7 +428,7 @@ done
 [ "$SC" = "$((SC_BEFORE+2))" ] || { echo "sessions_created jumped from $SC_BEFORE to $SC"; exit 1; }
 ```
 
-### 11. App-mention with explicit `thread_ts` replies in that thread
+### 10. App-mention with explicit `thread_ts` replies in that thread
 
 Guards against: app_mention path ignoring `thread_ts` when the user
 mentioned the bot from inside an existing thread (replying at the

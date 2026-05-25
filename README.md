@@ -34,8 +34,10 @@ shakeout. Built on the same patterns as [poe-acp].
   before the previous response finishes cancels the in-flight prompt.
 - Streaming output is throttled to ~1 update/sec to stay inside Slack's
   `chat.update` rate limits.
-- Permission requests from the agent are answered by the configured policy
-  (`allow-all` | `read-only` | `deny-all`).
+- Permission requests from the agent are auto-approved (`acp-kit`'s
+  default permission policy). The bot is meant to run as a trusted,
+  private agent — gate access at the `allowed_user_ids` /
+  `allowed_channel_ids` boundary instead.
 
 ## Setup
 
@@ -105,7 +107,6 @@ Or with a config file:
   "bot_token": "xoxb-…",
   "app_token": "xapp-…",
   "agent_cmd": ["fir", "--mode", "acp"],
-  "policy": "read-only",
   "allowed_user_ids": ["U0123456"],
   "state_dir": "/var/lib/slack-acp"
 }
@@ -121,23 +122,28 @@ key reference. All keys are optional — tokens may be supplied via env
 built-in defaults.
 
 `slack-acp --print-paths` resolves and prints the config file, state
-directory, agent command, and policy without starting the bot — handy
+directory, and agent command without starting the bot — handy
 for verifying what a unit file or env will actually use.
 
 ## Repository layout
 
 ```
 cmd/slack-acp/        entry point: flags + wiring
-internal/acpclient/   acp.Client wrapper + stdio agent process
 internal/config/      JSON config loader (DisallowUnknownFields)
-internal/debuglog/    SLACK_ACP_DEBUG logger
 internal/handler/     Slack event → ACP prompt + streaming sink
-internal/policy/      allow-all / read-only / deny-all permission gates
+internal/initcmd/     `slack-acp init` first-run wizard
+internal/installsvc/  systemd / launchd supervisor unit generator
 internal/router/      (channel,thread_ts) → ACP session map + GC
-internal/skills/      embedded skill bundle + fir-style catalog
+internal/skills/      embedded skill bundle + fir-style catalog (wraps `acp-kit/skills`)
 internal/slackproto/  Socket Mode client + throttled message streamer
+internal/sysprompt/   Slack-mrkdwn sysprompt composer injected per session
 docs/                 design notes + Slack app manifest template
 ```
+
+Shared ACP primitives live in [`github.com/kfet/acp-kit`](https://github.com/kfet/acp-kit):
+`client` (ACP stdio agent process + permission gates), `log` (debug
+logger), `skills` (skill loader + catalog formatter). The same primitives
+back `poe-acp`, so wire-level fixes land once.
 
 See [docs/design.md](docs/design.md) for goals, non-goals, and the
 session-lifecycle model.

@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-25
+
+### Removed
+- `--policy` CLI flag and `policy` config key. Permission decisions
+  now go through `acp-kit/client`'s default policy (auto-approve);
+  gate access at `allowed_user_ids` / `allowed_channel_ids` instead.
+  Configs that still set `"policy"` will fail to load
+  (`DisallowUnknownFields`); drop the line.
+- `internal/acpclient`, `internal/debuglog`, `internal/policy`
+  packages deleted. The same primitives now come from
+  [`github.com/kfet/acp-kit`](https://github.com/kfet/acp-kit)
+  (`client`, `log`) so wire-level fixes can land once for both
+  `slack-acp` and `poe-acp`.
+
+### Changed
+- `internal/skills` is now a thin per-repo bundle wrapper over
+  `acp-kit/skills`; the per-content-hash extraction, frontmatter
+  parsing, and catalog formatting all live upstream.
+
+### Fixed
+- `TestWaitIdleCancel` race: the helper goroutine's `ctx.Done` branch
+  could run before the waiter parked in `Cond.Wait`. Added a
+  `waitIdleWaits` counter so the test waits for the parked state
+  before cancelling; the broadcast that wakes the waiter is now
+  deterministically exercised.
+
 ### Fixed
 - `session_idle_timeout_seconds` config now drives router idle GC
   instead of being parsed and ignored. Negative values are rejected at

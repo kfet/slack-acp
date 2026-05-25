@@ -24,10 +24,11 @@
   agent advertises those caps. Agents that only advertise the standard
   `loadSession` cap currently get a fresh `session/new` instead — see
   Roadmap.
-- No interactive permission prompts surfaced into Slack — the policy
-  decides server-side.
-- No reaction/button UX (e.g. 👍 to approve a tool call). All policy is
-  declarative.
+- No interactive permission prompts surfaced into Slack — `acp-kit`'s
+  default policy auto-approves; the bot is meant to run as a trusted,
+  private agent gated at the user/channel allowlist.
+- No reaction/button UX (e.g. 👍 to approve a tool call). All access
+  control is declarative (`allowed_user_ids`, `allowed_channel_ids`).
 
 ## Architecture
 
@@ -37,7 +38,7 @@
   websocket  ─event→  slackproto.Client
                           │
                           ▼
-                       handler.Handler ─────────────► router.Router ──► acpclient.AgentProc
+                       handler.Handler ─────────────► router.Router ──► acp-kit/client.AgentProc
                           │                                                  │
                           │  ◄── streamingSink ◄──── session/update ◄────────┤
                           ▼
@@ -51,17 +52,16 @@
   message.im events into a single `Event` shape and exposes a
   `PostStreamer` for throttled message updates. Nothing in this package
   knows about ACP.
-- **acpclient** owns the agent process and the ACP wire layer. It
-  multiplexes one stdio child across many sessions via a `SessionId →
-  Sink` map. Nothing here knows about Slack.
+- **acp-kit/client** (upstream `github.com/kfet/acp-kit/client`) owns
+  the agent process and the ACP wire layer. It multiplexes one stdio
+  child across many sessions via a `SessionId → Sink` map. Nothing
+  here knows about Slack.
 - **router** owns session lifecycle: `(channel, thread_ts) → SessionId`,
   per-thread cwd allocation, idle GC, cancel propagation.
 - **handler** glues the two halves: each inbound event → cancel any
   in-flight prompt for that thread → fetch/create session → install a
   fresh streaming sink → call `Prompt` → stream updates back via the
   `PostStreamer`.
-- **policy** answers `session/request_permission` callbacks; v0 ships
-  declarative allow-all / read-only / deny-all.
 
 ## Conversation key
 
@@ -155,8 +155,9 @@ at a time, and the agent isn't billed for tokens it'll never deliver.
 - File system: the agent can call `fs/read_text_file` and
   `fs/write_text_file`. v0 enforces only "absolute path" as a sanity
   check; sandboxing to the session cwd is a v1 follow-up.
-- Permission policy: tool calls go through `policy.Decide`; default is
-  `allow-all`, suitable only when the bot is private.
+- Permission policy: tool calls go through `acp-kit/client`'s default
+  policy, which auto-approves. Suitable only when the bot is private —
+  gate access at the `allowed_*` boundary instead.
 - Allowlists: `allowed_user_ids` and `allowed_channel_ids` gate inbound
   events at the handler boundary.
 
@@ -165,9 +166,8 @@ at a time, and the agent isn't billed for tokens it'll never deliver.
 Before adding a feature, ask which layer it belongs to:
 
 - Slack protocol concerns (event shape, message framing) → `slackproto`.
-- Agent-process concerns (spawn, stdio, ACP framing) → `acpclient`.
+- Agent-process concerns (spawn, stdio, ACP framing) → `acp-kit/client` (upstream).
 - Session lifecycle (cwd path, GC, cancel) → `router`.
-- Policy (tool permission decisions) → `policy`.
 - Operator-facing config → `config`.
 - Plumbing (Slack event → ACP prompt → Slack message) → `handler`.
 
