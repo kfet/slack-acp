@@ -109,7 +109,7 @@ seconds of extra latency for negligible additional signal.
 ## Known backlog issues
 
 - AGENTS.md says "No `time.Sleep` in tests" but 8 call sites pre-date
-  this effort (handler, slackproto, acpclient, router tests). Not
+  this effort (handler, slackproto, acp-kit/client, router tests). Not
   blocking step-7+ work; should be retrofitted to channel-based
   synchronisation in a dedicated cleanup pass.
 - The cross-repo `bundleHashFn`-not-swapped test-isolation bug we

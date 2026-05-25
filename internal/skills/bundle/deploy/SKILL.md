@@ -20,12 +20,11 @@ ACP session inside a long-lived agent process (`fir --mode acp`,
    - `SLACK_APP_TOKEN` (`xapp-…`): app-level token with `connections:write`.
 3. **ACP agent command** — default `fir --mode acp`. Common alternatives:
    `claude-code --acp`, `gemini-cli --acp`.
-4. **Permission policy** — `allow-all` (default), `read-only`, `deny-all`.
-5. **State directory** — default `$XDG_STATE_HOME/slack-acp`
+4. **State directory** — default `$XDG_STATE_HOME/slack-acp`
    (`~/.local/state/slack-acp`). Must be writable; agent state and
    per-thread cwds live there and **must persist across restarts**
    to keep thread sessions resumable.
-6. **Allowlist (optional)** — `allowed_user_ids` in `config.json` if
+5. **Allowlist (optional)** — `allowed_user_ids` in `config.json` if
    you want to limit who can trigger the bot.
 
 ## Slack app prep (one-time, before deploying)
@@ -85,7 +84,6 @@ Optionally `~/.config/slack-acp/config.json`:
 ```json
 {
   "agent_cmd": ["fir", "--mode", "acp"],
-  "policy": "read-only",
   "allowed_user_ids": ["U0123ABC"],
   "state_dir": "/home/<user>/.local/state/slack-acp"
 }

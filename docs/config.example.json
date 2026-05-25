@@ -3,7 +3,6 @@
   "app_token": "xapp-REPLACE-ME",
   "agent_cmd": ["fir", "--mode", "acp"],
   "state_dir": "/var/lib/slack-acp",
-  "policy": "read-only",
   "allowed_user_ids": ["U01234567"],
   "allowed_channel_ids": ["C01234567"],
   "session_idle_timeout_seconds": 0,
