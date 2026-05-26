@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `install.sh` — POSIX-sh installer for non-Homebrew boxes (Linux,
+  containers, CI). Detects OS/arch, downloads the matching binary
+  from the GitHub release, verifies its sha256 against
+  `checksums.txt`, and installs to `/usr/local/bin` (or
+  `$HOME/.local/bin`). Honours `VERSION`, `BIN_DIR`, `OS`, `ARCH`
+  env overrides. Usage documented in README.
+
 ## [0.1.0] - 2026-05-25
 
 ### Removed
