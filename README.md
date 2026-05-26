@@ -43,8 +43,26 @@ shakeout. Built on the same patterns as [poe-acp].
 
 ### Install
 
+macOS / Linux via Homebrew:
+
 ```bash
 brew install kfet/fir/slack-acp
+```
+
+Anywhere else (Linux without Homebrew, CI, containers) — one-liner that
+picks the right prebuilt binary for your OS/arch, verifies its checksum
+against `checksums.txt`, and drops it in `/usr/local/bin` (or
+`$HOME/.local/bin` if that's not writable):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kfet/slack-acp/main/install.sh | sh
+```
+
+Pin a version or install elsewhere with env overrides:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kfet/slack-acp/main/install.sh \
+    | VERSION=v0.1.0 BIN_DIR=$HOME/.local/bin sh
 ```
 
 Or build from source: `go install github.com/kfet/slack-acp/cmd/slack-acp@latest`.
