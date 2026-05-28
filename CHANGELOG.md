@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-27
+
 ### Fixed
 - `slackproto.PostStreamer`: spinner-vs-Append race where a slow
   in-flight `chat.update` from the placeholder spinner could land
