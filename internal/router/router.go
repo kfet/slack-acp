@@ -63,6 +63,11 @@ type Agent interface {
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	DropSession(sid acp.SessionId)
 	RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
+	// Models returns a snapshot of the agent's last-seen available
+	// models and the current model id ("provider/model"). Empty until
+	// a session has been created. Used by the relay to resolve a
+	// provider emoji for the status header.
+	Models() (models []client.ModelInfo, currentID string)
 }
 
 // Router owns the conv→session map and creates sessions on demand.

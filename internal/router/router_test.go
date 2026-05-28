@@ -141,6 +141,10 @@ func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 	f.mu.Unlock()
 }
 
+func (f *fakeAgent) Models() (models []client.ModelInfo, currentID string) {
+	return nil, ""
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

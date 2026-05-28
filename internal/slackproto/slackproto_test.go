@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -397,6 +398,10 @@ type fakeSlackSrv struct {
 	postErr   bool
 	updateErr bool
 	bodies    []string
+	// updateGate, if non-nil, blocks each chat.update handler until
+	// the channel is closed. Used to make the spinner/Append race
+	// deterministic in TestPostStreamerSendMuSerializes.
+	updateGate chan struct{}
 }
 
 func newFakeSlackSrv() *fakeSlackSrv {
@@ -416,6 +421,12 @@ func newFakeSlackSrv() *fakeSlackSrv {
 		_, _ = w.Write([]byte(`{"ok":true,"channel":"C1","ts":"1.0","message":{"text":"x"}}`))
 	})
 	mux.HandleFunc("/chat.update", func(w http.ResponseWriter, r *http.Request) {
+		fs.mu.Lock()
+		gate := fs.updateGate
+		fs.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
 		atomic.AddInt32(&fs.updates, 1)
 		_ = r.ParseForm()
 		fs.mu.Lock()
@@ -580,3 +591,375 @@ func TestFlushIfPendingClosed(t *testing.T) {
 
 // silence unused import if a path is removed
 var _ = errors.New
+
+func TestPostStreamerStartPostsImmediately(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), "> _Thinking…_"); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	posts := fs.posts
+	first := ""
+	if len(fs.bodies) > 0 {
+		first = fs.bodies[0]
+	}
+	fs.mu.Unlock()
+	if posts != 1 || !strings.Contains(first, "Thinking") {
+		t.Fatalf("expected 1 post with thinking placeholder; posts=%d body=%q", posts, first)
+	}
+}
+
+func TestPostStreamerStartDefaultBody(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	first := fs.bodies[0]
+	fs.mu.Unlock()
+	if !strings.Contains(first, "thinking") {
+		t.Fatalf("expected default placeholder; body=%q", first)
+	}
+}
+
+func TestPostStreamerStartIdempotent(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background(), "hi again"); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	posts := fs.posts
+	fs.mu.Unlock()
+	if posts != 1 {
+		t.Fatalf("Start must be idempotent; posts=%d", posts)
+	}
+}
+
+func TestPostStreamerStartThenAppendOverwrites(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), "> _Thinking…_"); err != nil {
+		t.Fatal(err)
+	}
+	// First Append after Start must flush as an update (lastSent is
+	// zero), so the user sees real content within milliseconds rather
+	// than waiting for the throttle.
+	if err := s.Append(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.posts != 1 || fs.updates != 1 {
+		t.Fatalf("want 1 post + 1 update; got posts=%d updates=%d", fs.posts, fs.updates)
+	}
+	// The second body (the update) carries the real content, not the
+	// placeholder.
+	if !strings.Contains(fs.bodies[1], "hello") || strings.Contains(fs.bodies[1], "Thinking") {
+		t.Fatalf("update body should replace placeholder; got %q", fs.bodies[1])
+	}
+}
+
+func TestPostStreamerStartClosedNoOp(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Close(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	// Close already posted once (the Closing flush). Start on a
+	// closed streamer must not post a second time.
+	if err := s.Start(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.posts != 1 {
+		t.Fatalf("Start on closed must be no-op; posts=%d", fs.posts)
+	}
+}
+
+func TestPostStreamerSetMinInterval(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	s.SetMinInterval(0)
+	if s.minInterval != 0 {
+		t.Fatalf("SetMinInterval did not stick; got %v", s.minInterval)
+	}
+}
+
+func TestPostStreamerStartPostError(t *testing.T) {
+	fs := newFakeSlackSrv()
+	fs.postErr = true
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), "x"); err == nil {
+		t.Fatal("expected post error from Start")
+	}
+}
+
+func TestPostStreamerUpdatePlaceholderNotStarted(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	// No Start → s.ts empty → not alive, no IO.
+	alive, err := s.UpdatePlaceholder(context.Background(), "x")
+	if alive || err != nil {
+		t.Fatalf("want !alive nil err; got alive=%v err=%v", alive, err)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.updates != 0 {
+		t.Fatalf("must not call chat.update before Start; updates=%d", fs.updates)
+	}
+}
+
+func TestPostStreamerUpdatePlaceholderHappy(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	s.minInterval = 0 // bypass throttle
+	if err := s.Start(context.Background(), ">_T_"); err != nil {
+		t.Fatal(err)
+	}
+	alive, err := s.UpdatePlaceholder(context.Background(), ">_T._")
+	if !alive || err != nil {
+		t.Fatalf("want alive nil err; got alive=%v err=%v", alive, err)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.updates != 1 {
+		t.Fatalf("want 1 update; got %d", fs.updates)
+	}
+}
+
+func TestPostStreamerUpdatePlaceholderThrottled(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	// Stub clock at a fixed instant so throttle math is deterministic.
+	now := time.Unix(1_000_000, 0)
+	s.now = func() time.Time { return now }
+	if err := s.Start(context.Background(), ">_T_"); err != nil {
+		t.Fatal(err)
+	}
+	// First placeholder tick goes through (lastSent is zero).
+	if alive, err := s.UpdatePlaceholder(context.Background(), ">_T._"); !alive || err != nil {
+		t.Fatalf("first tick: alive=%v err=%v", alive, err)
+	}
+	// Second tick is within minInterval → must skip without IO but
+	// remain alive.
+	if alive, err := s.UpdatePlaceholder(context.Background(), ">_T.._"); !alive || err != nil {
+		t.Fatalf("throttled tick should stay alive nil err; got alive=%v err=%v", alive, err)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.updates != 1 {
+		t.Fatalf("throttled tick should not hit network; updates=%d", fs.updates)
+	}
+}
+
+func TestPostStreamerUpdatePlaceholderClosedNotAlive(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), ">_T_"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := s.UpdatePlaceholder(context.Background(), "x"); alive || err != nil {
+		t.Fatalf("closed streamer: alive=%v err=%v", alive, err)
+	}
+}
+
+func TestPostStreamerUpdatePlaceholderAfterFirstChunkNotAlive(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), ">_T_"); err != nil {
+		t.Fatal(err)
+	}
+	s.FirstChunk()
+	if alive, _ := s.UpdatePlaceholder(context.Background(), "x"); alive {
+		t.Fatal("must not be alive after FirstChunk")
+	}
+}
+
+func TestPostStreamerUpdatePlaceholderError(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	s.minInterval = 0
+	if err := s.Start(context.Background(), ">_T_"); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	fs.updateErr = true
+	fs.mu.Unlock()
+	alive, err := s.UpdatePlaceholder(context.Background(), "x")
+	if !alive || err == nil {
+		// alive stays true so the caller doesn't disarm on a
+		// transient Slack hiccup — but the error is surfaced.
+		t.Fatalf("want alive + err; got alive=%v err=%v", alive, err)
+	}
+}
+
+func TestPostStreamerFirstChunkResetsThrottle(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if err := s.Start(context.Background(), ">_T_"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a placeholder tick having just happened.
+	s.mu.Lock()
+	s.lastSent = s.now()
+	s.mu.Unlock()
+	s.FirstChunk()
+	s.mu.Lock()
+	zeroed := s.lastSent.IsZero()
+	done := s.placeholderDone
+	s.mu.Unlock()
+	if !zeroed || !done {
+		t.Fatalf("FirstChunk must reset lastSent + set placeholderDone; zeroed=%v done=%v", zeroed, done)
+	}
+	// Idempotent: a second call is a no-op (covers the early-return branch).
+	s.FirstChunk()
+}
+
+// TestPostStreamerSendMuSerializes pins the fix for the spinner-vs-Append
+// race: a slow in-flight UpdatePlaceholder must NOT clobber real content
+// that lands while it's blocked on Slack. The Slack chat.update sender
+// is serialized through sendMu and re-checks placeholderDone after
+// acquiring it; the second (placeholder) request must therefore find
+// placeholderDone=true and bail without touching the wire.
+//
+// Sequencing (all deterministic — no wall-clock waits):
+//
+//  1. Start posts the placeholder (1 chat.postMessage).
+//  2. Goroutine A calls UpdatePlaceholder("thinking") — server's
+//     update handler blocks on the gate; sendMu is held.
+//  3. Goroutine B calls FirstChunk (closes the window) + Append("real")
+//     — Append's flush waits on sendMu.
+//  4. Release the gate. The in-flight placeholder update completes:
+//     1 chat.update with "thinking".
+//  5. sendMu is released; Append's flush acquires it and posts the
+//     real content: 1 more chat.update with "real".
+//  6. We verify the LAST body on the wire is the real content, not
+//     the placeholder. If a second (post-FirstChunk) UpdatePlaceholder
+//     races in, it must bail under sendMu — no third update.
+func TestPostStreamerSendMuSerializes(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	s.minInterval = 0 // bypass throttle for placeholder/append
+	if err := s.Start(context.Background(), "> _Thinking…_"); err != nil {
+		t.Fatal(err)
+	}
+
+	gate := make(chan struct{})
+	fs.mu.Lock()
+	fs.updateGate = gate
+	fs.mu.Unlock()
+
+	upDone := make(chan struct{})
+	go func() {
+		defer close(upDone)
+		_, _ = s.UpdatePlaceholder(context.Background(), "> _Thinking._")
+	}()
+
+	// Wait until the in-flight UpdatePlaceholder has actually entered
+	// sendMu (i.e. is blocked on the gated server). We can't observe
+	// the mutex directly, so we observe its effect: a TryLock on
+	// sendMu fails iff someone holds it.
+	for {
+		if !s.sendMu.TryLock() {
+			break
+		}
+		s.sendMu.Unlock()
+		// Yield without sleeping; the goroutine above will get on cpu.
+		// (No time.Sleep — tests must not wall-clock-poll.)
+		runtimeGosched()
+	}
+
+	// Real content arrives behind the in-flight placeholder.
+	appDone := make(chan struct{})
+	go func() {
+		defer close(appDone)
+		s.FirstChunk()
+		_ = s.Append(context.Background(), "real-answer")
+	}()
+
+	// Stop blocking the placeholder request. It completes (1 update),
+	// sendMu released, Append's flush now acquires it and lands the
+	// real content (2nd update).
+	close(gate)
+
+	<-upDone
+	<-appDone
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if got := atomic.LoadInt32(&fs.updates); got != 2 {
+		t.Fatalf("want exactly 2 chat.update calls (placeholder + real); got %d", got)
+	}
+	if len(fs.bodies) < 3 {
+		t.Fatalf("want 3 bodies (post + 2 updates); got %d: %q", len(fs.bodies), fs.bodies)
+	}
+	last := fs.bodies[len(fs.bodies)-1]
+	if !strings.Contains(last, "real-answer") {
+		t.Fatalf("last body must carry real content (placeholder must not clobber it); got %q", last)
+	}
+}
+
+// TestPostStreamerUpdatePlaceholderBailsAfterFirstChunk pins the
+// "re-check placeholderDone under sendMu" branch: an UpdatePlaceholder
+// that loses the sendMu race against a FirstChunk-er must NOT issue
+// the chat.update.
+func TestPostStreamerUpdatePlaceholderBailsAfterFirstChunk(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	s.minInterval = 0
+	if err := s.Start(context.Background(), "> _Thinking…_"); err != nil {
+		t.Fatal(err)
+	}
+	// Hold sendMu so any UpdatePlaceholder must wait on it.
+	s.sendMu.Lock()
+	upDone := make(chan struct{})
+	go func() {
+		defer close(upDone)
+		alive, err := s.UpdatePlaceholder(context.Background(), "> _Thinking._")
+		if alive || err != nil {
+			t.Errorf("expected !alive nil err after FirstChunk; got alive=%v err=%v", alive, err)
+		}
+	}()
+	// Flip placeholderDone while UpdatePlaceholder is parked on sendMu.
+	s.FirstChunk()
+	// Release sendMu → UpdatePlaceholder re-checks placeholderDone and bails.
+	s.sendMu.Unlock()
+	<-upDone
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if got := atomic.LoadInt32(&fs.updates); got != 0 {
+		t.Fatalf("UpdatePlaceholder must bail without IO once FirstChunk fired; updates=%d", got)
+	}
+}
+
+// runtimeGosched yields the current goroutine without a wall-clock
+// sleep. Used in TestPostStreamerSendMuSerializes to spin until
+// another goroutine has acquired the streamer's sendMu.
+func runtimeGosched() { runtime.Gosched() }

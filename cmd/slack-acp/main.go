@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
@@ -124,6 +125,21 @@ func main() {
 	}
 	defer agent.Close()
 	log.Printf("slack-acp %s: agent up (caps=%+v)", version, agent.Caps())
+
+	// Probe the agent for its current model so the placeholder /
+	// status header can render a provider emoji even when later turns
+	// land on resumed sessions. (acp-kit's ResumeSession path
+	// currently discards the response's SessionModelState, so without
+	// this probe a resumed-thread turn would have no model info to
+	// resolve.) Best-effort: failure just means no emoji segment.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := agent.ProbeModels(probeCtx); err != nil {
+		log.Printf("probe models failed (continuing without provider emoji): %v", err)
+	} else {
+		_, current := agent.Models()
+		log.Printf("probed agent current model: %q", current)
+	}
+	probeCancel()
 
 	r, err := router.New(router.Config{
 		Agent:        agent,

@@ -16,6 +16,7 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
+	"github.com/kfet/slack-acp/internal/statusline"
 )
 
 // Config configures the handler.
@@ -171,15 +172,38 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
 	sink := newStreamingSink(stream)
 
+	// Post the "Thinking…" placeholder *immediately*, before we even
+	// reach the agent — Slack has no native typing indicator, so this
+	// is the user's only signal that we received the message. The
+	// streamer treats the placeholder as separate from the streamed
+	// buffer: the first real Append will overwrite it cleanly.
+	if err := stream.Start(ctx, statusline.Thinking(statusline.Status{})); err != nil {
+		kitlog.Debugf("handler: thinking placeholder post failed: %v", err)
+		// Non-fatal: the streamer will fall back to posting on the
+		// first real chunk.
+	}
+
 	// Watchdog: flush pending text every 1s while the prompt runs.
 	wctx, wcancel := context.WithCancel(ctx)
 	defer wcancel()
 	go watchdog(wctx, stream)
+	// Spinner: animate the placeholder dots and refresh its status
+	// header until the first real chunk lands. Self-disarms via
+	// UpdatePlaceholder's alive=false signal once the sink's
+	// FirstChunk callback fires.
+	go spinner(wctx, stream, sink)
 
 	sess, err := h.cfg.Router.GetOrCreate(ctx, key, sink)
 	if err != nil {
 		_ = stream.Close(ctx, fmt.Sprintf("\n_error: %v_", err))
 		return err
+	}
+
+	// Resolve provider emoji from the agent's current model. Empty
+	// for unknown providers or when the agent hasn't reported a
+	// model yet (segment is dropped by the renderer).
+	if _, currentID := h.cfg.Router.Agent().Models(); currentID != "" {
+		sink.SetProviderEmoji(statusline.ProviderEmojiForModel(currentID))
 	}
 
 	sess.Mu.Lock()
@@ -222,6 +246,41 @@ func watchdogWithTick(ctx context.Context, s *slackproto.PostStreamer, tick time
 			return
 		case <-t.C:
 			_ = s.FlushIfPending(context.Background())
+		}
+	}
+}
+
+// spinner animates the "Thinking…" placeholder dots and re-renders the
+// status header (mood/plan) as the agent emits _meta updates. Stops
+// the moment the placeholder window closes (the sink's first
+// user-visible write calls FirstChunk on the streamer) or ctx is
+// cancelled. 1.5s is comfortably above Slack's ~1s/channel
+// chat.update rate limit.
+func spinner(ctx context.Context, s *slackproto.PostStreamer, sink *streamingSink) {
+	spinnerWithTick(ctx, s, sink, 1500*time.Millisecond)
+}
+
+// spinnerWithTick is the testable core: takes the tick duration as a
+// parameter so tests don't need to wall-clock-poll for a 1.5s frame.
+func spinnerWithTick(ctx context.Context, s *slackproto.PostStreamer, sink *streamingSink, tick time.Duration) {
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	// dot frames cycle 1→2→3 chars. Starting at 0 means the first
+	// rendered frame is "." (one dot), distinct from the static "…"
+	// posted by Start so users see motion on the first tick.
+	frames := []string{".", "..", "..."}
+	i := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			frame := statusline.Spinner(sink.Status(), frames[i%len(frames)])
+			alive, _ := s.UpdatePlaceholder(context.Background(), frame)
+			if !alive {
+				return
+			}
+			i++
 		}
 	}
 }
