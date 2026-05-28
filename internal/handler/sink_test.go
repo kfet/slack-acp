@@ -8,6 +8,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/slack-acp/internal/slackproto"
+	"github.com/kfet/slack-acp/internal/statusline"
 )
 
 func newSinkAndCapture(t *testing.T) (*streamingSink, *fakeSlack) {
@@ -78,7 +79,7 @@ func TestSinkEmptyAgentThoughtChunkSkipped(t *testing.T) {
 	}
 }
 
-func TestSinkToolCall(t *testing.T) {
+func TestSinkToolCallSuppressed(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
 	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
@@ -87,67 +88,138 @@ func TestSinkToolCall(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(fs.bodies, ""), "Run tests") {
-		t.Fatalf("expected tool-call line; bodies=%q", fs.bodies)
+	if fs.posts != 0 {
+		t.Fatalf("tool calls must be hidden; bodies=%q", fs.bodies)
 	}
 }
 
-func TestSinkToolCallEmptyTitle(t *testing.T) {
+func TestSinkToolCallUpdateSuppressed(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
-	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{
-			ToolCall: &acp.SessionUpdateToolCall{},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// Still posts (the rendering just has empty backticks).
-	if fs.posts == 0 {
-		t.Fatal("expected a post even on empty title")
-	}
-}
-
-func TestSinkToolCallUpdate(t *testing.T) {
-	sink, fs := newSinkAndCapture(t)
-	statusCompleted := acp.ToolCallStatus("completed")
-	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{
-			ToolCallUpdate: &acp.SessionToolCallUpdate{Status: &statusCompleted},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.Join(fs.bodies, ""), "completed") {
-		t.Fatalf("expected completed marker; bodies=%q", fs.bodies)
-	}
-
-	// Pending status (not completed/failed) → no post.
-	sink2, fs2 := newSinkAndCapture(t)
-	pending := acp.ToolCallStatus("pending")
-	_ = sink2.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{Status: &pending}},
-	})
-	if fs2.posts != 0 {
-		t.Fatal("non-terminal status should not post")
-	}
-
-	// Nil status → no post.
-	sink3, fs3 := newSinkAndCapture(t)
-	_ = sink3.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{}},
-	})
-	if fs3.posts != 0 {
-		t.Fatal("nil status should not post")
-	}
-
-	// Failed status posts.
-	sink4, fs4 := newSinkAndCapture(t)
+	completed := acp.ToolCallStatus("completed")
 	failed := acp.ToolCallStatus("failed")
-	_ = sink4.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{Status: &failed}},
+	for _, st := range []*acp.ToolCallStatus{nil, &completed, &failed} {
+		if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+			Update: acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{Status: st}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fs.posts != 0 {
+		t.Fatalf("tool-call updates must be hidden; bodies=%q", fs.bodies)
+	}
+}
+
+func TestSinkStatusGetter(t *testing.T) {
+	sink, _ := newSinkAndCapture(t)
+	if got := sink.Status(); got.Mood != "" || got.Plan != "" || got.ProviderEmoji != "" {
+		t.Fatalf("expected zero status before any input; got %+v", got)
+	}
+	sink.SetProviderEmoji("🏛️")
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"mood": "curious", "plan": "1/2"},
+		},
 	})
-	if fs4.posts == 0 || !strings.Contains(strings.Join(fs4.bodies, ""), "failed") {
-		t.Fatalf("expected failed marker; bodies=%q", fs4.bodies)
+	got := sink.Status()
+	if got.ProviderEmoji != "🏛️" || got.Mood != "curious" || got.Plan != "1/2" {
+		t.Fatalf("Status() did not reflect parsed meta + emoji; got %+v", got)
+	}
+}
+
+func TestSinkStatusHeaderPrepended(t *testing.T) {
+	sink, fs := newSinkAndCapture(t)
+	// Mood/plan arrive before the first text chunk.
+	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "3/8"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "hello"}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join(fs.bodies, "")
+	if !strings.Contains(body, "> _steady • 3/8_") {
+		t.Fatalf("expected status header; body=%q", body)
+	}
+	if !strings.Contains(body, "hello") {
+		t.Fatalf("expected message body; body=%q", body)
+	}
+	// Second chunk must NOT prepend the header again.
+	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: " world"}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(strings.Join(fs.bodies, ""), "> _steady"); n != 1 {
+		t.Fatalf("header must appear exactly once across all bodies; got %d", n)
+	}
+}
+func TestSinkStatusHeaderEmptyNoOp(t *testing.T) {
+	sink, fs := newSinkAndCapture(t)
+	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "hi"}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join(fs.bodies, "")
+	if strings.Contains(body, "> _") {
+		t.Fatalf("no status → no header; body=%q", body)
+	}
+}
+
+func TestSinkStatusHeaderOnThoughtChunk(t *testing.T) {
+	// First user-visible write is a thought, not a message — header
+	// should still prepend exactly once.
+	sink, fs := newSinkAndCapture(t)
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"mood": "curious"},
+		},
+	})
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "hmm"}},
+			},
+		},
+	})
+	body := strings.Join(fs.bodies, "")
+	if !strings.Contains(body, "> _curious_") {
+		t.Fatalf("expected header on first thought; body=%q", body)
+	}
+}
+
+func TestSinkStatusHeaderOnPlanFirst(t *testing.T) {
+	sink, fs := newSinkAndCapture(t)
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"plan": "1/2"},
+		},
+	})
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			Plan: &acp.SessionUpdatePlan{Entries: []acp.PlanEntry{{Content: "do thing"}}},
+		},
+	})
+	body := strings.Join(fs.bodies, "")
+	if !strings.Contains(body, "> _1/2_") {
+		t.Fatalf("expected header on first plan write; body=%q", body)
 	}
 }
 
@@ -199,6 +271,23 @@ func TestOneLineTruncates(t *testing.T) {
 	}
 	if strings.Contains(got, "\n") {
 		t.Fatal("newlines should be replaced")
+	}
+}
+
+// TestOneLineRuneSafe pins the rune-safe truncation: feeding 250
+// multibyte runes (each 4 bytes in UTF-8) must yield exactly 200
+// runes + "…", with no truncated codepoint at the tail.
+func TestOneLineRuneSafe(t *testing.T) {
+	in := strings.Repeat("🌲", 250)
+	got := oneLine(in)
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("expected ellipsis; got %q", got)
+	}
+	// Must end with a complete rune before the ellipsis, never a
+	// partial UTF-8 byte sequence.
+	trimmed := strings.TrimSuffix(got, "…")
+	if r := []rune(trimmed); len(r) != 200 || string(r) != strings.Repeat("🌲", 200) {
+		t.Fatalf("not rune-safe: %d runes, %q", len(r), trimmed)
 	}
 }
 

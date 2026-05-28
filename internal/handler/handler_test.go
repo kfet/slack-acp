@@ -19,6 +19,7 @@ import (
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
+	"github.com/kfet/slack-acp/internal/statusline"
 )
 
 // ---- fakeAgent: minimal router.Agent implementation for handler tests ----
@@ -33,6 +34,10 @@ type fakeAgent struct {
 	promptHook  func(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error)
 	cancelCount int32
 	dropCount   int32
+	// currentModel is returned from Models(); tests set this to
+	// exercise provider-emoji resolution. Empty by default → no
+	// emoji segment.
+	currentModel string
 }
 
 func newFakeAgent() *fakeAgent {
@@ -83,6 +88,12 @@ func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 	f.mu.Lock()
 	f.sinks[sid] = sink
 	f.mu.Unlock()
+}
+
+func (f *fakeAgent) Models() (models []client.ModelInfo, currentID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return nil, f.currentModel
 }
 
 // emit synthesises a session/update from the agent side.
@@ -266,6 +277,36 @@ func TestHandleDeliversPrompt(t *testing.T) {
 	}
 }
 
+// TestHandleResolvesProviderEmoji verifies that when the agent reports
+// a current model id, the handler resolves the provider emoji and
+// pushes it into the sink so the placeholder/header carries it.
+func TestHandleResolvesProviderEmoji(t *testing.T) {
+	fa := newFakeAgent()
+	fa.currentModel = "anthropic/claude-sonnet-4"
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	done := make(chan struct{})
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "ok"}}}},
+		})
+		close(done)
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
+	<-done
+	waitForIdle(t, h)
+	body := strings.Join(fs.bodies, "")
+	if !strings.Contains(body, "🏛️") {
+		t.Fatalf("expected provider emoji in body; got %q", body)
+	}
+}
+
 func TestHandleAgentError(t *testing.T) {
 	fa := newFakeAgent()
 	fa.promptErr = errors.New("boom")
@@ -430,6 +471,68 @@ func (h *Handler) inflightCount() int {
 	return len(h.inflight)
 }
 
+// ---- spinner ----
+
+func TestSpinnerExitsOnCtx(t *testing.T) {
+	fs := newFakeSlack()
+	defer fs.close()
+	stream := slackproto.NewPostStreamer(fs.client(), "C1", "1.0")
+	if err := stream.Start(context.Background(), "> _Thinking…_"); err != nil {
+		t.Fatal(err)
+	}
+	sink := newStreamingSink(stream)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { spinner(ctx, stream, sink); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spinner did not exit on ctx cancel")
+	}
+}
+
+func TestSpinnerTicksAndSelfDisarms(t *testing.T) {
+	fs := newFakeSlack()
+	defer fs.close()
+	stream := slackproto.NewPostStreamer(fs.client(), "C1", "1.0")
+	stream.SetMinInterval(0) // tests don't gate placeholder updates
+	if err := stream.Start(context.Background(), "> _Thinking…_"); err != nil {
+		t.Fatal(err)
+	}
+	sink := newStreamingSink(stream)
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"mood": "steady"},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { spinnerWithTick(ctx, stream, sink, time.Millisecond); close(done) }()
+
+	select {
+	case <-fs.updated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spinner never updated")
+	}
+
+	fs.mu.Lock()
+	last := fs.bodies[len(fs.bodies)-1]
+	fs.mu.Unlock()
+	if !strings.Contains(last, "steady") || !strings.Contains(last, "Thinking") {
+		t.Fatalf("frame missing expected content: %q", last)
+	}
+
+	stream.FirstChunk()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spinner did not self-disarm after FirstChunk")
+	}
+}
+
 // TestWaitIdleCancel covers the ctx-cancellation branch: an inflight
 // entry is held; WaitIdle blocks; the caller cancels its ctx and the
 // helper goroutine broadcasts to unblock the Cond.Wait loop.
@@ -497,6 +600,73 @@ func anyContains(ss []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestHandleStartPlaceholderError covers the (non-fatal) error path
+// when the immediate placeholder post fails — the handler must log
+// and continue, and the normal flow still completes.
+func TestHandleStartPlaceholderError(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	fs.postErr = true
+	defer fs.close()
+
+	done := make(chan struct{})
+	fa.promptHook = func(ctx context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		// Emit one chunk so the streamer attempts another post (which
+		// also fails, surfacing as a debug log) — flow still returns.
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "x"}}}},
+		})
+		close(done)
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
+	<-done
+	waitForIdle(t, h)
+}
+
+// TestHandlePostsThinkingPlaceholder verifies the immediate "Thinking…"
+// indicator is posted *before* the agent produces any output. The fake
+// agent blocks until released, so the only message that can land
+// during that window is the placeholder.
+func TestHandlePostsThinkingPlaceholder(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fa.promptHook = func(ctx context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		close(started)
+		<-release
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
+
+	// Once the agent's Prompt has been entered, Start must already
+	// have posted the placeholder. Read the captured bodies under lock.
+	<-started
+	fs.mu.Lock()
+	posts := fs.posts
+	firstBody := ""
+	if len(fs.bodies) > 0 {
+		firstBody = fs.bodies[0]
+	}
+	fs.mu.Unlock()
+	if posts < 1 || !strings.Contains(firstBody, "Thinking") {
+		t.Fatalf("expected immediate Thinking placeholder; posts=%d first=%q", posts, firstBody)
+	}
+
+	close(release)
+	waitForIdle(t, h)
 }
 
 // ---- silence unused imports if a refactor drops a code path ----

@@ -4,7 +4,77 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `slackproto.PostStreamer`: spinner-vs-Append race where a slow
+  in-flight `chat.update` from the placeholder spinner could land
+  after the sink's first real chunk and clobber the answer with a
+  stale "Thinking.." frame. All outbound Slack writes (`Start`,
+  `UpdatePlaceholder`, `flush`) now serialize through `sendMu`, and
+  `UpdatePlaceholder` re-checks `placeholderDone` after acquiring it
+  so a late-loser bails without touching the wire.
+- `handler.oneLine`: byte-truncation at 200 could split a multibyte
+  UTF-8 rune, producing invalid UTF-8 in Slack mrkdwn for emoji-heavy
+  thought chunks. Now caps by rune count.
+
+### Changed
+- `internal/statusline` is now a thin Slack-mrkdwn wrapper over the
+  new shared `github.com/kfet/acp-kit/statusline` package (v0.1.4). The wire
+  contract (ExtensionID, MaxFieldRunes, Status, ParseMeta,
+  ProviderEmoji / ProviderEmojiForModel, Segments, CapRunes) lives
+  upstream so poe-acp, slack-acp and the fir agent stay byte-identical
+  on the wire. Only the Slack-mrkdwn renderers (`Header`, `Thinking`,
+  `Spinner`) remain local. The ACP extension id was renamed
+  `dev.poe-acp.status-line/v1` → `dev.acp-kit.status-line/v1` —
+  agents must emit the new key.
+
 ### Added
+- Provider emoji in the status header / spinner — resolved from the
+  agent's `SessionModelState.currentModelId` ("provider/model") via
+  the shared `statusline.ProviderEmojiForModel` mapping (kept in sync
+  with poe-acp). Adds a small `Models()` method to the router's
+  `Agent` interface; satisfied by `*client.AgentProc` upstream. With
+  this, the placeholder shows e.g. `> _🏛️ • Thinking._` even when
+  the agent has not (yet) emitted a `dev.acp-kit.status-line/v1`
+  mood/plan payload.
+- Animated "Thinking…" spinner — between the initial placeholder post
+  and the first real chunk, a 1.5s-tick goroutine rotates the dots
+  (`.` → `..` → `...`) and re-renders the mood/plan status header as
+  agent `_meta` updates land, so the placeholder actively reflects
+  fir's current state (mood + plan progress). Self-disarms the moment
+  real content begins; throttle-aware (skips ticks within Slack's ~1s
+  chat.update rate-limit window).
+- `statusline.Spinner(s, dots)` for the per-frame render;
+  `statusline.Thinking(s)` keeps a stable static form.
+- `PostStreamer.UpdatePlaceholder` (placeholder-only chat.update,
+  throttle-aware, self-disarms on `FirstChunk`/`Close`) and
+  `PostStreamer.FirstChunk` (closes placeholder window + resets the
+  throttle so the imminent real chunk flushes immediately).
+- Immediate `> _Thinking…_` placeholder posted as soon as a Slack
+  message arrives, before the agent produces any output — analogous
+  to poe-acp's heartbeat spinner. Slack has no native typing
+  indicator, so this is the user's only signal that the relay
+  received the message. The placeholder is overwritten cleanly by the
+  first real chunk.
+- Status header line (`> _mood • plan_`) prepended once to the
+  assistant's reply, sourced from the `dev.acp-kit.status-line/v1`
+  session/update `_meta` extension. Mood and plan are capped at 12
+  runes each. No provider-emoji segment (slack-acp has no per-turn
+  model selection); otherwise the wire format is shared with poe-acp
+  so one fir agent lights up both relays.
+- `internal/statusline` package: `ParseMeta`, `Header`, `Thinking`,
+  `Status`. Slack-mrkdwn flavoured (blockquote + italic).
+- `slackproto.PostStreamer.Start(ctx, body)` — idempotent immediate
+  placeholder post. Leaves `lastSent` at zero so the first real
+  `Append` flushes promptly as a `chat.update` rather than waiting on
+  the throttle.
+
+### Changed
+- Tool calls and tool-call status updates are no longer surfaced in
+  Slack. They burn the `chat.update` rate-limit budget and push the
+  answer offscreen on mobile; thinking blocks and the final answer
+  are what users actually read. Operators wanting full tool detail
+  can tail the agent's stdout / fir transcript directly.
+
 - `install.sh` — POSIX-sh installer for non-Homebrew boxes (Linux,
   containers, CI). Detects OS/arch, downloads the matching binary
   from the GitHub release, verifies its sha256 against

@@ -217,6 +217,24 @@ type PostStreamer struct {
 	pending  bool
 	lastSent time.Time
 	closed   bool
+	// placeholderDone flips true once the streamer has committed to
+	// real content (first user-driven Append, or explicit FirstChunk).
+	// UpdatePlaceholder becomes a no-op afterwards so a slow spinner
+	// goroutine can never overwrite the answer.
+	placeholderDone bool
+
+	// sendMu serializes every outbound Slack write (chat.postMessage
+	// and chat.update — placeholder updates AND flushed content). The
+	// concurrency model is: producers (Append, UpdatePlaceholder,
+	// flush, FlushIfPending) drop s.mu before doing the actual API
+	// call, and a slow update can otherwise race a fast one.
+	//
+	// Without this serialization the spinner goroutine's in-flight
+	// chat.update can land AFTER the sink's FirstChunk+Append update,
+	// clobbering real content with "Thinking..". UpdatePlaceholder
+	// re-checks placeholderDone after acquiring sendMu so a
+	// late-loser doesn't issue its update at all.
+	sendMu sync.Mutex
 }
 
 // NewPostStreamer creates a streamer that will post in `channel` as a thread
@@ -231,6 +249,134 @@ func NewPostStreamer(api *slack.Client, channel, threadTS string) *PostStreamer 
 		maxChars:    35000,
 		now:         time.Now,
 	}
+}
+
+// Start posts an initial placeholder message *immediately* — used as
+// the "Thinking…" indicator that replaces Slack's missing typing
+// dots. The placeholder body is not added to the streamed buffer, so
+// the first Append flush will *update* the message to the real
+// content (with the placeholder cleanly overwritten).
+//
+// Idempotent: a second Start, or any flush that ran before Start
+// because Append landed first, is a no-op.
+func (s *PostStreamer) Start(ctx context.Context, body string) error {
+	s.mu.Lock()
+	if s.closed || s.ts != "" {
+		s.mu.Unlock()
+		return nil
+	}
+	if body == "" {
+		body = "_thinking…_"
+	}
+	channel := s.channel
+	threadTS := s.threadTS
+	s.mu.Unlock()
+
+	// Serialize against placeholder updates and flushes — see sendMu
+	// docs. Holding it across the post ensures any concurrent
+	// UpdatePlaceholder/flush waits for s.ts to be set before
+	// running.
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+
+	_, ts, err := s.api.PostMessageContext(ctx, channel,
+		slack.MsgOptionText(body, false),
+		slack.MsgOptionTS(threadTS),
+		slack.MsgOptionDisableLinkUnfurl(),
+	)
+	if err != nil {
+		return fmt.Errorf("post: %w", err)
+	}
+	s.mu.Lock()
+	if s.ts == "" {
+		s.ts = ts
+		// Intentionally leave lastSent at zero so the first real
+		// Append flushes immediately as a chat.update rather than
+		// waiting for the watchdog tick. The placeholder post + one
+		// content update inside the same second is well within
+		// Slack's chat.update rate limit (~1/s); subsequent updates
+		// still throttle.
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// SetMinInterval overrides the throttle minimum (default 1s). Exposed
+// for tests in other packages that need deterministic placeholder
+// updates without wall-clock waits; production callers should not
+// reach for this.
+func (s *PostStreamer) SetMinInterval(d time.Duration) {
+	s.mu.Lock()
+	s.minInterval = d
+	s.mu.Unlock()
+}
+
+// UpdatePlaceholder rewrites the message body in place — used by a
+// spinner loop to animate the "Thinking…" frame between Start and the
+// first real chunk. Returns alive=true if the update went out (the
+// caller's next tick is worth running); alive=false means the
+// placeholder window has closed (real content has begun, or the
+// stream is closed) and the spinner should self-disarm.
+//
+// Throttle-aware: skips ticks that would land within minInterval of
+// the previous send, returning alive=true without an IO call so the
+// caller keeps ticking. Does NOT touch s.full — placeholder frames
+// are explicitly outside the streamed buffer.
+func (s *PostStreamer) UpdatePlaceholder(ctx context.Context, body string) (alive bool, err error) {
+	s.mu.Lock()
+	if s.closed || s.ts == "" {
+		s.mu.Unlock()
+		return false, nil
+	}
+	if s.now().Sub(s.lastSent) < s.minInterval {
+		// Too soon — skip this tick, stay alive.
+		s.mu.Unlock()
+		return true, nil
+	}
+	channel := s.channel
+	ts := s.ts
+	s.mu.Unlock()
+
+	// Serialize outbound Slack writes. The placeholderDone check is
+	// done HERE (post-sendMu) rather than earlier so a concurrent
+	// FirstChunk+Append that completes while we wait for sendMu still
+	// disarms us — otherwise our chat.update would land after their
+	// flush and clobber the real content with a stale spinner frame.
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	s.mu.Lock()
+	done := s.placeholderDone || s.closed
+	s.mu.Unlock()
+	if done {
+		return false, nil
+	}
+
+	_, _, _, uerr := s.api.UpdateMessageContext(ctx, channel, ts,
+		slack.MsgOptionText(body, false),
+		slack.MsgOptionDisableLinkUnfurl(),
+	)
+	if uerr != nil {
+		return true, fmt.Errorf("update: %w", uerr)
+	}
+	s.mu.Lock()
+	s.lastSent = s.now()
+	s.mu.Unlock()
+	return true, nil
+}
+
+// FirstChunk signals that real content is about to flow. Closes the
+// placeholder window (subsequent UpdatePlaceholder calls return
+// alive=false) and resets the throttle so the imminent Append flushes
+// immediately rather than waiting up to minInterval behind a spinner
+// tick. Idempotent.
+func (s *PostStreamer) FirstChunk() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.placeholderDone {
+		return
+	}
+	s.placeholderDone = true
+	s.lastSent = time.Time{}
 }
 
 // Append adds text to the buffer and flushes if enough time has elapsed.
@@ -284,24 +430,37 @@ func (s *PostStreamer) body() string {
 }
 
 func (s *PostStreamer) flush(ctx context.Context) error {
+	// Serialize against placeholder updates and other flushes — see
+	// the sendMu comment on PostStreamer. Without this lock, a slow
+	// chat.update from the spinner can land after this flush and
+	// clobber real content with a stale "Thinking.." frame.
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+
 	body := s.body()
-	if s.ts == "" {
-		_, ts, err := s.api.PostMessageContext(ctx, s.channel,
+	s.mu.Lock()
+	firstPost := s.ts == ""
+	channel := s.channel
+	threadTS := s.threadTS
+	ts := s.ts
+	s.mu.Unlock()
+	if firstPost {
+		_, newTS, err := s.api.PostMessageContext(ctx, channel,
 			slack.MsgOptionText(body, false),
-			slack.MsgOptionTS(s.threadTS),
+			slack.MsgOptionTS(threadTS),
 			slack.MsgOptionDisableLinkUnfurl(),
 		)
 		if err != nil {
 			return fmt.Errorf("post: %w", err)
 		}
 		s.mu.Lock()
-		s.ts = ts
+		s.ts = newTS
 		s.lastSent = s.now()
 		s.pending = false
 		s.mu.Unlock()
 		return nil
 	}
-	_, _, _, err := s.api.UpdateMessageContext(ctx, s.channel, s.ts,
+	_, _, _, err := s.api.UpdateMessageContext(ctx, channel, ts,
 		slack.MsgOptionText(body, false),
 		slack.MsgOptionDisableLinkUnfurl(),
 	)
