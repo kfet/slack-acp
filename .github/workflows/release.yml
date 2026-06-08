@@ -23,7 +23,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Guard release version
-        uses: kfet/gha/release-guard@a0c8ee4e6902e59b7d219a69c0a44c9c4600a3f4
+        uses: kfet/gha/release-guard@b6598d4147f7bbeae296596365f90c976fe968d3
 
       - name: Build and test
         run: make all
