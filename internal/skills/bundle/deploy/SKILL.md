@@ -48,7 +48,7 @@ Pick one:
 **Homebrew (recommended, once the host has brew):**
 
 ```bash
-ssh <host> 'brew install kfet/fir/slack-acp'
+ssh <host> 'brew install kfet/ai/slack-acp'
 ```
 
 **Cross-built scp (`make deploy`):** detects remote arch, scp's the

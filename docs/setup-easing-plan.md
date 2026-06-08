@@ -6,7 +6,7 @@ Living plan for the "make initial setup easy" effort. See chat history
 Today's UX, from zero:
 
 ```bash
-brew install kfet/fir/slack-acp
+brew install kfet/ai/slack-acp
 slack-acp init             # prompts for tokens, verifies, writes 0600 files
 slack-acp install-service  # writes systemd unit / launchd plist
 # paste the printed systemctl/launchctl lines
@@ -18,7 +18,7 @@ Three commands plus the irreducible Slack app-manifest paste.
 
 `git tag vX.Y.Z && make publish` produces a GitHub Release with prebuilt
 binaries for darwin/linux × amd64/arm64 (+ linux/armv6) and auto-updates
-the shared `kfet/homebrew-fir` tap.
+the shared `kfet/homebrew-ai` tap.
 
 - [x] `.goreleaser.yaml` — 5 cross-builds, brews block.
 - [x] `.github/workflows/release.yml` — runs on `v*` tag (needs

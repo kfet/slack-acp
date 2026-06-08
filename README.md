@@ -46,7 +46,7 @@ shakeout. Built on the same patterns as [poe-acp].
 macOS / Linux via Homebrew:
 
 ```bash
-brew install kfet/fir/slack-acp
+brew install kfet/ai/slack-acp
 ```
 
 Anywhere else (Linux without Homebrew, CI, containers) — one-liner that

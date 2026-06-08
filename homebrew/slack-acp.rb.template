@@ -1,4 +1,4 @@
-# This is a template for the kfet/homebrew-fir tap.
+# This is a template for the kfet/homebrew-ai tap.
 #
 # Formula/slack-acp.rb in the tap is regenerated automatically by
 # GoReleaser on every kfet/slack-acp tag push (see the brews: block
@@ -7,8 +7,8 @@
 # affect users.
 #
 # Users install with:
-#   brew install kfet/fir/slack-acp
-#   (or: brew tap kfet/fir && brew install slack-acp)
+#   brew install kfet/ai/slack-acp
+#   (or: brew tap kfet/ai && brew install slack-acp)
 
 class SlackAcp < Formula
   desc "Slack bot that relays each thread to a spawned ACP-speaking agent"

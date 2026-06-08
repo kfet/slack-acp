@@ -61,10 +61,10 @@ After the user confirms, run `make publish`. This pushes `main` and
    check).
 2. Invokes GoReleaser: builds the 5 cross-compile targets, creates the
    GitHub release with binaries + checksums + `THIRD_PARTY_NOTICES.md`,
-   and commits `Formula/slack-acp.rb` to `kfet/homebrew-fir` (the
+   and commits `Formula/slack-acp.rb` to `kfet/homebrew-ai` (the
    shared tap).
 
-After which `brew install kfet/fir/slack-acp` (or `brew upgrade`) will
+After which `brew install kfet/ai/slack-acp` (or `brew upgrade`) will
 pick up the new version.
 
 Alternatively, `make deploy HOST=<host>` pushes the right
