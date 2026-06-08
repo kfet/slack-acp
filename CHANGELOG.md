@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-08
+
+### Changed
+
+- Homebrew tap renamed `kfet/homebrew-fir` -> `kfet/homebrew-ai` (shared tap for
+  fir, poe-acp, slack-acp). Install path is now `brew install kfet/ai/slack-acp`.
+  The old tap name redirects on GitHub; re-tap with
+  `brew untap kfet/fir && brew tap kfet/ai` recommended. GoReleaser brews target,
+  docs, skills and the formula template were updated accordingly.
+
 ## [0.1.1] - 2026-05-27
 
 ### Fixed
