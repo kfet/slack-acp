@@ -19,6 +19,7 @@
         "scopes": {
             "bot": [
                 "app_mentions:read",
+                "channels:history",
                 "chat:write",
                 "im:history",
                 "im:read",
@@ -32,6 +33,7 @@
         "event_subscriptions": {
             "bot_events": [
                 "app_mention",
+                "message.channels",
                 "message.im"
             ]
         },
