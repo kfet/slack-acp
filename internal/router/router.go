@@ -167,6 +167,12 @@ func (r *Router) StateDir() string { return r.stateDir }
 // messages to threads the bot has already been summoned into.
 // Membership check is disk-backed so it survives restarts.
 func (r *Router) Known(key ConvKey) bool {
+	r.mu.Lock()
+	root := r.root
+	r.mu.Unlock()
+	if root == nil {
+		return false
+	}
 	if err := validateKeyComponent(key.ChannelID); err != nil {
 		return false
 	}
@@ -174,7 +180,7 @@ func (r *Router) Known(key ConvKey) bool {
 		return false
 	}
 	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS)
-	_, err := r.root.Stat(rel)
+	_, err := root.Stat(rel)
 	return err == nil
 }
 
@@ -182,6 +188,12 @@ func (r *Router) Known(key ConvKey) bool {
 // key, or "" if none recorded. Used for dedup (drop ts <= last) and gap
 // detection (fetch history between last and new).
 func (r *Router) GetLastTS(key ConvKey) string {
+	r.mu.Lock()
+	root := r.root
+	r.mu.Unlock()
+	if root == nil {
+		return ""
+	}
 	if err := validateKeyComponent(key.ChannelID); err != nil {
 		return ""
 	}
@@ -189,7 +201,7 @@ func (r *Router) GetLastTS(key ConvKey) string {
 		return ""
 	}
 	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS, "last_ts")
-	b, err := r.root.ReadFile(rel)
+	b, err := root.ReadFile(rel)
 	if err != nil {
 		return ""
 	}
@@ -199,6 +211,12 @@ func (r *Router) GetLastTS(key ConvKey) string {
 // SetLastTS records the timestamp of the most recently processed message
 // for the given key. Used to track checkpoint for dedup and gap detection.
 func (r *Router) SetLastTS(key ConvKey, ts string) error {
+	r.mu.Lock()
+	root := r.root
+	r.mu.Unlock()
+	if root == nil {
+		return fmt.Errorf("router closed")
+	}
 	if err := validateKeyComponent(key.ChannelID); err != nil {
 		return err
 	}
@@ -206,7 +224,7 @@ func (r *Router) SetLastTS(key ConvKey, ts string) error {
 		return err
 	}
 	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS, "last_ts")
-	return r.root.WriteFile(rel, []byte(ts+"\n"), 0o644)
+	return root.WriteFile(rel, []byte(ts+"\n"), 0o644)
 }
 
 // cwdFor returns the stable per-thread working directory for key and
