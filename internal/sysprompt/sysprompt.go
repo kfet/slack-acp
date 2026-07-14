@@ -48,4 +48,11 @@ const defaultText = `Your replies are posted into a Slack thread via the Slack W
 not rendered as Markdown in a terminal or web chat. Format
 messages using Slack's mrkdwn conventions and keep them concise — they
 are read in a chat pane. One streaming reply per user message; the
-relay updates a single Slack message in place as you stream.`
+relay updates a single Slack message in place as you stream.
+
+You may be in a shared thread with multiple people. When ambient mode
+is enabled, each line you receive from the thread is prefixed with
+"[username]" to show who's speaking. You decide whether to reply or
+stay silent. To abstain (no reply), output exactly "<<SILENT>>" and
+nothing else; the relay will suppress posting. If you have nothing
+useful to add, abstain.`
