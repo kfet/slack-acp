@@ -152,17 +152,30 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		if ev.BotID != "" || ev.SubType != "" || ev.User == c.botUserID || ev.User == "" {
 			return
 		}
-		if ev.ChannelType != "im" {
+		// Forward DMs unconditionally.
+		if ev.ChannelType == "im" {
+			c.deliver(ctx, Event{
+				UserID:    ev.User,
+				ChannelID: ev.Channel,
+				ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
+				TS:        ev.TimeStamp,
+				Text:      ev.Text,
+				IsDM:      true,
+			})
 			return
 		}
-		c.deliver(ctx, Event{
-			UserID:    ev.User,
-			ChannelID: ev.Channel,
-			ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
-			TS:        ev.TimeStamp,
-			Text:      ev.Text,
-			IsDM:      true,
-		})
+		// Forward thread replies in non-DM channels. The handler will
+		// decide whether to process them based on ambient config and
+		// whether the thread is known.
+		if ev.ThreadTimeStamp != "" {
+			c.deliver(ctx, Event{
+				UserID:    ev.User,
+				ChannelID: ev.Channel,
+				ThreadTS:  ev.ThreadTimeStamp,
+				TS:        ev.TimeStamp,
+				Text:      ev.Text,
+			})
+		}
 	}
 }
 
