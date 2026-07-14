@@ -282,10 +282,17 @@ func (h *Handler) backfillIfNeeded(ctx context.Context, ev slackproto.Event, key
 	// Advance the checkpoint to the newest backfilled line so a crash
 	// after this point doesn't replay the same history next time. The
 	// live message's own checkpoint write (in run) supersedes this.
-	if serr := h.cfg.Router.SetLastTS(key, newestTS); serr != nil {
-		kitlog.Debugf("handler: failed to record backfill last_ts %s: %v", newestTS, serr)
-	}
+	h.checkpoint(key, newestTS)
 	return nil
+}
+
+// checkpoint records the last-processed ts for a thread, logging (but
+// not surfacing) a write failure — a lost checkpoint only costs a
+// redundant backfill fetch on the next message, never correctness.
+func (h *Handler) checkpoint(key router.ConvKey, ts string) {
+	if err := h.cfg.Router.SetLastTS(key, ts); err != nil {
+		kitlog.Debugf("handler: failed to record last_ts %s for %s: %v", ts, key, err)
+	}
 }
 
 // formatBackfillMessage formats a Slack message for injection into the
@@ -422,9 +429,7 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// detection on the next message. Addressed/DM path never touches
 	// the checkpoint file.
 	if h.cfg.Ambient {
-		if err := h.cfg.Router.SetLastTS(key, ev.TS); err != nil {
-			kitlog.Debugf("handler: failed to record last_ts for %s: %v", key, err)
-		}
+		h.checkpoint(key, ev.TS)
 	}
 
 	// Abstain: if the agent's full output was the sentinel (or empty),
