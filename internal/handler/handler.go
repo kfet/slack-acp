@@ -27,6 +27,19 @@ type Config struct {
 	AllowedChannelIDs map[string]struct{}
 	// PromptTimeout caps the wall-clock for a single prompt. Default 10m.
 	PromptTimeout time.Duration
+	// Ambient enables forwarding of non-DM thread replies to threads
+	// the bot is already part of. When false, only @-mentions and DMs
+	// trigger responses.
+	Ambient bool
+	// Backfill enables catching up on missed messages via
+	// conversations.replies when a gap is detected.
+	Backfill bool
+	// BackfillMaxMessages caps how many historical messages to fetch
+	// when backfilling.
+	BackfillMaxMessages int
+	// SilentSentinel is the exact output string that signals the agent
+	// has chosen not to reply.
+	SilentSentinel string
 }
 
 // inflightEntry wraps a per-call cancel func with a unique identity so
@@ -108,6 +121,16 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 		return
 	}
 	key := router.ConvKey{ChannelID: ev.ChannelID, ThreadTS: ev.ThreadTS}
+
+	// Pre-filter ambient thread replies: only forward if we're already
+	// in this thread (summoned via prior @-mention or DM). DMs and
+	// @-mentions always get through.
+	if !ev.IsDM && !strings.Contains(ev.Text, fmt.Sprintf("<@%s>", ev.BotUserID)) {
+		if !h.cfg.Ambient || !h.cfg.Router.Known(key) {
+			kitlog.Debugf("handler: drop ambient reply in unknown thread %s", key)
+			return
+		}
+	}
 
 	// Cancel any in-flight prompt for this thread, then start a new one.
 	h.cancelInflight(ctx, key)
