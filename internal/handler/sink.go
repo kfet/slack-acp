@@ -7,9 +7,130 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/slack-acp/internal/slackproto"
 	"github.com/kfet/slack-acp/internal/statusline"
 )
+
+// abstainSink wraps a streamingSink and buffers output. If the full
+// output equals the silent sentinel, it suppresses posting to Slack
+// entirely. Otherwise it forwards all chunks to the wrapped sink.
+type abstainSink struct {
+	wrapped  *streamingSink
+	sentinel string
+
+	mu     sync.Mutex
+	chunks []string // buffered message/thought chunks
+	sent   bool     // true after the first non-sentinel write
+}
+
+func newAbstainSink(wrapped *streamingSink, sentinel string) *abstainSink {
+	return &abstainSink{wrapped: wrapped, sentinel: sentinel}
+}
+
+func (a *abstainSink) SetProviderEmoji(emoji string) {
+	a.wrapped.SetProviderEmoji(emoji)
+}
+
+func (a *abstainSink) Status() statusline.Status {
+	return a.wrapped.Status()
+}
+
+func (a *abstainSink) OnUpdate(ctx context.Context, n acp.SessionNotification) error {
+	// Update the cached mood/plan in the wrapped sink.
+	if mood, plan, ok := statusline.ParseMeta(n.Meta); ok {
+		a.wrapped.statusMu.Lock()
+		a.wrapped.status.Mood = mood
+		a.wrapped.status.Plan = plan
+		a.wrapped.statusMu.Unlock()
+	}
+
+	u := n.Update
+	var chunk string
+	switch {
+	case u.AgentMessageChunk != nil:
+		chunk = contentBlockText(u.AgentMessageChunk.Content)
+	case u.AgentThoughtChunk != nil:
+		if t := contentBlockText(u.AgentThoughtChunk.Content); t != "" {
+			chunk = "_" + oneLine(t) + "_\n"
+		}
+	case u.Plan != nil:
+		if len(u.Plan.Entries) > 0 {
+			var b strings.Builder
+			b.WriteString("\n*Plan:*\n")
+			for _, e := range u.Plan.Entries {
+				b.WriteString("• " + e.Content + "\n")
+			}
+			chunk = b.String()
+		}
+	}
+
+	if chunk == "" {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Buffer the chunk.
+	a.chunks = append(a.chunks, chunk)
+
+	// Check if we've decided to send yet.
+	if a.sent {
+		// Already committed to sending; forward immediately.
+		return a.wrapped.stream.Append(ctx, a.wrapped.maybePrependHeader(chunk))
+	}
+
+	// Not sent yet. Check if the buffered output so far matches a
+	// prefix of the sentinel.
+	full := strings.Join(a.chunks, "")
+	full = strings.TrimSpace(full)
+
+	// If the full output equals the sentinel, stay silent.
+	if full == a.sentinel {
+		// Still matches the sentinel exactly; keep buffering.
+		return nil
+	}
+
+	// If we've diverged from the sentinel (either longer or different),
+	// commit to sending.
+	if !strings.HasPrefix(a.sentinel, full) || len(full) > len(a.sentinel) {
+		a.sent = true
+		kitlog.Debugf("abstain: output diverged from sentinel, flushing buffer")
+		// Flush the buffered chunks.
+		for _, c := range a.chunks {
+			if err := a.wrapped.stream.Append(ctx, a.wrapped.maybePrependHeader(c)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// Finalize is called after the prompt completes. If we never sent
+// anything and the full output matches the sentinel, log the abstention.
+// Otherwise do nothing (the chunks have already been forwarded).
+func (a *abstainSink) Finalize() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sent {
+		return false
+	}
+	full := strings.TrimSpace(strings.Join(a.chunks, ""))
+	if full == a.sentinel || full == "" {
+		kitlog.Debugf("abstain: output matched sentinel %q, suppressing post", a.sentinel)
+		return true
+	}
+	// We buffered but never sent, and the output doesn't match the
+	// sentinel. This shouldn't happen (we should have committed to
+	// sending earlier), but flush now to be safe.
+	kitlog.Debugf("abstain: flushing buffered output at finalize")
+	a.sent = true
+	// Note: we can't forward here because we don't have a context. The
+	// caller should handle this by checking the return value.
+	return false
+}
 
 // streamingSink converts ACP session updates to Slack streaming text.
 //
