@@ -825,3 +825,75 @@ func TestHandleAmbientModeForwardsKnownThread(t *testing.T) {
 		t.Fatalf("expected 2 prompts (mention + ambient), got %d", promptCount)
 	}
 }
+
+// TestAbstainSuppressesPostOnSentinel verifies that in ambient mode,
+// when the agent emits exactly the silent sentinel, nothing is posted
+// to Slack (no message, no leaked placeholder).
+func TestAbstainSuppressesPostOnSentinel(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "<<SILENT>>"}}}},
+		})
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second, Ambient: true, SilentSentinel: "<<SILENT>>"})
+	// Ambient reply in a known thread: first summon, then follow-up.
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", BotUserID: "BBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "<@BBOT> hi"})
+	waitForIdle(t, h)
+	// Reset counters after the (posted) summon turn.
+	fs.mu.Lock()
+	fs.posts = 0
+	fs.updates = 0
+	fs.mu.Unlock()
+
+	h.Handle(context.Background(), slackproto.Event{UserID: "U2", BotUserID: "BBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "2.0", Text: "chatter"})
+	waitForIdle(t, h)
+
+	fs.mu.Lock()
+	posts, updates := fs.posts, fs.updates
+	fs.mu.Unlock()
+	if posts != 0 || updates != 0 {
+		t.Fatalf("abstain must post nothing; got posts=%d updates=%d", posts, updates)
+	}
+}
+
+// TestAbstainOffWhenNotAmbient verifies the addressed/DM path is
+// unaffected by abstain: even if the agent emits the sentinel text,
+// with Ambient=false it is posted normally (no suppression).
+func TestAbstainOffWhenNotAmbient(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	done := make(chan struct{})
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "<<SILENT>>"}}}},
+		})
+		close(done)
+		return acp.StopReasonEndTurn, nil
+	}
+
+	// Ambient=false but SilentSentinel is still set (as main.go does):
+	// abstain must NOT engage.
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second, Ambient: false, SilentSentinel: "<<SILENT>>"})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
+	<-done
+	waitForIdle(t, h)
+
+	fs.mu.Lock()
+	body := strings.Join(fs.bodies, "")
+	fs.mu.Unlock()
+	if !strings.Contains(body, "<<SILENT>>") {
+		t.Fatalf("addressed path must post sentinel text verbatim; got %q", body)
+	}
+}

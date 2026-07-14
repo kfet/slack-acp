@@ -12,6 +12,13 @@ import (
 	"github.com/kfet/slack-acp/internal/statusline"
 )
 
+// discardSink is a no-op SessionUpdateSink used for turns whose output
+// must not reach Slack (e.g. backfill catch-up). It never dereferences a
+// PostStreamer, so it can never panic or block on I/O.
+type discardSink struct{}
+
+func (discardSink) OnUpdate(context.Context, acp.SessionNotification) error { return nil }
+
 // abstainSink wraps a streamingSink and buffers output. If the full
 // output equals the silent sentinel, it suppresses posting to Slack
 // entirely. Otherwise it forwards all chunks to the wrapped sink.
@@ -37,34 +44,11 @@ func (a *abstainSink) Status() statusline.Status {
 }
 
 func (a *abstainSink) OnUpdate(ctx context.Context, n acp.SessionNotification) error {
-	// Update the cached mood/plan in the wrapped sink.
-	if mood, plan, ok := statusline.ParseMeta(n.Meta); ok {
-		a.wrapped.statusMu.Lock()
-		a.wrapped.status.Mood = mood
-		a.wrapped.status.Plan = plan
-		a.wrapped.statusMu.Unlock()
-	}
+	// Keep the wrapped sink's mood/plan warm via its own method (no
+	// direct field access, so the two sinks can't drift on locking).
+	a.wrapped.cacheMeta(n)
 
-	u := n.Update
-	var chunk string
-	switch {
-	case u.AgentMessageChunk != nil:
-		chunk = contentBlockText(u.AgentMessageChunk.Content)
-	case u.AgentThoughtChunk != nil:
-		if t := contentBlockText(u.AgentThoughtChunk.Content); t != "" {
-			chunk = "_" + oneLine(t) + "_\n"
-		}
-	case u.Plan != nil:
-		if len(u.Plan.Entries) > 0 {
-			var b strings.Builder
-			b.WriteString("\n*Plan:*\n")
-			for _, e := range u.Plan.Entries {
-				b.WriteString("• " + e.Content + "\n")
-			}
-			chunk = b.String()
-		}
-	}
-
+	chunk := renderChunk(n)
 	if chunk == "" {
 		return nil
 	}
@@ -75,61 +59,59 @@ func (a *abstainSink) OnUpdate(ctx context.Context, n acp.SessionNotification) e
 	// Buffer the chunk.
 	a.chunks = append(a.chunks, chunk)
 
-	// Check if we've decided to send yet.
+	// Already committed to sending — forward immediately.
 	if a.sent {
-		// Already committed to sending; forward immediately.
 		return a.wrapped.stream.Append(ctx, a.wrapped.maybePrependHeader(chunk))
 	}
 
-	// Not sent yet. Check if the buffered output so far matches a
-	// prefix of the sentinel.
-	full := strings.Join(a.chunks, "")
-	full = strings.TrimSpace(full)
-
-	// If the full output equals the sentinel, stay silent.
+	// Not yet committed. While the buffered output is still a prefix of
+	// the sentinel, keep buffering (it may turn out to be the sentinel).
+	full := strings.TrimSpace(strings.Join(a.chunks, ""))
 	if full == a.sentinel {
-		// Still matches the sentinel exactly; keep buffering.
-		return nil
+		return nil // exact sentinel so far — stay silent, keep buffering
+	}
+	if strings.HasPrefix(a.sentinel, full) && len(full) < len(a.sentinel) {
+		return nil // still a strict prefix — could still become the sentinel
 	}
 
-	// If we've diverged from the sentinel (either longer or different),
-	// commit to sending.
-	if !strings.HasPrefix(a.sentinel, full) || len(full) > len(a.sentinel) {
-		a.sent = true
-		kitlog.Debugf("abstain: output diverged from sentinel, flushing buffer")
-		// Flush the buffered chunks.
-		for _, c := range a.chunks {
-			if err := a.wrapped.stream.Append(ctx, a.wrapped.maybePrependHeader(c)); err != nil {
-				return err
-			}
+	// Diverged from the sentinel: commit to sending and flush the buffer.
+	a.sent = true
+	kitlog.Debugf("abstain: output diverged from sentinel, flushing buffer")
+	for _, c := range a.chunks {
+		if err := a.wrapped.stream.Append(ctx, a.wrapped.maybePrependHeader(c)); err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
 
-// Finalize is called after the prompt completes. If we never sent
-// anything and the full output matches the sentinel, log the abstention.
-// Otherwise do nothing (the chunks have already been forwarded).
-func (a *abstainSink) Finalize() bool {
+// Finalize is called after the prompt completes. Returns abstained=true
+// when the agent produced nothing but the sentinel (or nothing at all),
+// meaning the caller should post nothing. If the buffered output was a
+// strict prefix of the sentinel that never completed (e.g. the agent
+// emitted "<<SIL" then stopped), it is NOT the sentinel, so we flush it
+// rather than silently dropping real output.
+func (a *abstainSink) Finalize(ctx context.Context) (abstained bool, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.sent {
-		return false
+		return false, nil
 	}
 	full := strings.TrimSpace(strings.Join(a.chunks, ""))
 	if full == a.sentinel || full == "" {
 		kitlog.Debugf("abstain: output matched sentinel %q, suppressing post", a.sentinel)
-		return true
+		return true, nil
 	}
-	// We buffered but never sent, and the output doesn't match the
-	// sentinel. This shouldn't happen (we should have committed to
-	// sending earlier), but flush now to be safe.
-	kitlog.Debugf("abstain: flushing buffered output at finalize")
+	// Buffered a strict prefix of the sentinel that never completed —
+	// treat as real (partial) output and flush it so nothing is lost.
+	kitlog.Debugf("abstain: partial-sentinel output at finalize, flushing")
 	a.sent = true
-	// Note: we can't forward here because we don't have a context. The
-	// caller should handle this by checking the return value.
-	return false
+	for _, c := range a.chunks {
+		if aerr := a.wrapped.stream.Append(ctx, a.wrapped.maybePrependHeader(c)); aerr != nil {
+			return false, aerr
+		}
+	}
+	return false, nil
 }
 
 // streamingSink converts ACP session updates to Slack streaming text.
@@ -191,38 +173,50 @@ func (s *streamingSink) OnUpdate(ctx context.Context, n acp.SessionNotification)
 	// Update the cached mood/plan whenever the agent ships one.
 	// Header rendering happens lazily on the first user-visible chunk;
 	// this just keeps the latest values warm.
+	s.cacheMeta(n)
+	chunk := renderChunk(n)
+	if chunk == "" {
+		return nil
+	}
+	return s.stream.Append(ctx, s.maybePrependHeader(chunk))
+}
+
+// cacheMeta parses any dev.acp-kit.status-line _meta on the
+// notification and stores the latest mood/plan under statusMu.
+func (s *streamingSink) cacheMeta(n acp.SessionNotification) {
 	if mood, plan, ok := statusline.ParseMeta(n.Meta); ok {
 		s.statusMu.Lock()
 		s.status.Mood = mood
 		s.status.Plan = plan
 		s.statusMu.Unlock()
 	}
+}
 
+// renderChunk converts a session update into the Slack-bound text for
+// that update, or "" if the update produces no user-visible output.
+// Shared by streamingSink and abstainSink so their rendering can never
+// drift apart.
+func renderChunk(n acp.SessionNotification) string {
 	u := n.Update
 	switch {
 	case u.AgentMessageChunk != nil:
-		if t := contentBlockText(u.AgentMessageChunk.Content); t != "" {
-			return s.stream.Append(ctx, s.maybePrependHeader(t))
-		}
+		return contentBlockText(u.AgentMessageChunk.Content)
 	case u.AgentThoughtChunk != nil:
-		// Render thoughts in italics, kept compact.
 		if t := contentBlockText(u.AgentThoughtChunk.Content); t != "" {
-			return s.stream.Append(ctx, s.maybePrependHeader("_"+oneLine(t)+"_\n"))
+			return "_" + oneLine(t) + "_\n"
 		}
 	case u.Plan != nil:
-		// Render a short plan block. Skip empty/cleared plan updates so we
-		// don't leave a bare "Plan:" trailer in the Slack message.
 		if len(u.Plan.Entries) == 0 {
-			return nil
+			return ""
 		}
 		var b strings.Builder
 		b.WriteString("\n*Plan:*\n")
 		for _, e := range u.Plan.Entries {
 			b.WriteString("• " + e.Content + "\n")
 		}
-		return s.stream.Append(ctx, s.maybePrependHeader(b.String()))
+		return b.String()
 	}
-	return nil
+	return ""
 }
 
 // maybePrependHeader injects the final-message status header in front
