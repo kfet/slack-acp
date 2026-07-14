@@ -122,13 +122,23 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	}
 	key := router.ConvKey{ChannelID: ev.ChannelID, ThreadTS: ev.ThreadTS}
 
-	// Pre-filter ambient thread replies: only forward if we're already
-	// in this thread (summoned via prior @-mention or DM). DMs and
-	// @-mentions always get through.
-	if !ev.IsDM && !strings.Contains(ev.Text, fmt.Sprintf("<@%s>", ev.BotUserID)) {
-		if !h.cfg.Ambient || !h.cfg.Router.Known(key) {
-			kitlog.Debugf("handler: drop ambient reply in unknown thread %s", key)
-			return
+	// Pre-filter ambient thread replies: non-DM, non-@-mention messages
+	// only get through if Ambient is enabled AND we're already in this
+	// thread (summoned via a prior @-mention or DM). @-mentions and DMs
+	// always get through.
+	//
+	// Backward compat: if BotUserID is not set (empty), skip the ambient
+	// filter entirely (legacy tests / old slackproto code that doesn't
+	// set this field).
+	if ev.BotUserID != "" {
+		isMention := strings.Contains(ev.Text, fmt.Sprintf("<@%s>", ev.BotUserID))
+		if !ev.IsDM && !isMention {
+			// This is an ambient (non-summoning) thread reply. Only forward
+			// if Ambient is enabled and we're already in this thread.
+			if !h.cfg.Ambient || !h.cfg.Router.Known(key) {
+				kitlog.Debugf("handler: drop ambient reply in unknown thread %s", key)
+				return
+			}
 		}
 	}
 
