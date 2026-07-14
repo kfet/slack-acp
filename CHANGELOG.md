@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Ambient threads: when `ambient` is enabled, un-tagged replies in a thread the
+  bot was summoned into (`@`-mention or DM) are forwarded to the agent, which
+  decides per message whether to reply or emit the silent sentinel
+  (`silent_sentinel`, default `<<SILENT>>`) to abstain. New config knobs:
+  `ambient`, `backfill`, `backfill_max_messages`, `silent_sentinel`. Requires the
+  `channels:history` scope + `message.channels` event (manifest updated). Thread
+  membership is disk-backed (`router.Known`) and survives restarts; a per-thread
+  `last_ts` checkpoint dedups at-least-once delivery and drives optional backfill
+  of missed messages via `conversations.replies`.
+
+### Fixed
+
+- `slackproto`: don't forward `message.channels` replies that already `@`-mention
+  the bot — Slack also delivers them as `app_mention`, so forwarding both
+  double-processed the same message (the second delivery cancelled and restarted
+  the first in-flight prompt).
+- Abstain is now gated to ambient mode and skips the eager placeholder, so it can
+  never suppress or leak a "thinking…" message on the addressed/DM path (which is
+  now provably unaffected by ambient/backfill/abstain logic).
+- Backfill no longer panics on a nil sink and no longer fires one agent turn per
+  missed line; it injects a single bounded catch-up prompt through a discarding
+  sink.
+
 ## [0.1.2] - 2026-06-08
 
 ### Changed
