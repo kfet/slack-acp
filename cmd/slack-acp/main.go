@@ -157,9 +157,13 @@ func main() {
 	allowedChannels := toSet(cfg.AllowedChannelIDs)
 
 	h := handler.New(handler.Config{
-		Router:            r,
-		AllowedUserIDs:    allowedUsers,
-		AllowedChannelIDs: allowedChannels,
+		Router:              r,
+		AllowedUserIDs:      allowedUsers,
+		AllowedChannelIDs:   allowedChannels,
+		Ambient:             cfg.Ambient,
+		Backfill:            cfg.Backfill,
+		BackfillMaxMessages: cfg.GetBackfillMaxMessages(),
+		SilentSentinel:      cfg.GetSilentSentinel(),
 	})
 
 	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h)
