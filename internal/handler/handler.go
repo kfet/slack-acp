@@ -313,7 +313,20 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	}
 
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
-	sink := newStreamingSink(stream)
+	baseSink := newStreamingSink(stream)
+	// Wrap the streaming sink with an abstain sink if the sentinel is set.
+	var sink interface {
+		SetProviderEmoji(string)
+		Status() statusline.Status
+		OnUpdate(context.Context, acp.SessionNotification) error
+	}
+	var abstainSinkPtr *abstainSink
+	if h.cfg.SilentSentinel != "" {
+		abstainSinkPtr = newAbstainSink(baseSink, h.cfg.SilentSentinel)
+		sink = abstainSinkPtr
+	} else {
+		sink = baseSink
+	}
 
 	// Post the "Thinking…" placeholder *immediately*, before we even
 	// reach the agent — Slack has no native typing indicator, so this
@@ -334,7 +347,7 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// header until the first real chunk lands. Self-disarms via
 	// UpdatePlaceholder's alive=false signal once the sink's
 	// FirstChunk callback fires.
-	go spinner(wctx, stream, sink)
+	go spinner(wctx, stream, baseSink)
 
 	sess, err := h.cfg.Router.GetOrCreate(ctx, key, sink)
 	if err != nil {
@@ -372,6 +385,20 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		_ = stream.Close(context.Background(), fmt.Sprintf("\n_error: %v_", err))
 		return err
 	}
+	
+	// Check if the abstain sink decided to suppress output.
+	if abstainSinkPtr != nil && abstainSinkPtr.Finalize() {
+		// Agent chose to stay silent; close the stream without posting.
+		// The placeholder message (if posted) will be deleted by passing
+		// an empty body to Close, which is handled by the streamer.
+		kitlog.Debugf("handler: agent abstained, suppressing post")
+		// Don't call stream.Close; just record the checkpoint and return.
+		if err := h.cfg.Router.SetLastTS(key, ev.TS); err != nil {
+			kitlog.Debugf("handler: failed to record last_ts for %s: %v", key, err)
+		}
+		return nil
+	}
+	
 	suffix := ""
 	if stop != "" && stop != acp.StopReasonEndTurn {
 		suffix = fmt.Sprintf("\n_(stopped: %s)_", stop)
