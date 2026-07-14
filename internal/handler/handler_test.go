@@ -727,3 +727,101 @@ func TestHandleInlinesSystemPromptOnFirstPrompt(t *testing.T) {
 		t.Fatalf("second prompt mangled (must not re-prefix): %q", secondText)
 	}
 }
+
+// TestHandleAmbientModeDropsUnknownThread verifies that when Ambient is
+// enabled, non-DM non-mention messages are only forwarded to threads
+// the bot is already part of (Known returns true).
+func TestHandleAmbientModeDropsUnknownThread(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	h := New(Config{
+		Router:  r,
+		API:     fs.client(),
+		Ambient: true, // Enable ambient mode
+	})
+
+	// First message: no mention, no DM, thread is not known yet.
+	// BotUserID is set (simulates production slackproto).
+	h.Handle(context.Background(), slackproto.Event{
+		UserID:    "U1",
+		BotUserID: "BBOT",
+		ChannelID: "C1",
+		ThreadTS:  "1.0",
+		TS:        "1.0",
+		Text:      "hello",
+		IsDM:      false,
+	})
+
+	// Give it a moment to process.
+	time.Sleep(50 * time.Millisecond)
+
+	// Should be dropped (thread not known).
+	if len(fa.sinks) > 0 {
+		t.Fatal("ambient message in unknown thread should be dropped")
+	}
+}
+
+// TestHandleAmbientModeForwardsKnownThread verifies that ambient replies
+// are forwarded to threads the bot is already in.
+func TestHandleAmbientModeForwardsKnownThread(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	promptCount := 0
+	done := make(chan struct{})
+	fa.promptHook = func(_ context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		promptCount++
+		if promptCount == 2 {
+			close(done)
+		}
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{
+		Router:  r,
+		API:     fs.client(),
+		Ambient: true,
+	})
+
+	// First message: @-mention summons the bot.
+	h.Handle(context.Background(), slackproto.Event{
+		UserID:    "U1",
+		BotUserID: "BBOT",
+		ChannelID: "C1",
+		ThreadTS:  "1.0",
+		TS:        "1.0",
+		Text:      "<@BBOT> hello",
+		IsDM:      false,
+	})
+
+	// Wait for first prompt to complete.
+	time.Sleep(100 * time.Millisecond)
+	waitForIdle(t, h)
+
+	// Second message: no mention, but thread is now known.
+	h.Handle(context.Background(), slackproto.Event{
+		UserID:    "U2",
+		BotUserID: "BBOT",
+		ChannelID: "C1",
+		ThreadTS:  "1.0",
+		TS:        "2.0",
+		Text:      "follow-up",
+		IsDM:      false,
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ambient reply in known thread should be forwarded")
+	}
+	waitForIdle(t, h)
+
+	if promptCount != 2 {
+		t.Fatalf("expected 2 prompts (mention + ambient), got %d", promptCount)
+	}
+}
