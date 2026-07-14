@@ -178,6 +178,37 @@ func (r *Router) Known(key ConvKey) bool {
 	return err == nil
 }
 
+// GetLastTS returns the last processed message timestamp for the given
+// key, or "" if none recorded. Used for dedup (drop ts <= last) and gap
+// detection (fetch history between last and new).
+func (r *Router) GetLastTS(key ConvKey) string {
+	if err := validateKeyComponent(key.ChannelID); err != nil {
+		return ""
+	}
+	if err := validateKeyComponent(key.ThreadTS); err != nil {
+		return ""
+	}
+	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS, "last_ts")
+	b, err := r.root.ReadFile(rel)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// SetLastTS records the timestamp of the most recently processed message
+// for the given key. Used to track checkpoint for dedup and gap detection.
+func (r *Router) SetLastTS(key ConvKey, ts string) error {
+	if err := validateKeyComponent(key.ChannelID); err != nil {
+		return err
+	}
+	if err := validateKeyComponent(key.ThreadTS); err != nil {
+		return err
+	}
+	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS, "last_ts")
+	return r.root.WriteFile(rel, []byte(ts+"\n"), 0o644)
+}
+
 // cwdFor returns the stable per-thread working directory for key and
 // ensures it exists on disk.
 //
