@@ -45,6 +45,25 @@ type Config struct {
 	// (including the built-in Slack-formatting block). Use only if you
 	// have a reason to want raw, unguided agent output in Slack.
 	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`
+
+	// Ambient enables forwarding of non-DM thread replies to threads
+	// the bot is already part of (summoned via @-mention). When false,
+	// only @-mentions and DMs trigger responses. Default: false.
+	Ambient bool `json:"ambient,omitempty"`
+
+	// Backfill enables catching up on missed messages via
+	// conversations.replies when a gap is detected (bot was offline or
+	// restarted). Requires Ambient to be enabled. Default: false.
+	Backfill bool `json:"backfill,omitempty"`
+
+	// BackfillMaxMessages caps how many historical messages to fetch
+	// when backfilling a detected gap. Default: 50.
+	BackfillMaxMessages int `json:"backfill_max_messages,omitempty"`
+
+	// SilentSentinel is the exact output string that signals the agent
+	// has chosen not to reply. The relay suppresses posting when the
+	// full streamed response equals this sentinel. Default: "<<SILENT>>"
+	SilentSentinel string `json:"silent_sentinel,omitempty"`
 }
 
 // Load reads and validates the config file.
@@ -68,7 +87,26 @@ func (c *Config) Validate() error {
 	if c.SessionIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("session_idle_timeout_seconds must be >= 0")
 	}
+	if c.BackfillMaxMessages < 0 {
+		return fmt.Errorf("backfill_max_messages must be >= 0")
+	}
 	return nil
+}
+
+// GetSilentSentinel returns the configured sentinel or the default.
+func (c *Config) GetSilentSentinel() string {
+	if c.SilentSentinel == "" {
+		return "<<SILENT>>"
+	}
+	return c.SilentSentinel
+}
+
+// GetBackfillMaxMessages returns the configured limit or the default.
+func (c *Config) GetBackfillMaxMessages() int {
+	if c.BackfillMaxMessages <= 0 {
+		return 50
+	}
+	return c.BackfillMaxMessages
 }
 
 // IdleTimeout returns the configured router idle timeout. Zero means use
