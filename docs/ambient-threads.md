@@ -1,5 +1,15 @@
 # Ambient threads
 
+> **Design premise.** A bot that only answers when summoned is just a
+> slash-command with extra steps. The value is an agent *present* in the thread
+> that chimes in when it actually helps — handling **multiple people** and
+> deciding for itself when to respond **unprompted**. Take "let it decide"
+> seriously: `@`-mention is a strong prior, not a gate; the abstain path must be
+> cheap (short max-tokens, no eager placeholder, optionally a fast/cheap model).
+>
+> Provenance: distilled from the original design conversation on the sea-fir bot
+> (host sea-racknerd), Poe conversation c-…kvs8l7kl8bg8k73vnrmiyt, 2026-06-06 → 06-14.
+
 Let the agent **live in the thread**: forward every message in a thread it's
 part of into the ACP session; it replies, or stays silent. The `@`-mention
 *summons* the bot into a thread — it doesn't gate individual replies.
