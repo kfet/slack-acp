@@ -167,7 +167,14 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		// Forward thread replies in non-DM channels. The handler will
 		// decide whether to process them based on ambient config and
 		// whether the thread is known.
-		if ev.ThreadTimeStamp != "" {
+		//
+		// Skip messages that @-mention the bot: Slack delivers those
+		// via a *separate* app_mention event too, so forwarding here
+		// as well would double-process the same (channel,ts) — the
+		// second delivery cancels the first in-flight prompt and
+		// restarts it. app_mention is the canonical path for tagged
+		// messages; message.channels is only for *un-tagged* replies.
+		if ev.ThreadTimeStamp != "" && !mentionsBot(ev.Text, c.botUserID) {
 			c.deliver(ctx, Event{
 				UserID:    ev.User,
 				ChannelID: ev.Channel,
@@ -177,6 +184,16 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			})
 		}
 	}
+}
+
+// mentionsBot reports whether text contains an <@botID> mention. Used
+// to suppress the message.channels copy of a tagged message, which
+// Slack also delivers as an app_mention event.
+func mentionsBot(text, botID string) bool {
+	if botID == "" {
+		return false
+	}
+	return strings.Contains(text, "<@"+botID+">")
 }
 
 func (c *Client) deliver(ctx context.Context, ev Event) {

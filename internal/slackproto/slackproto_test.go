@@ -200,6 +200,82 @@ func TestHandleEventsAPIDM(t *testing.T) {
 	}
 }
 
+// TestHandleEventsAPIForwardsUntaggedThreadReply verifies that an
+// un-tagged reply in a public-channel thread is forwarded (the ambient
+// path). ThreadTS carries the parent, IsDM is false.
+func TestHandleEventsAPIForwardsUntaggedThreadReply(t *testing.T) {
+	h := &stubHandler{}
+	c := newClientForDispatch(t, h)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{
+			Data: &slackevents.MessageEvent{
+				User:            "U1",
+				Channel:         "C2",
+				ChannelType:     "channel",
+				TimeStamp:       "200.0",
+				ThreadTimeStamp: "100.0",
+				Text:            "just a reply",
+			},
+		},
+	})
+	got := h.seen()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 forwarded, got %+v", got)
+	}
+	if got[0].IsDM || got[0].ThreadTS != "100.0" || got[0].TS != "200.0" {
+		t.Fatalf("unexpected event: %+v", got[0])
+	}
+}
+
+// TestHandleEventsAPIDropsTaggedThreadReply verifies that a reply that
+// @-mentions the bot is NOT forwarded via the message.channels path —
+// Slack also delivers it as an app_mention, and forwarding both would
+// double-process the same (channel,ts).
+func TestHandleEventsAPIDropsTaggedThreadReply(t *testing.T) {
+	h := &stubHandler{}
+	c := newClientForDispatch(t, h)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{
+			Data: &slackevents.MessageEvent{
+				User:            "U1",
+				Channel:         "C2",
+				ChannelType:     "channel",
+				TimeStamp:       "200.0",
+				ThreadTimeStamp: "100.0",
+				Text:            "<@Ubot> hey",
+			},
+		},
+	})
+	if n := len(h.seen()); n != 0 {
+		t.Fatalf("tagged reply must not be forwarded via message.channels; got %d", n)
+	}
+}
+
+// TestHandleEventsAPIDropsTopLevelChannelMessage verifies that a
+// non-thread top-level channel message is NOT forwarded (no thread to
+// join; the bot was never summoned).
+func TestHandleEventsAPIDropsTopLevelChannelMessage(t *testing.T) {
+	h := &stubHandler{}
+	c := newClientForDispatch(t, h)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{
+			Data: &slackevents.MessageEvent{
+				User:        "U1",
+				Channel:     "C2",
+				ChannelType: "channel",
+				TimeStamp:   "200.0",
+				Text:        "hello channel",
+			},
+		},
+	})
+	if n := len(h.seen()); n != 0 {
+		t.Fatalf("top-level channel message must not be forwarded; got %d", n)
+	}
+}
+
 func TestHandleEventsAPIDropsBotsAndEditsAndNonIM(t *testing.T) {
 	h := &stubHandler{}
 	c := newClientForDispatch(t, h)
