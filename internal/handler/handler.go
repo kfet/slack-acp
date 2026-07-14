@@ -399,12 +399,12 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// Check if the abstain sink decided to suppress output.
 	if abstainSinkPtr != nil && abstainSinkPtr.Finalize() {
 		// Agent chose to stay silent; close the stream without posting.
-		// The placeholder message (if posted) will be deleted by passing
-		// an empty body to Close, which is handled by the streamer.
 		kitlog.Debugf("handler: agent abstained, suppressing post")
-		// Don't call stream.Close; just record the checkpoint and return.
-		if err := h.cfg.Router.SetLastTS(key, ev.TS); err != nil {
-			kitlog.Debugf("handler: failed to record last_ts for %s: %v", key, err)
+		// Record checkpoint for ambient mode.
+		if h.cfg.Ambient {
+			if err := h.cfg.Router.SetLastTS(key, ev.TS); err != nil {
+				kitlog.Debugf("handler: failed to record last_ts for %s: %v", key, err)
+			}
 		}
 		return nil
 	}
@@ -413,9 +413,11 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	if stop != "" && stop != acp.StopReasonEndTurn {
 		suffix = fmt.Sprintf("\n_(stopped: %s)_", stop)
 	}
-	// Record this message's timestamp as the checkpoint.
-	if err := h.cfg.Router.SetLastTS(key, ev.TS); err != nil {
-		kitlog.Debugf("handler: failed to record last_ts for %s: %v", key, err)
+	// Record this message's timestamp as the checkpoint (ambient mode only).
+	if h.cfg.Ambient {
+		if err := h.cfg.Router.SetLastTS(key, ev.TS); err != nil {
+			kitlog.Debugf("handler: failed to record last_ts for %s: %v", key, err)
+		}
 	}
 	return stream.Close(context.Background(), suffix)
 }
