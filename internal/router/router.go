@@ -162,6 +162,22 @@ func DefaultStateDir() string {
 // StateDir returns the configured state root.
 func (r *Router) StateDir() string { return r.stateDir }
 
+// Known returns true if a session directory exists on disk for the
+// given key. Used to pre-filter ambient thread replies: only forward
+// messages to threads the bot has already been summoned into.
+// Membership check is disk-backed so it survives restarts.
+func (r *Router) Known(key ConvKey) bool {
+	if err := validateKeyComponent(key.ChannelID); err != nil {
+		return false
+	}
+	if err := validateKeyComponent(key.ThreadTS); err != nil {
+		return false
+	}
+	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS)
+	_, err := r.root.Stat(rel)
+	return err == nil
+}
+
 // cwdFor returns the stable per-thread working directory for key and
 // ensures it exists on disk.
 //
