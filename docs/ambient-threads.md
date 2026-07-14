@@ -73,10 +73,25 @@ the agent stays caught up on the thread even when it doesn't speak.
 `@`-mention is a strong *prior* ("probably for me"), not a gate — addressed and
 unaddressed messages take the same path; only the prior differs.
 
+> **Implementation note (2026-07, review).** The "same path" ideal above
+> conflicts with the eager "thinking…" placeholder the relay posts for the
+> addressed/DM UX (Slack has no typing indicator). Abstain requires posting
+> *nothing*, but a placeholder posted up-front cannot be cleanly retracted
+> (there is no `chat.delete` in the streamer). To keep the addressed/DM path
+> byte-for-byte unchanged and safe, abstain is currently gated to **ambient
+> mode only** (`Ambient=true`): on the ambient path the relay skips the eager
+> placeholder and the spinner, so an abstained turn posts nothing. On the
+> addressed/DM path abstain is disabled and the sentinel is treated as
+> ordinary text. Unifying the paths would require a no-eager-placeholder
+> streaming mode (post lazily on first real chunk) for all messages — a
+> follow-up, not done here.
+
 ## Change list
 
 - `slackproto`: deliver non-DM thread replies (needs `message.channels` scope +
-  event subscription).
+  event subscription). **Skip replies that already @-mention the bot** — Slack
+  delivers those a second time as an `app_mention` event, so forwarding the
+  `message.channels` copy too would double-process the same `(channel, ts)`.
 - `router.Known(key)`: check the on-disk dir, not just `byKey`.
 - `last_ts` file per thread → dedup + gap detection.
 - backfill via `conversations.replies` on detected gap *(recommended)*.
