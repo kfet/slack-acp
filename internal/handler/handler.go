@@ -190,8 +190,128 @@ func (h *Handler) clearInflight(key router.ConvKey, e *inflightEntry) {
 	h.inflightMu.Unlock()
 }
 
+// backfillIfNeeded detects gaps in message history and feeds missed
+// messages into the session. Compares the incoming event's TS against
+// the stored last_ts; if there's a gap, fetches history via
+// conversations.replies and sends each missed line as a synthetic prompt.
+func (h *Handler) backfillIfNeeded(ctx context.Context, ev slackproto.Event, key router.ConvKey) error {
+	lastTS := h.cfg.Router.GetLastTS(key)
+	if lastTS == "" {
+		// No checkpoint yet; this is the first message. Record it.
+		return nil
+	}
+	// If the new TS is <= last, it's a duplicate; skip backfill.
+	if ev.TS <= lastTS {
+		return nil
+	}
+	// Fetch history between lastTS and ev.TS (exclusive of both ends,
+	// since we already processed lastTS and will process ev.TS after
+	// this returns).
+	params := &slack.GetConversationRepliesParameters{
+		ChannelID: ev.ChannelID,
+		Timestamp: ev.ThreadTS,
+		Oldest:    lastTS,
+		Inclusive: false,
+		Limit:     h.cfg.BackfillMaxMessages,
+	}
+	msgs, _, _, err := h.cfg.API.GetConversationRepliesContext(ctx, params)
+	if err != nil {
+		return fmt.Errorf("conversations.replies: %w", err)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	// Filter out the current message (which we'll process after
+	// backfill) and bot messages.
+	var missed []slack.Message
+	for _, m := range msgs {
+		if m.Timestamp == ev.TS || m.BotID != "" || m.User == "" || m.SubType != "" {
+			continue
+		}
+		if m.Timestamp > lastTS && m.Timestamp < ev.TS {
+			missed = append(missed, m)
+		}
+	}
+	if len(missed) == 0 {
+		return nil
+	}
+	kitlog.Debugf("handler: backfilling %d missed messages in %s", len(missed), key)
+	// Get or create the session and feed each missed message.
+	sess, err := h.cfg.Router.GetOrCreate(ctx, key, newStreamingSink(nil))
+	if err != nil {
+		return fmt.Errorf("get session for backfill: %w", err)
+	}
+	sess.Mu.Lock()
+	defer sess.Mu.Unlock()
+	for _, m := range missed {
+		// Format as "[user] text" so the agent sees who said what.
+		line := h.formatBackfillMessage(m)
+		if line == "" {
+			continue
+		}
+		// Send as a synthetic prompt. The router's TakePendingSystemPrompt
+		// inline path only triggers on the first prompt, so subsequent
+		// backfill prompts won't re-prefix.
+		_, perr := h.cfg.Router.Agent().Prompt(ctx, sess.SessionID, []acp.ContentBlock{
+			{Text: &acp.ContentBlockText{Text: line}},
+		})
+		if perr != nil {
+			kitlog.Debugf("handler: backfill prompt for %s failed: %v", m.Timestamp, perr)
+			// Continue with remaining messages.
+		}
+		// Update checkpoint after each successful backfill.
+		if serr := h.cfg.Router.SetLastTS(key, m.Timestamp); serr != nil {
+			kitlog.Debugf("handler: failed to record backfill last_ts %s: %v", m.Timestamp, serr)
+		}
+	}
+	return nil
+}
+
+// formatBackfillMessage formats a Slack message for injection into the
+// session during backfill. Returns "[user] text" or "" if the message
+// should be skipped.
+func (h *Handler) formatBackfillMessage(m slack.Message) string {
+	text := strings.TrimSpace(m.Text)
+	if text == "" {
+		return ""
+	}
+	userName := h.getUserName(context.Background(), m.User)
+	return fmt.Sprintf("[%s] %s", userName, text)
+}
+
+// getUserName looks up a user's display name via the Slack API, falling
+// back to the user ID if the lookup fails. Best-effort; cached by Slack's
+// client when possible.
+func (h *Handler) getUserName(ctx context.Context, userID string) string {
+	if userID == "" {
+		return "unknown"
+	}
+	u, err := h.cfg.API.GetUserInfoContext(ctx, userID)
+	if err != nil || u == nil {
+		return userID
+	}
+	if u.Profile.DisplayName != "" {
+		return u.Profile.DisplayName
+	}
+	if u.RealName != "" {
+		return u.RealName
+	}
+	if u.Name != "" {
+		return u.Name
+	}
+	return userID
+}
+
 // run handles a single prompt end-to-end.
 func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvKey, text string) error {
+	// Check for a gap and backfill if needed.
+	if h.cfg.Backfill && h.cfg.Router.Known(key) {
+		if err := h.backfillIfNeeded(ctx, ev, key); err != nil {
+			kitlog.Debugf("handler: backfill error: %v", err)
+			// Non-fatal: continue with current message.
+		}
+	}
+
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
 	sink := newStreamingSink(stream)
 
@@ -234,8 +354,14 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	h.cfg.Router.Touch(sess)
 
 	promptText := text
+	// In ambient mode, prefix messages with the sender's name so the
+	// agent knows who's speaking in the shared thread.
+	if h.cfg.Ambient && !ev.IsDM {
+		userName := h.getUserName(ctx, ev.UserID)
+		promptText = fmt.Sprintf("[%s] %s", userName, text)
+	}
 	if prefix := h.cfg.Router.TakePendingSystemPrompt(sess); prefix != "" {
-		promptText = prefix + "\n\n" + text
+		promptText = prefix + "\n\n" + promptText
 	}
 
 	stop, err := h.cfg.Router.Agent().Prompt(ctx, sess.SessionID, []acp.ContentBlock{
@@ -249,6 +375,10 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	suffix := ""
 	if stop != "" && stop != acp.StopReasonEndTurn {
 		suffix = fmt.Sprintf("\n_(stopped: %s)_", stop)
+	}
+	// Record this message's timestamp as the checkpoint.
+	if err := h.cfg.Router.SetLastTS(key, ev.TS); err != nil {
+		kitlog.Debugf("handler: failed to record last_ts for %s: %v", key, err)
 	}
 	return stream.Close(context.Background(), suffix)
 }
