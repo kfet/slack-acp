@@ -799,3 +799,92 @@ func TestSystemPrompt_EmptyConfigNoOp(t *testing.T) {
 		t.Fatalf("empty config must not arm inline: %q", got)
 	}
 }
+
+// ---- Known / GetLastTS / SetLastTS (ambient membership + checkpoint) ----
+
+func TestKnown(t *testing.T) {
+	fa := newFakeAgent()
+	r := newRouter(t, fa)
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+
+	// Unknown before any session dir exists.
+	if r.Known(key) {
+		t.Fatal("thread should be unknown before creation")
+	}
+	// GetOrCreate makes the on-disk dir.
+	if _, err := r.GetOrCreate(context.Background(), key, discardSink{}); err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	if !r.Known(key) {
+		t.Fatal("thread should be known after creation")
+	}
+	// Invalid key components are never "known".
+	if r.Known(ConvKey{ChannelID: "", ThreadTS: "100.0"}) {
+		t.Fatal("empty channel must not be known")
+	}
+	if r.Known(ConvKey{ChannelID: "C1", ThreadTS: ".."}) {
+		t.Fatal("traversal thread must not be known")
+	}
+}
+
+func TestKnownClosedRouter(t *testing.T) {
+	r := newRouter(t, newFakeAgent())
+	_ = r.Close()
+	if r.Known(ConvKey{ChannelID: "C1", ThreadTS: "1.0"}) {
+		t.Fatal("closed router must report unknown")
+	}
+}
+
+func TestLastTSRoundTrip(t *testing.T) {
+	fa := newFakeAgent()
+	r := newRouter(t, fa)
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+	if _, err := r.GetOrCreate(context.Background(), key, discardSink{}); err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	// No checkpoint yet.
+	if got := r.GetLastTS(key); got != "" {
+		t.Fatalf("expected empty last_ts, got %q", got)
+	}
+	if err := r.SetLastTS(key, "200.5"); err != nil {
+		t.Fatalf("SetLastTS: %v", err)
+	}
+	if got := r.GetLastTS(key); got != "200.5" {
+		t.Fatalf("last_ts round-trip: got %q", got)
+	}
+}
+
+func TestLastTSInvalidKey(t *testing.T) {
+	r := newRouter(t, newFakeAgent())
+	bad := ConvKey{ChannelID: "..", ThreadTS: "1.0"}
+	if r.GetLastTS(bad) != "" {
+		t.Fatal("invalid key GetLastTS should be empty")
+	}
+	if err := r.SetLastTS(bad, "1.0"); err == nil {
+		t.Fatal("invalid key SetLastTS should error")
+	}
+	badTS := ConvKey{ChannelID: "C1", ThreadTS: ".."}
+	if r.GetLastTS(badTS) != "" {
+		t.Fatal("invalid thread GetLastTS should be empty")
+	}
+	if err := r.SetLastTS(badTS, "1.0"); err == nil {
+		t.Fatal("invalid thread SetLastTS should error")
+	}
+}
+
+func TestLastTSClosedRouter(t *testing.T) {
+	r := newRouter(t, newFakeAgent())
+	_ = r.Close()
+	key := ConvKey{ChannelID: "C1", ThreadTS: "1.0"}
+	if r.GetLastTS(key) != "" {
+		t.Fatal("closed router GetLastTS should be empty")
+	}
+	if err := r.SetLastTS(key, "1.0"); err == nil {
+		t.Fatal("closed router SetLastTS should error")
+	}
+}
+
+// discardSink is a no-op sink for router tests that don't inspect output.
+type discardSink struct{}
+
+func (discardSink) OnUpdate(context.Context, acp.SessionNotification) error { return nil }

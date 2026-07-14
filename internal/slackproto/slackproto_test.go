@@ -44,6 +44,19 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
+func TestMentionsBot(t *testing.T) {
+	if mentionsBot("<@Ubot> hi", "Ubot") != true {
+		t.Fatal("should detect mention")
+	}
+	if mentionsBot("no mention here", "Ubot") != false {
+		t.Fatal("should not detect absent mention")
+	}
+	// Empty bot id can never match (guards against matching "<@>").
+	if mentionsBot("<@> hi", "") != false {
+		t.Fatal("empty botID must never match")
+	}
+}
+
 // ---- New / token validation ----
 
 type stubHandler struct {

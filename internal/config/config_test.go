@@ -118,3 +118,36 @@ func TestSessionIdleTimeout(t *testing.T) {
 		t.Fatal("negative timeout should fail validation")
 	}
 }
+
+func TestValidateBackfillMaxMessages(t *testing.T) {
+	if err := (&Config{BackfillMaxMessages: -1}).Validate(); err == nil {
+		t.Fatal("negative backfill_max_messages should fail validation")
+	}
+	if err := (&Config{BackfillMaxMessages: 0}).Validate(); err != nil {
+		t.Fatalf("zero backfill_max_messages should validate: %v", err)
+	}
+	if err := (&Config{BackfillMaxMessages: 10}).Validate(); err != nil {
+		t.Fatalf("positive backfill_max_messages should validate: %v", err)
+	}
+}
+
+func TestGetSilentSentinel(t *testing.T) {
+	if got := (&Config{}).GetSilentSentinel(); got != "<<SILENT>>" {
+		t.Fatalf("default sentinel: got %q", got)
+	}
+	if got := (&Config{SilentSentinel: "##QUIET##"}).GetSilentSentinel(); got != "##QUIET##" {
+		t.Fatalf("override sentinel: got %q", got)
+	}
+}
+
+func TestGetBackfillMaxMessages(t *testing.T) {
+	if got := (&Config{}).GetBackfillMaxMessages(); got != 50 {
+		t.Fatalf("default backfill max: got %d", got)
+	}
+	if got := (&Config{BackfillMaxMessages: 0}).GetBackfillMaxMessages(); got != 50 {
+		t.Fatalf("zero -> default: got %d", got)
+	}
+	if got := (&Config{BackfillMaxMessages: 200}).GetBackfillMaxMessages(); got != 200 {
+		t.Fatalf("override backfill max: got %d", got)
+	}
+}

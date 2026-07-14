@@ -32,6 +32,7 @@ type fakeAgent struct {
 	promptStop  acp.StopReason
 	promptErr   error
 	promptHook  func(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error)
+	newSessErr  error // when set, NewSession returns this error
 	cancelCount int32
 	dropCount   int32
 	// currentModel is returned from Models(); tests set this to
@@ -49,6 +50,9 @@ func (f *fakeAgent) Caps() client.Caps { return f.caps }
 func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.newSessErr != nil {
+		return "", f.newSessErr
+	}
 	sid := acp.SessionId("sid")
 	f.sinks[sid] = sink
 	return sid, nil
