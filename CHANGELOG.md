@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Quieter Slack surface, mirroring poe-acp. `Plan` session updates are now
+  suppressed entirely (fir emits them frequently on multi-step tasks; rendering
+  the `*Plan:*` block inline stacked noise into the answer). Agent thought
+  chunks can be suppressed via the new `hide_thinking` config key (default
+  `false`, thoughts still shown as italic one-liners). Tool calls remain
+  suppressed as before.
+
+### Fixed
+
+- Ambient abstain no longer breaks when the agent thinks out loud. The
+  sentinel comparison ran over every rendered chunk, so a single thought
+  chunk diverged the buffer from `silent_sentinel` and forced a post — an
+  abstaining agent could never actually stay silent with a thinking model.
+  Thought chunks are now always suppressed on the abstain path, so only
+  message chunks decide the sentinel.
+
 ## [0.2.0] - 2026-07-16
 
 ### Added

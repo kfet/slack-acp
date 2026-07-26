@@ -64,6 +64,11 @@ type Config struct {
 	// has chosen not to reply. The relay suppresses posting when the
 	// full streamed response equals this sentinel. Default: "<<SILENT>>"
 	SilentSentinel string `json:"silent_sentinel,omitempty"`
+
+	// HideThinking suppresses agent_thought_chunk output (the italic
+	// one-liners) from the posted Slack message, mirroring poe-acp's
+	// hide_thinking. Default false (thoughts are shown).
+	HideThinking bool `json:"hide_thinking,omitempty"`
 }
 
 // Load reads and validates the config file.

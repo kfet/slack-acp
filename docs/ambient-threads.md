@@ -119,6 +119,10 @@ persona, cost, and reach — not reply rules.** Resist building a rules engine.
 - `ambient` (bool) — master switch: follow un-tagged thread replies at all.
 - `backfill` (bool) + `backfill_max_messages` — outage catch-up behaviour.
 - `silent_sentinel` (string, default `<<SILENT>>`) — rarely overridden.
+- `hide_thinking` (bool, default `false`) — suppress the agent's thought
+  chunks (the italic one-liners) from the posted message. Note thoughts are
+  always suppressed on the ambient/abstain path regardless of this knob, so
+  a thinking agent can still emit the sentinel and stay silent.
 
 ### Per channel (new `channels: { "C123…": { … } }` map, merged over defaults)
 

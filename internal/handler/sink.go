@@ -48,7 +48,13 @@ func (a *abstainSink) OnUpdate(ctx context.Context, n acp.SessionNotification) e
 	// direct field access, so the two sinks can't drift on locking).
 	a.wrapped.cacheMeta(n)
 
-	chunk := renderChunk(n)
+	// Thoughts are ALWAYS suppressed on the abstain path, regardless of
+	// hide_thinking. The sentinel decision below compares the agent's
+	// full buffered output against the sentinel string; an italicised
+	// thought line would diverge from it and force a post, so an
+	// abstaining agent that happened to think out loud could never stay
+	// silent. Only message chunks may decide the sentinel.
+	chunk := renderChunk(n, true)
 	if chunk == "" {
 		return nil
 	}
@@ -121,9 +127,11 @@ func (a *abstainSink) Finalize(ctx context.Context) (abstained bool, err error) 
 //
 //   - AgentMessageChunk → appended verbatim (the answer body).
 //   - AgentThoughtChunk → italicised one-liner, so reasoning still
-//     surfaces but doesn't crowd the answer.
-//   - Plan → rendered as a short "*Plan:*" block (empty plans skipped
-//     so we don't leave a bare trailer).
+//     surfaces but doesn't crowd the answer. Suppressed entirely when
+//     hideThinking is set (config hide_thinking), mirroring poe-acp.
+//   - Plan → suppressed (matches poe-acp). fir emits plan updates
+//     frequently on multi-step tasks; rendering them inline stacks
+//     "*Plan:*" blocks into the answer and reads as noise on mobile.
 //   - dev.acp-kit.status-line/v1 _meta → mood/plan label captured and
 //     prepended once, on the first user-visible chunk, as a status
 //     header line.
@@ -142,10 +150,14 @@ type streamingSink struct {
 	statusMu      sync.Mutex
 	status        statusline.Status
 	headerEmitted bool // set after the first prepend has been considered
+
+	// hideThinking suppresses agent_thought_chunk rendering (mirrors
+	// poe-acp hide_thinking). Set once at construction; read-only after.
+	hideThinking bool
 }
 
-func newStreamingSink(s *slackproto.PostStreamer) *streamingSink {
-	return &streamingSink{stream: s}
+func newStreamingSink(s *slackproto.PostStreamer, hideThinking bool) *streamingSink {
+	return &streamingSink{stream: s, hideThinking: hideThinking}
 }
 
 // SetProviderEmoji records the relay-resolved provider emoji for the
@@ -174,7 +186,7 @@ func (s *streamingSink) OnUpdate(ctx context.Context, n acp.SessionNotification)
 	// Header rendering happens lazily on the first user-visible chunk;
 	// this just keeps the latest values warm.
 	s.cacheMeta(n)
-	chunk := renderChunk(n)
+	chunk := renderChunk(n, s.hideThinking)
 	if chunk == "" {
 		return nil
 	}
@@ -195,26 +207,20 @@ func (s *streamingSink) cacheMeta(n acp.SessionNotification) {
 // renderChunk converts a session update into the Slack-bound text for
 // that update, or "" if the update produces no user-visible output.
 // Shared by streamingSink and abstainSink so their rendering can never
-// drift apart.
-func renderChunk(n acp.SessionNotification) string {
+// drift apart. Thought chunks are dropped when hideThinking is set;
+// Plan and ToolCall updates never produce body text.
+func renderChunk(n acp.SessionNotification, hideThinking bool) string {
 	u := n.Update
 	switch {
 	case u.AgentMessageChunk != nil:
 		return contentBlockText(u.AgentMessageChunk.Content)
 	case u.AgentThoughtChunk != nil:
+		if hideThinking {
+			return ""
+		}
 		if t := contentBlockText(u.AgentThoughtChunk.Content); t != "" {
 			return "_" + oneLine(t) + "_\n"
 		}
-	case u.Plan != nil:
-		if len(u.Plan.Entries) == 0 {
-			return ""
-		}
-		var b strings.Builder
-		b.WriteString("\n*Plan:*\n")
-		for _, e := range u.Plan.Entries {
-			b.WriteString("• " + e.Content + "\n")
-		}
-		return b.String()
 	}
 	return ""
 }
