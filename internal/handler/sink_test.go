@@ -16,7 +16,7 @@ func newSinkAndCapture(t *testing.T) (*streamingSink, *fakeSlack) {
 	fs := newFakeSlack()
 	t.Cleanup(fs.close)
 	stream := slackproto.NewPostStreamer(fs.client(), "C1", "1.0")
-	return newStreamingSink(stream), fs
+	return newStreamingSink(stream, false), fs
 }
 
 func TestSinkAgentMessageChunk(t *testing.T) {
@@ -205,25 +205,39 @@ func TestSinkStatusHeaderOnThoughtChunk(t *testing.T) {
 	}
 }
 
-func TestSinkStatusHeaderOnPlanFirst(t *testing.T) {
+func TestSinkStatusHeaderOnMessageFirst(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Meta: map[string]any{
 			statusline.ExtensionID: map[string]any{"plan": "1/2"},
 		},
 	})
+	// A Plan update produces no visible chunk (suppressed), so the
+	// status header must land on the first real message chunk instead.
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
 			Plan: &acp.SessionUpdatePlan{Entries: []acp.PlanEntry{{Content: "do thing"}}},
 		},
 	})
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "answer"}},
+			},
+		},
+	})
 	body := strings.Join(fs.bodies, "")
 	if !strings.Contains(body, "> _1/2_") {
-		t.Fatalf("expected header on first plan write; body=%q", body)
+		t.Fatalf("expected header on first message write; body=%q", body)
+	}
+	if strings.Contains(body, "do thing") {
+		t.Fatalf("plan entry should be suppressed; body=%q", body)
 	}
 }
 
-func TestSinkPlan(t *testing.T) {
+func TestSinkPlanSuppressed(t *testing.T) {
+	// Plan updates are suppressed entirely (matches poe-acp), so a
+	// non-empty plan must post nothing to the Slack thread.
 	sink, fs := newSinkAndCapture(t)
 	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
@@ -234,21 +248,27 @@ func TestSinkPlan(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Join(fs.bodies, "")
-	if !strings.Contains(body, "step 1") || !strings.Contains(body, "step 2") {
-		t.Fatalf("missing plan entries; body=%q", body)
+	if fs.posts != 0 {
+		t.Fatalf("plan should be suppressed; bodies=%q", fs.bodies)
 	}
 }
 
-func TestSinkPlanEmptySkipped(t *testing.T) {
-	sink, fs := newSinkAndCapture(t)
+func TestSinkHideThinking(t *testing.T) {
+	fs := newFakeSlack()
+	t.Cleanup(fs.close)
+	stream := slackproto.NewPostStreamer(fs.client(), "C1", "1.0")
+	sink := newStreamingSink(stream, true) // hide_thinking on
 	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{Plan: &acp.SessionUpdatePlan{}},
+		Update: acp.SessionUpdate{
+			AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "pondering"}},
+			},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if fs.posts != 0 {
-		t.Fatalf("empty plan should not post; bodies=%q", fs.bodies)
+		t.Fatalf("thought should be suppressed when hideThinking; bodies=%q", fs.bodies)
 	}
 }
 
@@ -475,5 +495,37 @@ func TestAbstainFinalizeFlushError(t *testing.T) {
 	fs.postErr = true // Finalize's flush (postMessage) will fail
 	if _, err := a.Finalize(context.Background()); err == nil {
 		t.Fatal("expected Finalize flush error to propagate")
+	}
+}
+
+// Regression: an agent that emits thought chunks and then the sentinel
+// must still abstain. Thoughts are suppressed on the abstain path, so
+// they never diverge the buffered output from the sentinel.
+func TestAbstainThoughtsDoNotBreakSentinel(t *testing.T) {
+	a, fs := newAbstain(t, "<<SILENT>>")
+	if err := a.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "should I reply?"}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "<<SILENT>>"}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	abstained, err := a.Finalize(context.Background())
+	if err != nil || !abstained {
+		t.Fatalf("expected abstained,no-err; got %v,%v", abstained, err)
+	}
+	if fs.posts != 0 {
+		t.Fatalf("nothing should be posted; bodies=%q", fs.bodies)
 	}
 }

@@ -7,5 +7,6 @@
   "allowed_channel_ids": ["C01234567"],
   "session_idle_timeout_seconds": 0,
   "system_prompt": "",
-  "disable_system_prompt": false
+  "disable_system_prompt": false,
+  "hide_thinking": false
 }

@@ -41,6 +41,9 @@ type Config struct {
 	// SilentSentinel is the exact output string that signals the agent
 	// has chosen not to reply.
 	SilentSentinel string
+	// HideThinking suppresses agent thought chunks from the Slack post
+	// (the italic one-liners), mirroring poe-acp hide_thinking.
+	HideThinking bool
 }
 
 // inflightEntry wraps a per-call cancel func with a unique identity so
@@ -343,7 +346,7 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	}
 
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
-	baseSink := newStreamingSink(stream)
+	baseSink := newStreamingSink(stream, h.cfg.HideThinking)
 
 	// Abstain is an ambient-only feature: an agent that follows a
 	// shared thread must be able to stay silent. On the addressed/DM

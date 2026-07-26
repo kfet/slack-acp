@@ -484,7 +484,7 @@ func TestSpinnerExitsOnCtx(t *testing.T) {
 	if err := stream.Start(context.Background(), "> _Thinking…_"); err != nil {
 		t.Fatal(err)
 	}
-	sink := newStreamingSink(stream)
+	sink := newStreamingSink(stream, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { spinner(ctx, stream, sink); close(done) }()
@@ -504,7 +504,7 @@ func TestSpinnerTicksAndSelfDisarms(t *testing.T) {
 	if err := stream.Start(context.Background(), "> _Thinking…_"); err != nil {
 		t.Fatal(err)
 	}
-	sink := newStreamingSink(stream)
+	sink := newStreamingSink(stream, false)
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Meta: map[string]any{
 			statusline.ExtensionID: map[string]any{"mood": "steady"},

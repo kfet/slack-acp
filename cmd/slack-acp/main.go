@@ -164,6 +164,7 @@ func main() {
 		Backfill:            cfg.Backfill,
 		BackfillMaxMessages: cfg.GetBackfillMaxMessages(),
 		SilentSentinel:      cfg.GetSilentSentinel(),
+		HideThinking:        cfg.HideThinking,
 	})
 
 	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h)
