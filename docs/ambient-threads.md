@@ -104,11 +104,31 @@ No membership knob, no addressed/ambient split, no separate context feed.
 
 ## What's configuration — per deployment vs per channel
 
+### Prerequisite: ambient in private channels needs two manifest entries
+
+Ambient mode depends on receiving un-mentioned messages, and Slack splits
+that by channel type. Public channels emit `message.channels`; **private
+channels emit `message.groups`**, which requires the separate
+`groups:history` bot scope. Both live in
+[`docs/slack-app-manifest.json`](slack-app-manifest.json).
+
+If either is missing, ambient looks like it works — public channels behave
+normally — while being completely inert in private channels, because no
+event ever arrives. The tell is an absent ambient checkpoint: `last_ts`
+appears under `<StateDir>/threads/<channel>/<thread_ts>/` only for
+conversations the relay actually observed, so a private channel that never
+accumulates one is not being delivered events at all.
+
+Both entries were missing from the shipped manifest before v0.3.0.
+**Changing event subscriptions or scopes requires reinstalling the app**
+(**Install App** → **Reinstall to Workspace**) — editing the manifest alone
+does not grant them, and the failure is silent rather than an error at
+startup.
+
 Guiding principle: **the agent decides whether to reply; config sets priors,
 persona, cost, and reach — not reply rules.** Resist building a rules engine.
 
 ### Per deployment (global `config.json`, today)
-
 - `bot_token` / `app_token`, `agent_cmd`, `state_dir`
 - `session_idle_timeout_seconds`
 - `model_probe_budget_seconds` (int, default `300`) — how long the startup

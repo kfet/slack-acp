@@ -21,6 +21,7 @@
                 "app_mentions:read",
                 "channels:history",
                 "chat:write",
+                "groups:history",
                 "im:history",
                 "im:read",
                 "im:write",
@@ -34,6 +35,7 @@
             "bot_events": [
                 "app_mention",
                 "message.channels",
+                "message.groups",
                 "message.im"
             ]
         },

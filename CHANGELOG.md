@@ -6,6 +6,17 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Slack app manifest now subscribes to `message.groups` and requests the
+  `groups:history` bot scope. It had only ever covered public channels
+  (`message.channels` / `channels:history`), so an app installed from this file
+  received nothing un-mentioned in a **private** channel and ambient mode was
+  silently inert there while working normally in public ones. The live deployed
+  app had `groups:history` granted by hand — the file was stale, and nothing
+  compiled it, so the drift went unnoticed. `internal/slackproto` now has tests
+  pinning the manifest's events and scopes against what the relay actually
+  needs. Operators must **reinstall** the app for the new subscription and
+  scope to take effect.
+
 - `self_drive_sentinel` containing `<`, `>` or `&` is now rejected at config
   load. Slack HTML-escapes those characters in inbound message text, so a
   sentinel like `<<DRIVE-TEST>>` arrived as `&lt;&lt;DRIVE-TEST&gt;&gt;`, the
