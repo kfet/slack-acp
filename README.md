@@ -78,7 +78,21 @@ The fastest path is the bundled app manifest:
 4. **Install App** → **Install to Workspace**. Save the `xoxb-…` bot token.
 
 The manifest already enables Socket Mode, the Messages tab (so DMs have a
-compose box), bot scopes, and the `app_mention` + `message.im` events.
+compose box), bot scopes, and the `app_mention`, `message.channels`,
+`message.groups` and `message.im` events.
+
+> **Changing subscriptions or scopes requires REINSTALLING the app**
+> (**Install App** → **Reinstall to Workspace**). Editing the manifest of
+> an already-installed app does not grant the new scopes, and the symptom
+> is silent: missing events, or `missing_scope` errors at runtime.
+>
+> In particular, ambient mode in **private** channels needs *both*
+> `message.groups` (the private-channel counterpart of
+> `message.channels`) **and** the `groups:history` scope. Without both,
+> the relay never sees un-mentioned messages there and ambient is inert
+> in private channels while appearing to work fine in public ones. Both
+> were missing from this manifest before v0.3.0 — if your app was created
+> from an older copy, reinstall it.
 
 ### One-shot wizard
 
