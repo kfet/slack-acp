@@ -115,9 +115,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The agent runs with the relay's environment MINUS the Slack
+	// credentials: in ambient threads it is driven by text from people
+	// who are not the operator, and a leaked bot token would let it
+	// post as the bot and read history outside any gate we can apply
+	// later. It never needs to call Slack itself — the relay owns that
+	// side of the wire.
 	agent, err := client.Start(ctx, client.Config{
 		Command: cfg.AgentCmd,
 		Cwd:     cfg.StateDir,
+		Env:     config.ScrubbedEnv(os.Environ(), cfg.BotToken, cfg.AppToken),
 		Stderr:  os.Stderr,
 	})
 	if err != nil {

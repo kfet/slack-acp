@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- The spawned ACP agent no longer inherits the Slack credentials. Its
+  environment is filtered through `config.ScrubbedEnv`, which drops the
+  variables `slack-acp init` writes (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`) and
+  any variable — whatever its name — whose value matches a live token. In
+  ambient threads the agent is driven by text from people who are not the
+  operator; a readable bot token would let it post as the bot and read history
+  outside any gate applied later. The relay owns the Slack side of the wire, so
+  the agent never needs the token itself.
+
 ### Changed
 
 - Quieter Slack surface, mirroring poe-acp. `Plan` session updates are now
