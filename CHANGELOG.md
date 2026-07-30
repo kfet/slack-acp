@@ -67,6 +67,22 @@ All notable changes to this project will be documented in this file.
   Thought chunks are now always suppressed on the abstain path, so only
   message chunks decide the sentinel.
 
+### Notes
+
+- `cmd/slack-acp/main.go` is excluded from coverage via `.covignore`, so the
+  `Env: config.ScrubbedEnv(os.Environ(), cfg.BotToken, cfg.AppToken)` call-site
+  wiring is not protected by the 100% gate. Deleting that line would silently
+  restore full-environment inheritance — handing the agent the Slack tokens —
+  and no test would fail. Deferred deliberately: the file is bare assembly and
+  the exclusion is the documented convention. Revisit by moving the wiring into
+  `internal/` when not mid-release.
+
+- The outbound sentinel scrub lives in `PostStreamer`, which covers every
+  message the relay streams today. Any future Slack write added outside
+  `PostStreamer` (e.g. a direct `chat.postMessage` for an error notice) would
+  bypass it. Nothing does today, and the failure would be invisible until a
+  loop occurs.
+
 ## [0.2.0] - 2026-07-16
 
 ### Added
