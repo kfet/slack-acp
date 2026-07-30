@@ -119,6 +119,86 @@ func TestSessionIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestSelfDriveSentinelRejectsSlackEscapedChars(t *testing.T) {
+	// Slack HTML-escapes <, > and & in inbound message text, so a
+	// sentinel containing any of them arrives escaped
+	// (<<DRIVE-TEST>> → &lt;&lt;DRIVE-TEST&gt;&gt;) and the
+	// prefix match can never fire. The hatch then does nothing at all,
+	// with no error anywhere — the worst failure mode. Reject it at
+	// load time instead.
+	cases := []struct {
+		name     string
+		sentinel string
+		wantErr  bool
+	}{
+		{"angle brackets", "<<DRIVE-TEST>>", true},
+		{"single less-than", "drive<test", true},
+		{"single greater-than", "drive>test", true},
+		{"ampersand", "drive&test", true},
+		{"already-escaped form is just as bad", "&lt;&lt;DRIVE&gt;&gt;", true},
+		{"plain token is fine", "drive-me-9f3a", false},
+		{"punctuation Slack leaves alone", "!!drive-test!!", false},
+		{"bang-bracket mix without angles", "[[drive-test]]", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&Config{SelfDriveSentinel: tc.sentinel}).Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() = nil for sentinel %q, want an error", tc.sentinel)
+				}
+				if !strings.Contains(err.Error(), "escape") {
+					t.Fatalf("error should explain Slack escaping, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() = %v, want nil for sentinel %q", err, tc.sentinel)
+			}
+		})
+	}
+}
+
+func TestSelfDriveSentinelEscapeRuleLeavesSilentSentinelAlone(t *testing.T) {
+	// The new rule must not disturb silent_sentinel, whose default
+	// (<<SILENT>>) legitimately contains angle brackets: it is only
+	// ever compared against agent *output*, never matched against
+	// escaped inbound text.
+	if err := (&Config{}).Validate(); err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+	if err := (&Config{SilentSentinel: "<<SILENT>>"}).Validate(); err != nil {
+		t.Fatalf("explicit default silent_sentinel rejected: %v", err)
+	}
+	if err := (&Config{SilentSentinel: "<<QUIET>>"}).Validate(); err != nil {
+		t.Fatalf("custom bracketed silent_sentinel rejected: %v", err)
+	}
+	if got := (&Config{}).GetSilentSentinel(); got != "<<SILENT>>" {
+		t.Fatalf("GetSilentSentinel() = %q, want the unchanged default", got)
+	}
+
+	// And the collision check still works on tokens that can actually
+	// reach it (i.e. those without escaped characters).
+	if err := (&Config{SelfDriveSentinel: "same-token-x", SilentSentinel: "same-token-x"}).Validate(); err == nil {
+		t.Fatal("collision with a non-escaped silent_sentinel should still be rejected")
+	}
+}
+
+// TestExampleConfigIsLoadable guards the operator-facing example
+// against drift: it must parse under DisallowUnknownFields and pass
+// Validate, so a copy-paste start is always a working start. (It is
+// also why the example carries no explanatory comment keys — JSON has
+// no comments and an unknown key would fail Load.)
+func TestExampleConfigIsLoadable(t *testing.T) {
+	c, err := Load(filepath.Join("..", "..", "docs", "config.example.json"))
+	if err != nil {
+		t.Fatalf("docs/config.example.json does not load: %v", err)
+	}
+	if c.SelfDriveSentinel != "" {
+		t.Errorf("example must ship with the self-drive hatch OFF, got %q", c.SelfDriveSentinel)
+	}
+}
+
 func TestSelfDriveConfig(t *testing.T) {
 	cases := []struct {
 		name    string

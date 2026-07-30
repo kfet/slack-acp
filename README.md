@@ -164,8 +164,16 @@ token is accepted, with the token stripped before the agent sees it.
 }
 ```
 
+The token must be at least 8 characters, must differ from
+`silent_sentinel`, and **must not contain `<`, `>` or `&`** — Slack
+HTML-escapes those inbound, so `<<DRIVE-TEST>>` would arrive as
+`&lt;&lt;DRIVE-TEST&gt;&gt;` and never match. Config validation rejects
+such a token at load time rather than letting the hatch fail silently.
+
 The hatch is prefix-anchored, never a substring match, because the
-realistic loop is the agent quoting its trigger back mid-reply.
+realistic loop is the agent quoting its trigger back mid-reply. A
+bot-authored message containing the sentinel *without* starting with it
+is logged visibly (`SELF-DRIVE IGNORED … must be a PREFIX`) and dropped.
 `@`-mentions are **not** a hatch trigger: `app_mention` unconditionally
 refuses bot-authored events, so the sentinel itself is the addressing
 mechanism. See [`docs/ambient-threads.md`](docs/ambient-threads.md) for

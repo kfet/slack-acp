@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `self_drive_sentinel` containing `<`, `>` or `&` is now rejected at config
+  load. Slack HTML-escapes those characters in inbound message text, so a
+  sentinel like `<<DRIVE-TEST>>` arrived as `&lt;&lt;DRIVE-TEST&gt;&gt;`, the
+  prefix match never fired, and the hatch silently did nothing — no error at
+  any layer, which is the worst failure mode. The error explains the escaping
+  and suggests a plain token. `silent_sentinel` is unaffected: it is compared
+  against agent *output*, never matched against escaped inbound text, and keeps
+  its `<<SILENT>>` default.
+
+- A bot-authored message that *contains* the self-drive sentinel without
+  starting with it is now logged at operator-visible level rather than debug
+  (`SELF-DRIVE IGNORED … the sentinel must be a PREFIX`). The message is still
+  dropped; the log line exists so a mis-set token is diagnosable in seconds
+  instead of presenting as silence.
+
 ### Added
 
 - Self-drive escape hatch (`self_drive_sentinel`, `self_drive_per_minute`),

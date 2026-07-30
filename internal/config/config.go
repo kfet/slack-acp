@@ -128,6 +128,20 @@ func (c *Config) Validate() error {
 		if len(c.SelfDriveSentinel) < minSelfDriveSentinel {
 			return fmt.Errorf("self_drive_sentinel must be at least %d characters (got %d) — short tokens are too easy to trigger by accident", minSelfDriveSentinel, len(c.SelfDriveSentinel))
 		}
+		// Slack HTML-escapes <, > and & in inbound message text, so a
+		// sentinel containing any of them arrives escaped
+		// (<<DRIVE-TEST>> becomes &lt;&lt;DRIVE-TEST&gt;&gt;) and the
+		// prefix match can never fire. The hatch would silently do
+		// nothing, with no error at any layer — so refuse the token
+		// here rather than let an operator debug a no-op.
+		//
+		// Note this rule is specific to self_drive_sentinel, which is
+		// matched against *inbound* text. silent_sentinel is compared
+		// against agent *output* and is unaffected; its default
+		// (<<SILENT>>) stays valid.
+		if i := strings.IndexAny(c.SelfDriveSentinel, "<>&"); i >= 0 {
+			return fmt.Errorf("self_drive_sentinel must not contain < > or & (found %q) — Slack HTML-escapes those in inbound message text, so the token would arrive escaped (e.g. \"<<X>>\" as \"&lt;&lt;X&gt;&gt;\") and could never match; use a token like \"drive-me-9f3a\"", c.SelfDriveSentinel[i])
+		}
 		if c.SelfDriveSentinel == c.GetSilentSentinel() {
 			return fmt.Errorf("self_drive_sentinel must differ from silent_sentinel (both %q) — one means 'drive me', the other 'stay quiet'", c.SelfDriveSentinel)
 		}

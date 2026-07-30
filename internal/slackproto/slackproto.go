@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -201,6 +202,15 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			// hatch: a sentinel anchored at the start of the message.
 			stripped, ok := c.selfDrive.Accept(text)
 			if !ok {
+				// Operator-visible, not debug: a sentinel that is
+				// present but not leading is the exact shape of the
+				// hatch "silently doing nothing", and this line is
+				// what makes it a one-second diagnosis. It also
+				// confirms the echo guard working as intended when the
+				// agent quotes its own trigger back.
+				if c.selfDrive.containsButNotPrefix(text) {
+					log.Printf("SELF-DRIVE IGNORED: channel=%s ts=%s — message contains the sentinel but does not START with it; the sentinel must be a PREFIX (note Slack HTML-escapes < > & in inbound text)", ev.Channel, ev.TimeStamp)
+				}
 				return
 			}
 			// Second layer: never act on a ts we posted ourselves.

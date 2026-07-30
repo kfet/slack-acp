@@ -1,7 +1,9 @@
 package slackproto
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"strings"
 	"testing"
 
@@ -399,5 +401,126 @@ func TestOutboundScrubInertWhenHatchOff(t *testing.T) {
 	defer fs.mu.Unlock()
 	if len(fs.bodies) != 1 || !strings.Contains(fs.bodies[0], testSentinel) {
 		t.Fatalf("hatch-off must not rewrite bodies, got %q", fs.bodies)
+	}
+}
+
+// ---- ergonomics: diagnose a non-prefix sentinel loudly ----
+
+func TestSelfDriveWarnsWhenSentinelIsNotAPrefix(t *testing.T) {
+	// The failure this guards against was invisible: the operator's
+	// sentinel arrived Slack-escaped, HasPrefix never matched, and the
+	// hatch did nothing with no output at any level. A visible warning
+	// on "contains but does not start with" turns that into a
+	// one-second diagnosis.
+	var buf bytes.Buffer
+	restore := captureWarnings(&buf)
+	defer restore()
+
+	h := &stubHandler{}
+	c := newSelfDriveClient(t, h, testSentinel)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{
+			Data: &slackevents.MessageEvent{
+				BotID: "B1", User: "Ubot", Channel: "C1", TimeStamp: "100.0",
+				Text: "you asked " + testSentinel + " so here it is",
+			},
+		},
+	})
+	if got := h.seen(); len(got) != 0 {
+		t.Fatalf("mid-text sentinel must still be dropped, got %+v", got)
+	}
+	out := buf.String()
+	if !strings.Contains(strings.ToLower(out), "prefix") {
+		t.Errorf("warning should explain the prefix requirement, got: %q", out)
+	}
+	if !strings.Contains(out, "C1") || !strings.Contains(out, "100.0") {
+		t.Errorf("warning should identify channel and ts, got: %q", out)
+	}
+}
+
+func TestSelfDriveNoWarningWhenSentinelAbsentOrHatchOff(t *testing.T) {
+	cases := []struct {
+		name     string
+		sentinel string
+		text     string
+	}{
+		{"no sentinel anywhere", testSentinel, "an ordinary bot reply"},
+		{"hatch off, sentinel present", "", "contains " + testSentinel + " but hatch is off"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			restore := captureWarnings(&buf)
+			defer restore()
+
+			h := &stubHandler{}
+			c := newSelfDriveClient(t, h, tc.sentinel)
+			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+				Type: slackevents.CallbackEvent,
+				InnerEvent: slackevents.EventsAPIInnerEvent{
+					Data: &slackevents.MessageEvent{
+						BotID: "B1", User: "Ubot", Channel: "C1", TimeStamp: "100.0", Text: tc.text,
+					},
+				},
+			})
+			if buf.Len() != 0 {
+				t.Errorf("unexpected warning: %q", buf.String())
+			}
+		})
+	}
+}
+
+func TestSelfDriveAcceptedPrefixDoesNotWarn(t *testing.T) {
+	var buf bytes.Buffer
+	restore := captureWarnings(&buf)
+	defer restore()
+
+	h := &stubHandler{}
+	c := newSelfDriveClient(t, h, testSentinel)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{
+			Data: &slackevents.MessageEvent{
+				BotID: "B1", User: "Ubot", Channel: "C1", TimeStamp: "100.0",
+				Text: testSentinel + " go",
+			},
+		},
+	})
+	if len(h.seen()) != 1 {
+		t.Fatal("prefix message should have been accepted")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("accepted message must not warn: %q", buf.String())
+	}
+}
+
+func TestSelfDriveContainsButNotPrefix(t *testing.T) {
+	d := NewSelfDrive(testSentinel)
+	if !d.containsButNotPrefix("mid " + testSentinel + " text") {
+		t.Error("mid-text sentinel not detected")
+	}
+	if d.containsButNotPrefix(testSentinel + " leading") {
+		t.Error("prefix must not be reported as mid-text")
+	}
+	if d.containsButNotPrefix("no sentinel here") {
+		t.Error("false positive on clean text")
+	}
+	var off *SelfDrive
+	if off.containsButNotPrefix("mid " + testSentinel + " text") {
+		t.Error("disabled hatch must not report anything")
+	}
+}
+
+// captureWarnings redirects the standard logger into buf, returning a
+// restore func. Used to assert on operator-visible output.
+func captureWarnings(buf *bytes.Buffer) func() {
+	prevOut, prevFlags, prevPrefix := log.Writer(), log.Flags(), log.Prefix()
+	log.SetOutput(buf)
+	log.SetFlags(0)
+	return func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+		log.SetPrefix(prevPrefix)
 	}
 }

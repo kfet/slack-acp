@@ -149,8 +149,24 @@ is my own reply", so the hatch is keyed on text instead.
 
 - `self_drive_sentinel` (string, default `""` = **OFF**, fail closed) — a
   bot-authored **channel** message whose text *begins* with this token is
-  accepted, sentinel stripped. Must be ≥ 8 characters and must differ from
-  `silent_sentinel`.
+  accepted, sentinel stripped. Must be ≥ 8 characters, must differ from
+  `silent_sentinel`, and **must not contain `<`, `>` or `&`**.
+
+  The last rule is not cosmetic. Slack HTML-escapes those three characters in
+  inbound message text, so a sentinel like `<<DRIVE-TEST>>` arrives as
+  `&lt;&lt;DRIVE-TEST&gt;&gt;`, the prefix match never fires, and the hatch
+  silently does nothing — no error at any layer. Config validation now rejects
+  such a token at load time. Use a plain token: `drive-me-9f3a`.
+
+  Note this restriction applies **only** to `self_drive_sentinel`, which is
+  matched against *inbound* text. `silent_sentinel` is compared against agent
+  *output*, is never escaped, and keeps its bracketed default `<<SILENT>>`.
+
+  As a second line of defence, a bot-authored message that *contains* the
+  sentinel without starting with it is logged at operator-visible level
+  (`SELF-DRIVE IGNORED: … the sentinel must be a PREFIX`), so a mis-set token
+  or a mid-text mention is diagnosable immediately instead of appearing as
+  silence. The message is still dropped.
 - `self_drive_per_minute` (int, default `4`) — token-bucket cap on
   hatch-accepted events.
 
