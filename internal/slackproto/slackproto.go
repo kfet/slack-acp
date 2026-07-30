@@ -38,6 +38,11 @@ type Event struct {
 	Text string
 	// IsDM is true for direct-message conversations (channel.im).
 	IsDM bool
+	// SelfDrive marks an event admitted by the self-drive escape hatch
+	// (a bot-authored message carrying the configured sentinel prefix).
+	// The handler uses it to bypass the *user* allowlist — and nothing
+	// else; the channel allowlist and rate cap still apply.
+	SelfDrive bool
 }
 
 // Handler processes a normalised event. Implementations should return
@@ -52,10 +57,21 @@ type Client struct {
 	sm        *socketmode.Client
 	botUserID string
 	handler   Handler
+	selfDrive *SelfDrive // nil = hatch off (the default)
+}
+
+// Option customises a Client.
+type Option func(*Client)
+
+// WithSelfDrive enables the self-drive escape hatch. Omit it (or pass a
+// hatch built from an empty sentinel) to keep the hatch off, which is
+// the correct production configuration.
+func WithSelfDrive(d *SelfDrive) Option {
+	return func(c *Client) { c.selfDrive = d }
 }
 
 // New constructs a Client. botToken is xoxb-, appToken is xapp-.
-func New(botToken, appToken string, h Handler) (*Client, error) {
+func New(botToken, appToken string, h Handler, opts ...Option) (*Client, error) {
 	if botToken == "" || appToken == "" {
 		return nil, errors.New("slackproto: bot_token and app_token required")
 	}
@@ -67,7 +83,11 @@ func New(botToken, appToken string, h Handler) (*Client, error) {
 	}
 	api := slack.New(botToken, slackOptions(appToken)...)
 	sm := socketmode.New(api)
-	return &Client{api: api, sm: sm, handler: h}, nil
+	c := &Client{api: api, sm: sm, handler: h}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 // slackOptions builds the slack.Client options, honouring the
@@ -139,6 +159,24 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 	}
 	switch ev := api.InnerEvent.Data.(type) {
 	case *slackevents.AppMentionEvent:
+		// ABSOLUTE GUARD — app_mention never accepts a bot-authored
+		// event. No exception, ever, and deliberately no conditional
+		// security logic on this path: the self-drive sentinel does
+		// NOT open it.
+		//
+		// The relay posts its own replies as this same bot, so any
+		// bot-authored app_mention that could re-trigger is a reply →
+		// trigger → reply loop with no natural bound. A deployment
+		// without an AllowedUserIDs allowlist has nothing else
+		// standing in the way.
+		//
+		// AppMentionEvent has no SubType field; Edited is its
+		// equivalent — it marks an event that is not an original human
+		// post, which is what SubType screens for on the message path.
+		if ev.BotID != "" || ev.User == c.botUserID || ev.User == "" || ev.Edited != nil {
+			kitlog.Debugf("slack: drop bot-authored app_mention in %s ts=%s", ev.Channel, ev.TimeStamp)
+			return
+		}
 		c.deliver(ctx, Event{
 			UserID:    ev.User,
 			ChannelID: ev.Channel,
@@ -147,11 +185,32 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			Text:      stripMention(ev.Text, c.botUserID),
 		})
 	case *slackevents.MessageEvent:
-		// DMs (channel.im) — Slack delivers without app_mention.
-		// Ignore bot/sub events and edits; ignore our own messages.
-		if ev.BotID != "" || ev.SubType != "" || ev.User == c.botUserID || ev.User == "" {
+		// Subtype events are always dropped, hatch or no hatch. The
+		// relay streams by *editing* its own message, so every
+		// throttled chat.update arrives here as message_changed; if
+		// those reached the hatch, one self-drive reply would
+		// re-trigger on each update. Only original posts are matched.
+		if ev.SubType != "" {
 			return
 		}
+
+		text := ev.Text
+		selfDrive := false
+		if ev.BotID != "" || ev.User == c.botUserID || ev.User == "" {
+			// Bot-authored. The ONLY way through is the self-drive
+			// hatch: a sentinel anchored at the start of the message.
+			stripped, ok := c.selfDrive.Accept(text)
+			if !ok {
+				return
+			}
+			// Second layer: never act on a ts we posted ourselves.
+			if c.selfDrive.SeenTS(ev.TimeStamp) {
+				kitlog.Debugf("slack: drop self-posted ts=%s in %s", ev.TimeStamp, ev.Channel)
+				return
+			}
+			text, selfDrive = stripMention(stripped, c.botUserID), true
+		}
+
 		// Forward DMs unconditionally.
 		if ev.ChannelType == "im" {
 			c.deliver(ctx, Event{
@@ -159,11 +218,30 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 				ChannelID: ev.Channel,
 				ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
 				TS:        ev.TimeStamp,
-				Text:      ev.Text,
+				Text:      text,
 				IsDM:      true,
+				SelfDrive: selfDrive,
 			})
 			return
 		}
+
+		// Self-drive messages are accepted top-level as well as in a
+		// thread (a top-level one starts a thread), and are exempt
+		// from the mentionsBot suppression below: 3a guarantees their
+		// app_mention twin is already dead, so suppressing here too
+		// would drop a mention+sentinel message on *both* paths.
+		if selfDrive {
+			c.deliver(ctx, Event{
+				UserID:    ev.User,
+				ChannelID: ev.Channel,
+				ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
+				TS:        ev.TimeStamp,
+				Text:      text,
+				SelfDrive: true,
+			})
+			return
+		}
+
 		// Forward thread replies in non-DM channels. The handler will
 		// decide whether to process them based on ambient config and
 		// whether the thread is known.
@@ -241,6 +319,11 @@ type PostStreamer struct {
 	// exercised without wall-clock sleeps. Defaults to time.Now.
 	now func() time.Time
 
+	// selfDrive, when set, scrubs the self-drive sentinel out of every
+	// outbound body and remembers the ts of everything we post. Nil
+	// (the default) makes both no-ops. See SetSelfDrive.
+	selfDrive *SelfDrive
+
 	mu       sync.Mutex
 	ts       string // ts of the message we own (after first post)
 	full     strings.Builder
@@ -281,6 +364,35 @@ func NewPostStreamer(api *slack.Client, channel, threadTS string) *PostStreamer 
 	}
 }
 
+// SetSelfDrive wires the self-drive hatch into the outbound path, so
+// posts are scrubbed of the sentinel and their ts values remembered.
+// Safe to omit; nil keeps both guards inert.
+func (s *PostStreamer) SetSelfDrive(d *SelfDrive) {
+	s.mu.Lock()
+	s.selfDrive = d
+	s.mu.Unlock()
+}
+
+// out prepares a body for transmission: the sentinel is neutralised so
+// the relay can never post its own trigger. This is loop guard #1 — it
+// makes an echo loop structurally impossible rather than merely
+// unlikely, independent of how Accept matches.
+func (s *PostStreamer) out(body string) string {
+	s.mu.Lock()
+	d := s.selfDrive
+	s.mu.Unlock()
+	return d.Scrub(body)
+}
+
+// recordTS remembers a ts we just wrote, so the inbound path can skip
+// Slack's echo of our own message (loop guard #2).
+func (s *PostStreamer) recordTS(ts string) {
+	s.mu.Lock()
+	d := s.selfDrive
+	s.mu.Unlock()
+	d.RecordTS(ts)
+}
+
 // Start posts an initial placeholder message *immediately* — used as
 // the "Thinking…" indicator that replaces Slack's missing typing
 // dots. The placeholder body is not added to the streamed buffer, so
@@ -310,13 +422,14 @@ func (s *PostStreamer) Start(ctx context.Context, body string) error {
 	defer s.sendMu.Unlock()
 
 	_, ts, err := s.api.PostMessageContext(ctx, channel,
-		slack.MsgOptionText(body, false),
+		slack.MsgOptionText(s.out(body), false),
 		slack.MsgOptionTS(threadTS),
 		slack.MsgOptionDisableLinkUnfurl(),
 	)
 	if err != nil {
 		return fmt.Errorf("post: %w", err)
 	}
+	s.recordTS(ts)
 	s.mu.Lock()
 	if s.ts == "" {
 		s.ts = ts
@@ -382,12 +495,13 @@ func (s *PostStreamer) UpdatePlaceholder(ctx context.Context, body string) (aliv
 	}
 
 	_, _, _, uerr := s.api.UpdateMessageContext(ctx, channel, ts,
-		slack.MsgOptionText(body, false),
+		slack.MsgOptionText(s.out(body), false),
 		slack.MsgOptionDisableLinkUnfurl(),
 	)
 	if uerr != nil {
 		return true, fmt.Errorf("update: %w", uerr)
 	}
+	s.recordTS(ts)
 	s.mu.Lock()
 	s.lastSent = s.now()
 	s.mu.Unlock()
@@ -476,13 +590,14 @@ func (s *PostStreamer) flush(ctx context.Context) error {
 	s.mu.Unlock()
 	if firstPost {
 		_, newTS, err := s.api.PostMessageContext(ctx, channel,
-			slack.MsgOptionText(body, false),
+			slack.MsgOptionText(s.out(body), false),
 			slack.MsgOptionTS(threadTS),
 			slack.MsgOptionDisableLinkUnfurl(),
 		)
 		if err != nil {
 			return fmt.Errorf("post: %w", err)
 		}
+		s.recordTS(newTS)
 		s.mu.Lock()
 		s.ts = newTS
 		s.lastSent = s.now()
@@ -491,12 +606,13 @@ func (s *PostStreamer) flush(ctx context.Context) error {
 		return nil
 	}
 	_, _, _, err := s.api.UpdateMessageContext(ctx, channel, ts,
-		slack.MsgOptionText(body, false),
+		slack.MsgOptionText(s.out(body), false),
 		slack.MsgOptionDisableLinkUnfurl(),
 	)
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
+	s.recordTS(ts)
 	s.mu.Lock()
 	s.lastSent = s.now()
 	s.pending = false

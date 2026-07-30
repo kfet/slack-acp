@@ -9,5 +9,8 @@
   "model_probe_budget_seconds": 300,
   "system_prompt": "",
   "disable_system_prompt": false,
+  "silent_sentinel": "<<SILENT>>",
+  "self_drive_sentinel": "",
+  "self_drive_per_minute": 4,
   "hide_thinking": false
 }

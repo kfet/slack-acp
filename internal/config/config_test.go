@@ -119,6 +119,45 @@ func TestSessionIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestSelfDriveConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{"off by default", Config{}, false},
+		{"valid sentinel", Config{SelfDriveSentinel: "drive-me-9f3a"}, false},
+		{"valid with explicit rate", Config{SelfDriveSentinel: "drive-me-9f3a", SelfDrivePerMinute: 10}, false},
+		{"too short", Config{SelfDriveSentinel: "short"}, true},
+		{"exactly 8 is ok", Config{SelfDriveSentinel: "12345678"}, false},
+		{"7 is too short", Config{SelfDriveSentinel: "1234567"}, true},
+		{"collides with explicit silent_sentinel", Config{SelfDriveSentinel: "same-token-x", SilentSentinel: "same-token-x"}, true},
+		{"collides with default silent_sentinel", Config{SelfDriveSentinel: "<<SILENT>>"}, true},
+		{"negative rate", Config{SelfDriveSentinel: "drive-me-9f3a", SelfDrivePerMinute: -1}, true},
+		{"rate ignored when hatch off", Config{SelfDrivePerMinute: -1}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestGetSelfDrivePerMinute(t *testing.T) {
+	if got := (&Config{}).GetSelfDrivePerMinute(); got != 4 {
+		t.Fatalf("default = %d, want 4", got)
+	}
+	if got := (&Config{SelfDrivePerMinute: 9}).GetSelfDrivePerMinute(); got != 9 {
+		t.Fatalf("explicit = %d, want 9", got)
+	}
+}
+
 func TestModelProbeBudget(t *testing.T) {
 	// Unset means "let probe.Models pick its default", not "no budget".
 	if got := (&Config{}).ModelProbeBudget(); got != 0 {
