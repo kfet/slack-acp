@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-30
+
 ### Fixed
 
 - Slack app manifest now subscribes to `message.groups` and requests the
