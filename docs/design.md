@@ -185,6 +185,10 @@ paths and fix it at the root.
   persisted `(channel, thread_ts) → sessionId` map under `StateDir`,
   since the standard spec has no list method and `session/load` takes
   a sessionId as input.
+- Channel-scoped standing preferences via an ancestor `AGENTS.md` at
+  `<StateDir>/threads/<channel_id>/`, picked up by the agent's existing
+  project-context walk with no code change. See
+  [docs/channel-memory.md](channel-memory.md).
 - Multiple agents per process (e.g. `/cmd` to pick agent).
 - Interactive permission prompts surfaced as ephemeral Slack messages.
 
