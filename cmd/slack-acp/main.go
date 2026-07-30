@@ -176,6 +176,17 @@ func main() {
 	allowedUsers := toSet(cfg.AllowedUserIDs)
 	allowedChannels := toSet(cfg.AllowedChannelIDs)
 
+	// Self-drive escape hatch. Nil unless an operator explicitly
+	// configures a sentinel, so the bot-message boundary stays shut by
+	// default. The SAME object is shared with the outbound streamer
+	// (via handler.Config.SelfDrive) so the scrub and the self-posted
+	// ts memory cover both directions.
+	var selfDrive *slackproto.SelfDrive
+	if cfg.SelfDriveSentinel != "" {
+		selfDrive = slackproto.NewSelfDrive(cfg.SelfDriveSentinel)
+		log.Printf("slack-acp: WARNING self-drive hatch ENABLED (%d/min) — bot-authored messages beginning with the configured sentinel will be executed. Do not run this in production.", cfg.GetSelfDrivePerMinute())
+	}
+
 	h := handler.New(handler.Config{
 		Router:              r,
 		AllowedUserIDs:      allowedUsers,
@@ -185,9 +196,11 @@ func main() {
 		BackfillMaxMessages: cfg.GetBackfillMaxMessages(),
 		SilentSentinel:      cfg.GetSilentSentinel(),
 		HideThinking:        cfg.HideThinking,
+		SelfDrive:           selfDrive,
+		SelfDrivePerMinute:  cfg.GetSelfDrivePerMinute(),
 	})
 
-	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h)
+	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h, slackproto.WithSelfDrive(selfDrive))
 	if err != nil {
 		log.Fatalf("slack: %v", err)
 	}

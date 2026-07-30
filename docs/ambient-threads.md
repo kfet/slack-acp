@@ -133,6 +133,64 @@ persona, cost, and reach — not reply rules.** Resist building a rules engine.
   always suppressed on the ambient/abstain path regardless of this knob, so
   a thinking agent can still emit the sentinel and stay silent.
 
+### The bot-message boundary and the self-drive hatch
+
+**Invariant: `app_mention` never accepts a bot-authored event.** No
+exception, ever, and no conditional security logic on that path. The relay
+posts its own replies as the same bot, so a bot-authored `app_mention` that
+could re-trigger is an unbounded reply → trigger → reply loop. `AllowedUserIDs`
+masks this in an allowlisted deployment; a deployment without one is exposed,
+so the guard lives in `slackproto` where it cannot be configured away.
+
+That leaves a real operator need unmet: testing the user → agent → reply round
+trip is only possible by posting with the *same bot token*, hence the same
+user id and `bot_id`. Identity alone cannot separate "answer this" from "this
+is my own reply", so the hatch is keyed on text instead.
+
+- `self_drive_sentinel` (string, default `""` = **OFF**, fail closed) — a
+  bot-authored **channel** message whose text *begins* with this token is
+  accepted, sentinel stripped. Must be ≥ 8 characters and must differ from
+  `silent_sentinel`.
+- `self_drive_per_minute` (int, default `4`) — token-bucket cap on
+  hatch-accepted events.
+
+> **⚠️ This deliberately reopens the bot-message boundary. Leave it empty in
+> production.**
+
+Design points, each load-bearing:
+
+- **Prefix-anchored, not `Contains`.** The realistic loop is the agent echoing
+  its trigger back mid-reply; agents rarely *begin* a reply with the token.
+- **`MessageEvent` path only.** `app_mention` keeps the absolute guard above,
+  so hatch triggers must not rely on @-mentioning the bot — the sentinel *is*
+  the addressing mechanism. Correspondingly, the `mentionsBot` suppression is
+  **not** applied to the hatch branch: its `app_mention` twin is already dead,
+  and dropping it here too would lose the message on both paths.
+- **`SubType != ""` always drops.** The relay streams by editing its own
+  message, so each throttled `chat.update` arrives as `message_changed`; only
+  original posts are matched.
+- Accepted both top-level (starts a thread) and as a thread reply.
+
+Four independent loop guards, in order of how much they are relied on:
+
+1. **Outbound scrub (belt).** The relay neutralises the sentinel in
+   *everything* it posts, making an echo loop structurally impossible rather
+   than merely unlikely — independent of how the match is done.
+2. **Self-posted `ts` suppression (braces).** A bounded (256) ring of ts values
+   returned by `chat.postMessage` / `chat.update`; inbound events matching one
+   are skipped. Best-effort and lost on restart — a second layer, not the gate.
+3. **Rate cap (backstop).** Token bucket, default 4/min, bounding the damage if
+   the first two ever fail. This is why no recursion-depth counter is needed.
+4. **Channel allowlist still applies.** The hatch bypasses the *user* gate only
+   (the bot is not in `AllowedUserIDs`), and only when the event is marked
+   self-drive. It must never bypass `AllowedChannelIDs`.
+
+Every hatch acceptance is logged loudly with channel, ts, and text prefix.
+
+Layering follows the existing seam: `slackproto` is mechanism (detect, strip,
+scrub, ts memory, the hard guard — all identity filtering in one file) and
+`handler` is policy (rate cap, allowlist bypass, logging).
+
 ### Per channel (new `channels: { "C123…": { … } }` map, merged over defaults)
 
 Slack channels have distinct cultures; the channel is the natural override unit

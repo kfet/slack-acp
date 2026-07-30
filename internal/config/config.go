@@ -70,6 +70,20 @@ type Config struct {
 	// hide_thinking. Default false (thoughts are shown).
 	HideThinking bool `json:"hide_thinking,omitempty"`
 
+	// SelfDriveSentinel opts into the self-drive escape hatch: a
+	// bot-authored message whose text *begins* with this exact token is
+	// accepted (with the token stripped) instead of being dropped as
+	// the relay's own output.
+	//
+	// This deliberately reopens the bot-message boundary. Leave it
+	// empty in production — empty is the default and means OFF.
+	SelfDriveSentinel string `json:"self_drive_sentinel,omitempty"`
+
+	// SelfDrivePerMinute caps how many hatch-accepted messages the
+	// relay will act on per minute. Only meaningful when
+	// SelfDriveSentinel is set. Default 4.
+	SelfDrivePerMinute int `json:"self_drive_per_minute,omitempty"`
+
 	// ModelProbeBudgetSeconds bounds the total time the startup model
 	// probe may spend retrying a not-yet-ready agent. Agents that block
 	// on external readiness (e.g. `fir --mode acp --wait-mcp` waiting
@@ -107,7 +121,33 @@ func (c *Config) Validate() error {
 	if c.ModelProbeBudgetSeconds < 0 {
 		return fmt.Errorf("model_probe_budget_seconds must be >= 0")
 	}
+	if c.SelfDriveSentinel != "" {
+		// Short tokens are the dangerous case: the hatch reopens the
+		// bot-message boundary, so an accidental or guessable prefix
+		// is a live self-trigger.
+		if len(c.SelfDriveSentinel) < minSelfDriveSentinel {
+			return fmt.Errorf("self_drive_sentinel must be at least %d characters (got %d) — short tokens are too easy to trigger by accident", minSelfDriveSentinel, len(c.SelfDriveSentinel))
+		}
+		if c.SelfDriveSentinel == c.GetSilentSentinel() {
+			return fmt.Errorf("self_drive_sentinel must differ from silent_sentinel (both %q) — one means 'drive me', the other 'stay quiet'", c.SelfDriveSentinel)
+		}
+		if c.SelfDrivePerMinute < 0 {
+			return fmt.Errorf("self_drive_per_minute must be >= 1 when self_drive_sentinel is set (0 or omitted uses the default of 4)")
+		}
+	}
 	return nil
+}
+
+// minSelfDriveSentinel is the shortest accepted self-drive token.
+const minSelfDriveSentinel = 8
+
+// GetSelfDrivePerMinute returns the configured hatch rate cap or the
+// default.
+func (c *Config) GetSelfDrivePerMinute() int {
+	if c.SelfDrivePerMinute <= 0 {
+		return 4
+	}
+	return c.SelfDrivePerMinute
 }
 
 // GetSilentSentinel returns the configured sentinel or the default.

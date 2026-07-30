@@ -143,6 +143,34 @@ built-in defaults.
 directory, and agent command without starting the bot — handy
 for verifying what a unit file or env will actually use.
 
+### Self-drive escape hatch (testing only)
+
+> **⚠️ This deliberately reopens the bot-message boundary. Leave
+> `self_drive_sentinel` empty in production.**
+
+The relay normally drops every bot-authored message, because it posts
+its own replies as that same bot — accepting them is a reply → trigger
+→ reply loop. That also blocks an operator who can only post using the
+bot token from testing the user → agent → reply round trip.
+
+Setting `self_drive_sentinel` opts into a narrow exception: a
+bot-authored channel message whose text **begins** with that exact
+token is accepted, with the token stripped before the agent sees it.
+
+```json
+{
+  "self_drive_sentinel": "drive-me-9f3a",
+  "self_drive_per_minute": 4
+}
+```
+
+The hatch is prefix-anchored, never a substring match, because the
+realistic loop is the agent quoting its trigger back mid-reply.
+`@`-mentions are **not** a hatch trigger: `app_mention` unconditionally
+refuses bot-authored events, so the sentinel itself is the addressing
+mechanism. See [`docs/ambient-threads.md`](docs/ambient-threads.md) for
+the full loop-guard design.
+
 ## Repository layout
 
 ```

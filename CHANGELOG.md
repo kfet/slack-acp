@@ -4,7 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Self-drive escape hatch (`self_drive_sentinel`, `self_drive_per_minute`),
+  **off by default and intended for testing only**. Lets an operator drive the
+  round trip using the same bot token the relay posts with: a bot-authored
+  channel message whose text *begins* with the configured sentinel is accepted
+  with the sentinel stripped. Prefix-anchored (not substring) because the
+  realistic loop is the agent echoing its trigger back mid-reply. Guarded by an
+  outbound scrub of every posted message, a bounded ring of self-posted `ts`
+  values, a 4/min token bucket, and the unchanged channel allowlist — the hatch
+  bypasses the *user* gate only. Every acceptance is logged loudly.
+
 ### Fixed
+
+- `app_mention` no longer accepts bot-authored events. The `MessageEvent` path
+  filtered on `BotID`/`SubType`/bot user id, but `AppMentionEvent` had no guard
+  at all, so a bot posting text containing `<@botID>` could self-trigger — and
+  since the relay's own replies come from that same bot, that is an unbounded
+  reply → trigger → reply loop. Deployments with an `allowed_user_ids`
+  allowlist were masked from this; deployments without one were exposed. The
+  guard is now absolute on that path, with no exception for the self-drive
+  sentinel.
 
 - Startup model probe no longer races agent readiness. The probe opened a fresh
   ACP session immediately after agent start under a fixed 30s deadline, so an

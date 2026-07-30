@@ -44,6 +44,16 @@ type Config struct {
 	// HideThinking suppresses agent thought chunks from the Slack post
 	// (the italic one-liners), mirroring poe-acp hide_thinking.
 	HideThinking bool
+	// SelfDrive is the escape-hatch state shared with slackproto. Nil
+	// (the default) means the hatch is off and no self-drive event can
+	// ever be admitted.
+	SelfDrive *slackproto.SelfDrive
+	// SelfDrivePerMinute caps how many hatch-accepted events the relay
+	// will act on. 0 uses defaultSelfDrivePerMinute.
+	SelfDrivePerMinute int
+	// Now is the clock used by the self-drive rate cap. Injected by
+	// tests; defaults to time.Now.
+	Now func() time.Time
 }
 
 // inflightEntry wraps a per-call cancel func with a unique identity so
@@ -65,6 +75,9 @@ type Handler struct {
 	inflightCond  *sync.Cond // broadcast when inflight is mutated
 	inflight      map[router.ConvKey]*inflightEntry
 	waitIdleWaits int // # goroutines parked in WaitIdle's Cond.Wait (test sync)
+
+	// selfDrive rate-caps hatch events. Nil when the hatch is off.
+	selfDrive *selfDriveBucket
 }
 
 // New constructs a handler.
@@ -74,6 +87,12 @@ func New(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, inflight: make(map[router.ConvKey]*inflightEntry)}
 	h.inflightCond = sync.NewCond(&h.inflightMu)
+	if cfg.SelfDrive.Enabled() {
+		if cfg.SelfDrivePerMinute <= 0 {
+			h.cfg.SelfDrivePerMinute = defaultSelfDrivePerMinute
+		}
+		h.selfDrive = newSelfDriveBucket(h.cfg.SelfDrivePerMinute, cfg.Now)
+	}
 	return h
 }
 
@@ -134,9 +153,22 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	// Backward compat: if BotUserID is not set (empty), skip the ambient
 	// filter entirely (legacy tests / old slackproto code that doesn't
 	// set this field).
+	// Rate-cap the hatch before doing any work. Placed after the
+	// allowlists so a refusal is only ever logged for an event that
+	// would otherwise have run.
+	if ev.SelfDrive && !h.admitSelfDrive(ev) {
+		return
+	}
+
 	if ev.BotUserID != "" {
 		isMention := strings.Contains(ev.Text, fmt.Sprintf("<@%s>", ev.BotUserID))
-		if !ev.IsDM && !isMention {
+		// A self-drive message is addressed *by its sentinel* — the
+		// hatch cannot rely on @-mentioning the bot, because 3a kills
+		// the app_mention twin. So it summons like a mention does,
+		// rather than falling into the ambient known-thread gate
+		// (which would drop it and make the hatch useless for
+		// starting a thread).
+		if !ev.IsDM && !isMention && !ev.SelfDrive {
 			// This is an ambient (non-summoning) thread reply. Only forward
 			// if Ambient is enabled and we're already in this thread.
 			if !h.cfg.Ambient || !h.cfg.Router.Known(key) {
@@ -161,7 +193,11 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 }
 
 func (h *Handler) allowed(ev slackproto.Event) bool {
-	if len(h.cfg.AllowedUserIDs) > 0 {
+	// A self-drive event is authored by the bot itself, which is never
+	// in AllowedUserIDs — so the hatch bypasses the *user* gate, and
+	// only that. The channel gate below still applies in full: the
+	// hatch must never widen the relay's reach to a new channel.
+	if len(h.cfg.AllowedUserIDs) > 0 && !ev.SelfDrive {
 		if _, ok := h.cfg.AllowedUserIDs[ev.UserID]; !ok {
 			return false
 		}
@@ -346,6 +382,10 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	}
 
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
+	// Loop guards 1 & 2 on the outbound side: scrub the sentinel out of
+	// everything we post, and remember our own ts values so Slack's
+	// echo of them can be skipped on the way back in.
+	stream.SetSelfDrive(h.cfg.SelfDrive)
 	baseSink := newStreamingSink(stream, h.cfg.HideThinking)
 
 	// Abstain is an ambient-only feature: an agent that follows a
