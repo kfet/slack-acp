@@ -119,6 +119,23 @@ func TestSessionIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestModelProbeBudget(t *testing.T) {
+	// Unset means "let probe.Models pick its default", not "no budget".
+	if got := (&Config{}).ModelProbeBudget(); got != 0 {
+		t.Fatalf("zero budget: got %v, want 0 (defer to probe default)", got)
+	}
+	c := &Config{ModelProbeBudgetSeconds: 90}
+	if got := c.ModelProbeBudget(); got != 90*time.Second {
+		t.Fatalf("budget: got %v, want 90s", got)
+	}
+	if err := (&Config{ModelProbeBudgetSeconds: -1}).Validate(); err == nil {
+		t.Fatal("negative model_probe_budget_seconds should fail validation")
+	}
+	if err := (&Config{ModelProbeBudgetSeconds: 300}).Validate(); err != nil {
+		t.Fatalf("valid budget rejected: %v", err)
+	}
+}
+
 func TestValidateBackfillMaxMessages(t *testing.T) {
 	if err := (&Config{BackfillMaxMessages: -1}).Validate(); err == nil {
 		t.Fatal("negative backfill_max_messages should fail validation")

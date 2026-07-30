@@ -6,6 +6,7 @@
   "allowed_user_ids": ["U01234567"],
   "allowed_channel_ids": ["C01234567"],
   "session_idle_timeout_seconds": 0,
+  "model_probe_budget_seconds": 300,
   "system_prompt": "",
   "disable_system_prompt": false,
   "hide_thinking": false

@@ -69,6 +69,15 @@ type Config struct {
 	// one-liners) from the posted Slack message, mirroring poe-acp's
 	// hide_thinking. Default false (thoughts are shown).
 	HideThinking bool `json:"hide_thinking,omitempty"`
+
+	// ModelProbeBudgetSeconds bounds the total time the startup model
+	// probe may spend retrying a not-yet-ready agent. Agents that block
+	// on external readiness (e.g. `fir --mode acp --wait-mcp` waiting
+	// for every MCP server) can take minutes to answer, so the probe
+	// retries with backoff inside this budget instead of sampling once.
+	// The probe is best-effort — exhausting the budget costs only the
+	// provider emoji. 0 = default 300s.
+	ModelProbeBudgetSeconds int `json:"model_probe_budget_seconds,omitempty"`
 }
 
 // Load reads and validates the config file.
@@ -94,6 +103,9 @@ func (c *Config) Validate() error {
 	}
 	if c.BackfillMaxMessages < 0 {
 		return fmt.Errorf("backfill_max_messages must be >= 0")
+	}
+	if c.ModelProbeBudgetSeconds < 0 {
+		return fmt.Errorf("model_probe_budget_seconds must be >= 0")
 	}
 	return nil
 }
@@ -121,6 +133,15 @@ func (c *Config) IdleTimeout() time.Duration {
 		return 0
 	}
 	return time.Duration(c.SessionIdleTimeoutSeconds) * time.Second
+}
+
+// ModelProbeBudget returns the configured startup model-probe budget.
+// Zero means use probe.Models' default.
+func (c *Config) ModelProbeBudget() time.Duration {
+	if c.ModelProbeBudgetSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(c.ModelProbeBudgetSeconds) * time.Second
 }
 
 // ValidateTokens returns a multi-line, operator-friendly error when bot
