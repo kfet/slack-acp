@@ -118,6 +118,23 @@ func (d *SelfDrive) SeenTS(ts string) bool {
 	return ok
 }
 
+// containsButNotPrefix reports whether text carries the sentinel
+// somewhere other than at the very start.
+//
+// This is a diagnostic, not a gate — the message is still dropped. It
+// exists because the hatch's one bad failure mode is silence: a
+// sentinel that never matches (Slack HTML-escapes <, > and & inbound,
+// so a token containing them arrives mangled) produces no error
+// anywhere, and an operator has nothing to look at. Config validation
+// now rejects escapable tokens outright; this catches the remaining
+// case where the token is right but the message merely mentions it.
+func (d *SelfDrive) containsButNotPrefix(text string) bool {
+	if !d.Enabled() {
+		return false
+	}
+	return strings.Contains(text, d.sentinel) && !strings.HasPrefix(text, d.sentinel)
+}
+
 // Len returns how many self-posted ts values are remembered.
 func (d *SelfDrive) Len() int {
 	if d == nil {
