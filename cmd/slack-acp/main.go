@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
@@ -21,6 +20,7 @@ import (
 	"github.com/kfet/slack-acp/internal/handler"
 	"github.com/kfet/slack-acp/internal/initcmd"
 	"github.com/kfet/slack-acp/internal/installsvc"
+	"github.com/kfet/slack-acp/internal/probe"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/skills"
 	"github.com/kfet/slack-acp/internal/slackproto"
@@ -133,20 +133,33 @@ func main() {
 	defer agent.Close()
 	log.Printf("slack-acp %s: agent up (caps=%+v)", version, agent.Caps())
 
-	// Probe the agent for its current model so the placeholder /
-	// status header can render a provider emoji even when later turns
-	// land on resumed sessions. (acp-kit's ResumeSession path
-	// currently discards the response's SessionModelState, so without
-	// this probe a resumed-thread turn would have no model info to
-	// resolve.) Best-effort: failure just means no emoji segment.
-	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
-	if err := agent.ProbeModels(probeCtx); err != nil {
-		log.Printf("probe models failed (continuing without provider emoji): %v", err)
-	} else {
+	// Probe the agent for its current model so the status header can
+	// render a provider emoji from the first turn, before any session
+	// has been created to populate the model list as a side effect.
+	//
+	// Two properties matter here, both learned the hard way:
+	//
+	//   - It retries. An agent that blocks on external readiness
+	//     (`fir --mode acp --wait-mcp` waits for every MCP server) is
+	//     slow, not broken, and a one-shot 30s probe failed ~3 startups
+	//     in 7 with "context deadline exceeded" / "peer disconnected
+	//     before response".
+	//   - It does not gate Slack. The probe only decides whether an
+	//     emoji appears, so making the bot's whole connection wait on a
+	//     slow agent would trade a cosmetic degradation for an outage.
+	//     It runs in the background and reports when it lands.
+	go func() {
+		if err := probe.Models(ctx, probe.Config{
+			Prober: agent,
+			Budget: cfg.ModelProbeBudget(),
+			Logf:   log.Printf,
+		}); err != nil {
+			log.Printf("probe models failed (continuing without provider emoji): %v", err)
+			return
+		}
 		_, current := agent.Models()
 		log.Printf("probed agent current model: %q", current)
-	}
-	probeCancel()
+	}()
 
 	r, err := router.New(router.Config{
 		Agent:        agent,

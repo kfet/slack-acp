@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Startup model probe no longer races agent readiness. The probe opened a fresh
+  ACP session immediately after agent start under a fixed 30s deadline, so an
+  agent that blocks on external readiness (e.g. `fir --mode acp --wait-mcp`
+  waiting for a large MCP set) lost the race — roughly 3 startups in 7 logged
+  `context deadline exceeded`, `peer disconnected before response`, or
+  `context canceled`, and silently dropped the provider emoji for the whole
+  run. The probe now retries with exponential backoff inside a configurable
+  budget (`model_probe_budget_seconds`, default 300), treating a slow agent as
+  slow rather than broken. It also runs in the background, so connecting to
+  Slack is no longer gated behind it; exhausting the budget remains non-fatal.
+
 ### Security
 
 - The spawned ACP agent no longer inherits the Slack credentials. Its

@@ -111,6 +111,15 @@ persona, cost, and reach — not reply rules.** Resist building a rules engine.
 
 - `bot_token` / `app_token`, `agent_cmd`, `state_dir`
 - `session_idle_timeout_seconds`
+- `model_probe_budget_seconds` (int, default `300`) — how long the startup
+  model probe may keep retrying a not-yet-ready agent. The probe opens one
+  throwaway ACP session to learn the model list, which only drives the
+  provider emoji in the status header. Agents that block on external
+  readiness — `fir --mode acp --wait-mcp` waits for every MCP server — can
+  take minutes to answer, so the probe retries with exponential backoff
+  inside this budget rather than sampling once. It runs in the background:
+  the Slack connection is never gated on it, and exhausting the budget is
+  logged and tolerated, never fatal.
 - `system_prompt` (base persona), `disable_system_prompt`
 - `allowed_user_ids`, `allowed_channel_ids`
 
