@@ -1,6 +1,11 @@
 package config
 
-import "strings"
+import (
+	"io"
+	"strings"
+
+	"github.com/kfet/acp-kit/client"
+)
 
 // slackSecretEnvNames are the environment variables `slack-acp init`
 // writes and the supervisor units export. They authenticate the relay
@@ -62,4 +67,29 @@ func ScrubbedEnv(environ []string, secrets ...string) []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// AgentClientConfig assembles the acp-kit client.Config used to spawn
+// the ACP agent, with the Slack credentials scrubbed from its
+// environment.
+//
+// This lives in internal/ rather than in cmd/slack-acp/main.go on
+// purpose. main.go is excluded from the coverage gate by .covignore
+// (entry-point shims are bare assembly), so while the scrub itself was
+// tested, the *call site* that applies it was not: deleting the Env
+// line there would have silently restored full-environment
+// inheritance — handing the agent the Slack tokens — with every test
+// still green. Assembling the config here puts the wiring back under
+// the 100% gate, where TestAgentClientConfigScrubsCredentials pins it.
+//
+// environ is normally os.Environ(); stderr is normally os.Stderr. Both
+// are parameters so the assembly is testable without touching process
+// state.
+func (c *Config) AgentClientConfig(environ []string, stderr io.Writer) client.Config {
+	return client.Config{
+		Command: c.AgentCmd,
+		Cwd:     c.StateDir,
+		Env:     ScrubbedEnv(environ, c.BotToken, c.AppToken),
+		Stderr:  stderr,
+	}
 }
