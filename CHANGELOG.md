@@ -4,7 +4,40 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The credential scrub's *call site* is now covered. Assembling the agent's
+  `client.Config` moved out of `cmd/slack-acp/main.go` — which `.covignore`
+  excludes from the 100% gate — into `Config.AgentClientConfig` in
+  `internal/config`. `ScrubbedEnv` itself was always tested, but the line that
+  applied it was not: deleting it would have silently restored full-environment
+  inheritance, handing the spawned agent the Slack tokens, with every test still
+  green. Now pinned by `TestAgentClientConfigScrubsCredentials` and
+  `TestAgentClientConfigEnvNeverNil`. Closes the first deferred gap recorded
+  under 0.3.0 Notes. No behaviour change.
+
 ## [0.3.0] - 2026-07-30
+
+### Added
+
+- Self-drive escape hatch (`self_drive_sentinel`, `self_drive_per_minute`),
+  **off by default and intended for testing only**. Lets an operator drive the
+  round trip using the same bot token the relay posts with: a bot-authored
+  channel message whose text *begins* with the configured sentinel is accepted
+  with the sentinel stripped. Prefix-anchored (not substring) because the
+  realistic loop is the agent echoing its trigger back mid-reply. Guarded by an
+  outbound scrub of every posted message, a bounded ring of self-posted `ts`
+  values, a 4/min token bucket, and the unchanged channel allowlist — the hatch
+  bypasses the *user* gate only. Every acceptance is logged loudly.
+
+### Changed
+
+- Quieter Slack surface, mirroring poe-acp. `Plan` session updates are now
+  suppressed entirely (fir emits them frequently on multi-step tasks; rendering
+  the `*Plan:*` block inline stacked noise into the answer). Agent thought
+  chunks can be suppressed via the new `hide_thinking` config key (default
+  `false`, thoughts still shown as italic one-liners). Tool calls remain
+  suppressed as before.
 
 ### Fixed
 
@@ -34,20 +67,6 @@ All notable changes to this project will be documented in this file.
   dropped; the log line exists so a mis-set token is diagnosable in seconds
   instead of presenting as silence.
 
-### Added
-
-- Self-drive escape hatch (`self_drive_sentinel`, `self_drive_per_minute`),
-  **off by default and intended for testing only**. Lets an operator drive the
-  round trip using the same bot token the relay posts with: a bot-authored
-  channel message whose text *begins* with the configured sentinel is accepted
-  with the sentinel stripped. Prefix-anchored (not substring) because the
-  realistic loop is the agent echoing its trigger back mid-reply. Guarded by an
-  outbound scrub of every posted message, a bounded ring of self-posted `ts`
-  values, a 4/min token bucket, and the unchanged channel allowlist — the hatch
-  bypasses the *user* gate only. Every acceptance is logged loudly.
-
-### Fixed
-
 - `app_mention` no longer accepts bot-authored events. The `MessageEvent` path
   filtered on `BotID`/`SubType`/bot user id, but `AppMentionEvent` had no guard
   at all, so a bot posting text containing `<@botID>` could self-trigger — and
@@ -68,6 +87,13 @@ All notable changes to this project will be documented in this file.
   slow rather than broken. It also runs in the background, so connecting to
   Slack is no longer gated behind it; exhausting the budget remains non-fatal.
 
+- Ambient abstain no longer breaks when the agent thinks out loud. The
+  sentinel comparison ran over every rendered chunk, so a single thought
+  chunk diverged the buffer from `silent_sentinel` and forced a post — an
+  abstaining agent could never actually stay silent with a thinking model.
+  Thought chunks are now always suppressed on the abstain path, so only
+  message chunks decide the sentinel.
+
 ### Security
 
 - The spawned ACP agent no longer inherits the Slack credentials. Its
@@ -78,24 +104,6 @@ All notable changes to this project will be documented in this file.
   operator; a readable bot token would let it post as the bot and read history
   outside any gate applied later. The relay owns the Slack side of the wire, so
   the agent never needs the token itself.
-
-### Changed
-
-- Quieter Slack surface, mirroring poe-acp. `Plan` session updates are now
-  suppressed entirely (fir emits them frequently on multi-step tasks; rendering
-  the `*Plan:*` block inline stacked noise into the answer). Agent thought
-  chunks can be suppressed via the new `hide_thinking` config key (default
-  `false`, thoughts still shown as italic one-liners). Tool calls remain
-  suppressed as before.
-
-### Fixed
-
-- Ambient abstain no longer breaks when the agent thinks out loud. The
-  sentinel comparison ran over every rendered chunk, so a single thought
-  chunk diverged the buffer from `silent_sentinel` and forced a post — an
-  abstaining agent could never actually stay silent with a thinking model.
-  Thought chunks are now always suppressed on the abstain path, so only
-  message chunks decide the sentinel.
 
 ### Notes
 

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 
@@ -87,5 +88,56 @@ func TestScrubbedEnvNeverNil(t *testing.T) {
 				t.Fatalf("ScrubbedEnv = %q, want empty", got)
 			}
 		})
+	}
+}
+
+// AgentClientConfig is the *call site* of the credential scrub. It
+// lives in internal/ (not cmd/slack-acp/main.go, which .covignore
+// excludes) precisely so this test can pin it: a regression that drops
+// the Env field would hand the spawned agent the Slack tokens, and
+// before this test nothing would have failed.
+func TestAgentClientConfigScrubsCredentials(t *testing.T) {
+	c := &config.Config{
+		AgentCmd: []string{"fir", "--mode", "acp"},
+		StateDir: "/var/lib/slack-acp",
+		BotToken: "xoxb-secret",
+		AppToken: "xapp-secret",
+	}
+	environ := []string{
+		"PATH=/usr/bin",
+		"SLACK_BOT_TOKEN=xoxb-secret",
+		"SLACK_APP_TOKEN=xapp-secret",
+		"BESPOKE_NAME=xoxb-secret",
+	}
+	var stderr bytes.Buffer
+
+	got := c.AgentClientConfig(environ, &stderr)
+
+	if want := []string{"PATH=/usr/bin"}; !reflect.DeepEqual(got.Env, want) {
+		t.Fatalf("Env = %q, want %q (credentials must not reach the agent)", got.Env, want)
+	}
+	if !reflect.DeepEqual(got.Command, c.AgentCmd) {
+		t.Fatalf("Command = %q, want %q", got.Command, c.AgentCmd)
+	}
+	if got.Cwd != c.StateDir {
+		t.Fatalf("Cwd = %q, want %q", got.Cwd, c.StateDir)
+	}
+	if got.Stderr != &stderr {
+		t.Fatalf("Stderr not forwarded")
+	}
+}
+
+// A nil Env means "inherit os.Environ()" to acp-kit's client.Config, so
+// an empty environment must still produce a non-nil slice — otherwise
+// the scrub inverts into handing the agent everything. See the
+// ScrubbedEnv doc comment.
+func TestAgentClientConfigEnvNeverNil(t *testing.T) {
+	c := &config.Config{BotToken: "xoxb-secret"}
+	got := c.AgentClientConfig(nil, nil)
+	if got.Env == nil {
+		t.Fatal("Env is nil: acp-kit would inherit the full environment, tokens included")
+	}
+	if len(got.Env) != 0 {
+		t.Fatalf("Env = %q, want empty", got.Env)
 	}
 }
