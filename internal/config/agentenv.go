@@ -2,7 +2,6 @@ package config
 
 import (
 	"io"
-	"strings"
 
 	"github.com/kfet/acp-kit/client"
 )
@@ -10,86 +9,55 @@ import (
 // slackSecretEnvNames are the environment variables `slack-acp init`
 // writes and the supervisor units export. They authenticate the relay
 // to Slack; the spawned ACP agent has no business holding them.
+//
+// The threat model is Slack-specific and worth keeping in view: the
+// agent is a general-purpose tool-using process driven, in ambient
+// threads, by text from people who are not the operator. If it can read
+// the bot token it can post as the bot, read channel history, and
+// re-scope its own reach — none of which any prompt-level guard can take
+// back. Withholding the secret is the only durable defence, and it costs
+// nothing: the agent never needs to call Slack itself, because the relay
+// owns that side of the wire.
 var slackSecretEnvNames = []string{
 	"SLACK_BOT_TOKEN",
 	"SLACK_APP_TOKEN",
 }
 
-// ScrubbedEnv returns environ with every Slack credential removed, for
-// use as the spawned agent's environment.
-//
-// The agent is a general-purpose tool-using process driven, in ambient
-// threads, by text from people who are not the operator. If it can read
-// the bot token it can post as the bot, read channel history, and
-// re-scope its own reach — none of which any prompt-level guard can
-// take back. Withholding the secret is the only durable defence, and it
-// costs nothing: the agent never needs to call Slack itself, because
-// the relay owns that side of the wire.
+// AgentClientConfig assembles the acp-kit client.Config used to spawn
+// the ACP agent, declaring the Slack credentials as secrets so
+// client.Start scrubs them from the child's environment.
 //
 // Two removal rules, because operators do not all use our names:
+// SecretEnvNames drops the variables `slack-acp init` writes, and
+// Secrets drops the live token values whatever variable carries them
+// (a token exported under a bespoke name, or copied into a second
+// variable). The agent still inherits everything else — including its
+// own provider keys (ANTHROPIC_API_KEY etc.), which it legitimately
+// needs.
 //
-//   - by name — the variables `slack-acp init` writes (SLACK_BOT_TOKEN,
-//     SLACK_APP_TOKEN);
-//   - by value — any variable, whatever it is called, whose value is
-//     one of the live tokens passed in. This catches a token exported
-//     under a bespoke name, or duplicated into a second variable.
+// The scrub, and the nil-Env footgun it closes (a nil Env means
+// "inherit os.Environ()" to both client.Config and exec.Cmd, so failing
+// to materialise and filter it would hand the agent the full
+// environment, tokens included), now live in acp-kit's client.Start —
+// applied unconditionally inside Start rather than at a call site that
+// could be forgotten. See acp-kit client.Config's Env/SecretEnvNames/
+// Secrets documentation for the details.
 //
-// Empty strings in secrets are ignored (a config-file deployment may
-// legitimately have no token in the environment at all). The input
-// slice is not modified.
+// This assembly lives in internal/ rather than in cmd/slack-acp/main.go
+// on purpose: main.go is excluded from the coverage gate by .covignore
+// (entry-point shims are bare assembly), so keeping the wiring here puts
+// it under the 100% gate where TestAgentClientConfigDeclaresCredentials
+// pins that the right secrets are declared.
 //
-// The result is always non-nil, and that is load-bearing rather than
-// incidental. acp-kit's client.Config treats a nil Env as "inherit
-// os.Environ()" (as does exec.Cmd); only a non-nil slice — empty or
-// not — is taken literally. Returning nil would therefore not mean "no
-// variables" but "hand the agent everything, tokens included", turning
-// the scrub into a silent no-op in precisely the case where it removed
-// the most. Keep the make() below; do not reduce it to a var
-// declaration. TestScrubbedEnvNeverNil guards this.
-func ScrubbedEnv(environ []string, secrets ...string) []string {
-	drop := make(map[string]bool, len(slackSecretEnvNames))
-	for _, n := range slackSecretEnvNames {
-		drop[n] = true
-	}
-	values := make(map[string]bool, len(secrets))
-	for _, s := range secrets {
-		if s != "" {
-			values[s] = true
-		}
-	}
-
-	out := make([]string, 0, len(environ))
-	for _, kv := range environ {
-		name, value, ok := strings.Cut(kv, "=")
-		if ok && (drop[name] || values[value]) {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
-// AgentClientConfig assembles the acp-kit client.Config used to spawn
-// the ACP agent, with the Slack credentials scrubbed from its
-// environment.
-//
-// This lives in internal/ rather than in cmd/slack-acp/main.go on
-// purpose. main.go is excluded from the coverage gate by .covignore
-// (entry-point shims are bare assembly), so while the scrub itself was
-// tested, the *call site* that applies it was not: deleting the Env
-// line there would have silently restored full-environment
-// inheritance — handing the agent the Slack tokens — with every test
-// still green. Assembling the config here puts the wiring back under
-// the 100% gate, where TestAgentClientConfigScrubsCredentials pins it.
-//
-// environ is normally os.Environ(); stderr is normally os.Stderr. Both
-// are parameters so the assembly is testable without touching process
-// state.
-func (c *Config) AgentClientConfig(environ []string, stderr io.Writer) client.Config {
+// stderr is normally os.Stderr; it is a parameter so the assembly is
+// testable without touching process state. Env is left nil so
+// client.Start materialises and scrubs os.Environ() itself.
+func (c *Config) AgentClientConfig(stderr io.Writer) client.Config {
 	return client.Config{
-		Command: c.AgentCmd,
-		Cwd:     c.StateDir,
-		Env:     ScrubbedEnv(environ, c.BotToken, c.AppToken),
-		Stderr:  stderr,
+		Command:        c.AgentCmd,
+		Cwd:            c.StateDir,
+		SecretEnvNames: slackSecretEnvNames,
+		Secrets:        []string{c.BotToken, c.AppToken},
+		Stderr:         stderr,
 	}
 }

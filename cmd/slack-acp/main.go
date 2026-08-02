@@ -116,9 +116,10 @@ func main() {
 	defer stop()
 
 	// The agent runs with the relay's environment MINUS the Slack
-	// credentials — see Config.AgentClientConfig, which owns that
-	// assembly so the scrub's call site stays under the coverage gate.
-	agent, err := client.Start(ctx, cfg.AgentClientConfig(os.Environ(), os.Stderr))
+	// credentials — see Config.AgentClientConfig, which declares them as
+	// secrets for client.Start to scrub. That assembly lives in internal/
+	// so it stays under the coverage gate.
+	agent, err := client.Start(ctx, cfg.AgentClientConfig(os.Stderr))
 	if err != nil {
 		log.Fatalf("agent start: %v", err)
 	}

@@ -5,12 +5,12 @@ go 1.25
 tool github.com/kfet/covgate/cmd/covgate
 
 require (
-	github.com/coder/acp-go-sdk v0.12.2
-	github.com/kfet/acp-kit v0.1.4
+	github.com/coder/acp-go-sdk v0.13.5
+	github.com/kfet/acp-kit v0.4.0
 	github.com/slack-go/slack v0.23.0
 )
 
 require (
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/kfet/covgate v0.1.0 // indirect
+	github.com/kfet/covgate v0.1.2 // indirect
 )
