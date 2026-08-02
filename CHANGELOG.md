@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-02
+
 ### Fixed
 
 - **`make publish` can no longer half-land a release**: the push is now atomic
