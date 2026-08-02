@@ -4,17 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
+### Changed
 
-- The credential scrub's *call site* is now covered. Assembling the agent's
-  `client.Config` moved out of `cmd/slack-acp/main.go` — which `.covignore`
-  excludes from the 100% gate — into `Config.AgentClientConfig` in
-  `internal/config`. `ScrubbedEnv` itself was always tested, but the line that
-  applied it was not: deleting it would have silently restored full-environment
-  inheritance, handing the spawned agent the Slack tokens, with every test still
-  green. Now pinned by `TestAgentClientConfigScrubsCredentials` and
-  `TestAgentClientConfigEnvNeverNil`. Closes the first deferred gap recorded
-  under 0.3.0 Notes. No behaviour change.
+- The credential scrub is now delegated to acp-kit (v0.4.0). The local
+  `ScrubbedEnv` implementation is gone; `Config.AgentClientConfig` instead
+  declares the Slack credentials on the agent's `client.Config` via
+  `SecretEnvNames` (the `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` names) and
+  `Secrets` (the live token values), and `client.Start` applies the scrub
+  internally — including materialising and filtering `os.Environ()` when `Env`
+  is nil, closing the nil-Env footgun at the root. `AgentClientConfig` remains
+  in `internal/config` (not `cmd/slack-acp/main.go`, which `.covignore`
+  excludes) so the assembly stays under the 100% gate; its tests now pin that
+  the config *declares* the right secrets rather than that the `Env` slice was
+  pre-filtered. No behaviour change — the agent gets exactly the same
+  environment, minus the two Slack tokens and nothing else.
+
 
 ## [0.3.0] - 2026-07-30
 
