@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-02
+
 ### Changed
 
 - The credential scrub is now delegated to acp-kit (v0.4.0). The local
