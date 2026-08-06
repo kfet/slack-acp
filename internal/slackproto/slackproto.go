@@ -67,6 +67,9 @@ type Client struct {
 	botUserID string
 	handler   Handler
 	selfDrive *SelfDrive // nil = hatch off (the default)
+	// humanAuthors names user ids whose API-authored (bot_id-stamped)
+	// messages are treated as human. Nil/empty = the strict default.
+	humanAuthors map[string]struct{}
 }
 
 // Option customises a Client.
@@ -77,6 +80,13 @@ type Option func(*Client)
 // the correct production configuration.
 func WithSelfDrive(d *SelfDrive) Option {
 	return func(c *Client) { c.selfDrive = d }
+}
+
+// WithHumanAuthors names user ids whose API-authored messages count as
+// human. See Config.HumanAuthorUserIDs for why this is necessary and
+// why it cannot open a self-loop. Omit it for production.
+func WithHumanAuthors(ids map[string]struct{}) Option {
+	return func(c *Client) { c.humanAuthors = ids }
 }
 
 // New constructs a Client. botToken is xoxb-, appToken is xapp-.
@@ -176,24 +186,31 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			ThreadTS: firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
 			User:     ev.User,
 		}
-		// ABSOLUTE GUARD — app_mention never accepts a bot-authored
-		// event. No exception, ever, and deliberately no conditional
-		// security logic on this path: the self-drive sentinel does
-		// NOT open it.
+		// ABSOLUTE GUARD — app_mention never accepts a message the
+		// relay itself could have produced. Split into two clauses
+		// that are NOT equally negotiable:
 		//
-		// The relay posts its own replies as this same bot, so any
-		// bot-authored app_mention that could re-trigger is a reply →
-		// trigger → reply loop with no natural bound. A deployment
-		// without an AllowedUserIDs allowlist has nothing else
-		// standing in the way.
+		// 1. Self-authorship (below, in refuseAuthor): no author, our
+		//    own bot user, or an edit. Unconditional, no override,
+		//    ever. The relay posts its replies as this same bot, so
+		//    admitting one is a reply → trigger → reply loop with no
+		//    natural bound, and a deployment without an
+		//    AllowedUserIDs allowlist has nothing else in the way.
+		//
+		// 2. bot_id as a proxy for "not a human". Slack stamps the
+		//    posting app's bot_id onto EVERY API message, including
+		//    one sent with a user token on behalf of a real person —
+		//    so this clause is a proxy, not a fact, and it is
+		//    overridable per named user id via HumanAuthorUserIDs.
+		//    Overriding it cannot reach clause 1.
 		//
 		// AppMentionEvent has no SubType field; Edited is its
 		// equivalent — it marks an event that is not an original human
 		// post, which is what SubType screens for on the message path.
-		if ev.BotID != "" || ev.User == c.botUserID || ev.User == "" || ev.Edited != nil {
-			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonBotAuthored
+		if reason := c.refuseAuthor(ev.User, ev.BotID, ev.Edited != nil); reason != "" {
+			rec.Decision, rec.Reason = journal.DecisionDrop, reason
 			journal.Log(rec)
-			kitlog.Debugf("slack: drop bot-authored app_mention in %s ts=%s", ev.Channel, ev.TimeStamp)
+			kitlog.Debugf("slack: drop %s app_mention in %s ts=%s", reason, ev.Channel, ev.TimeStamp)
 			return
 		}
 		rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonMention
@@ -231,8 +248,8 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 
 		text := ev.Text
 		selfDrive := false
-		if ev.BotID != "" || ev.User == c.botUserID || ev.User == "" {
-			// Bot-authored. The ONLY way through is the self-drive
+		if c.refuseAuthor(ev.User, ev.BotID, false) != "" {
+			// Not a human post. The ONLY way through is the self-drive
 			// hatch: a sentinel anchored at the start of the message.
 			stripped, ok := c.selfDrive.Accept(text)
 			if !ok {
@@ -324,6 +341,38 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			})
 		}
 	}
+}
+
+// refuseAuthor decides whether an inbound event's author disqualifies
+// it from being processed, returning the journal reason to record (or
+// "" when the author is acceptable).
+//
+// The two clauses are deliberately separate and deliberately ordered:
+//
+//   - ReasonBotAuthored is the SELF-AUTHORSHIP guard: no author at all
+//     (webhooks, classic bots), our own bot user, or an edit. This is
+//     unconditional. HumanAuthorUserIDs cannot reach it — listing our
+//     own bot's user id changes nothing, because this clause is
+//     evaluated first and has no override. It is what makes a
+//     reply → trigger → reply loop structurally impossible.
+//
+//   - ReasonAPIAuthored is a PROXY: Slack stamps the posting app's
+//     bot_id onto every API message, including a chat.postMessage sent
+//     with a user (xoxp-) token on behalf of a real person. So bot_id
+//     means "sent through an app", not "sent by a robot", and treating
+//     the two as identical is what made the app_mention path
+//     untestable. An operator may name specific human user ids to
+//     exempt from this clause and nothing else.
+func (c *Client) refuseAuthor(user, botID string, edited bool) string {
+	if user == "" || user == c.botUserID || edited {
+		return journal.ReasonBotAuthored
+	}
+	if botID != "" {
+		if _, ok := c.humanAuthors[user]; !ok {
+			return journal.ReasonAPIAuthored
+		}
+	}
+	return ""
 }
 
 // mentionsBot reports whether text contains an <@botID> mention. Used

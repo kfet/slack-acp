@@ -30,6 +30,24 @@ All notable changes to this project will be documented in this file.
 - The Slack app manifest declares the `chat:write` **user** scope required by
   `slack-acp verify`. Operators must reinstall the app for it to take effect.
 
+### Changed
+
+- **The ingest author guard is now precise instead of blunt.** Slack stamps the
+  posting app's `bot_id` onto *every* API message — including a
+  `chat.postMessage` sent with a user (`xoxp-`) token on behalf of a real
+  person — so `bot_id` means "sent through an app", not "sent by a robot".
+  Treating the two as identical is what made the `app_mention` path impossible
+  to exercise automatically. The guard now separates two clauses: **self
+  authorship** (no author, our own bot user, or an edit) is refused
+  unconditionally with no override, which is what makes a reply → trigger →
+  reply loop structurally impossible; and the `bot_id` **proxy**, which may be
+  narrowed for explicitly named user ids via the new `human_author_user_ids`
+  config field. Empty (the default) is byte-for-byte the previous behaviour;
+  a non-empty list logs a loud startup warning. Listing the relay's own bot
+  user id cannot open the self-loop — the unconditional clause is evaluated
+  first. Drops are now journalled as `bot_authored` vs `api_authored` so the
+  two are distinguishable at a glance.
+
 ### Fixed
 
 - **Channel @-mentions are no longer dropped.** `slackproto` strips the

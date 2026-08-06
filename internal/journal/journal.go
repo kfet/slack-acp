@@ -77,7 +77,8 @@ const (
 // Reason vocabulary. Every emitted record carries exactly one of these.
 const (
 	// slackproto, app_mention path.
-	ReasonBotAuthored = "bot_authored" // the absolute app_mention guard
+	ReasonBotAuthored = "bot_authored" // self-authorship: our own bot, no author, or an edit
+	ReasonAPIAuthored = "api_authored" // carries a bot_id and the author is not a named human
 	ReasonMention     = "mention"
 
 	// slackproto, message.* path.

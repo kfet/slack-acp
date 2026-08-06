@@ -92,6 +92,30 @@ type Config struct {
 	// The probe is best-effort — exhausting the budget costs only the
 	// provider emoji. 0 = default 300s.
 	ModelProbeBudgetSeconds int `json:"model_probe_budget_seconds,omitempty"`
+
+	// HumanAuthorUserIDs names Slack users whose messages count as
+	// human-authored even though Slack marks them with a bot_id.
+	//
+	// Why this exists: Slack stamps the posting app's identity
+	// (app_id, bot_id, bot_profile) onto EVERY message sent through
+	// chat.postMessage — including one sent with a user (xoxp-) token
+	// on behalf of a real person. There is no way for an API caller to
+	// produce a message Slack presents as "typed in a client". The
+	// ingest guards use bot_id as a proxy for "not a human", so
+	// without this list an API-authored message from a real person is
+	// indistinguishable from a bot post and is dropped.
+	//
+	// This does NOT open the self-loop: a message whose author is our
+	// own bot user (or has no author at all) is refused
+	// unconditionally, before this list is consulted, with no
+	// override. The list only narrows the bot_id *proxy*, and only for
+	// user ids an operator has explicitly written down.
+	//
+	// Empty (the default) is byte-for-byte the previous behaviour, and
+	// is the correct production setting. Its only intended use is
+	// `slack-acp verify`, which posts as a named human. See
+	// docs/self-verification.md.
+	HumanAuthorUserIDs []string `json:"human_author_user_ids,omitempty"`
 }
 
 // Load reads and validates the config file.
@@ -147,6 +171,11 @@ func (c *Config) Validate() error {
 		}
 		if c.SelfDrivePerMinute < 0 {
 			return fmt.Errorf("self_drive_per_minute must be >= 1 when self_drive_sentinel is set (0 or omitted uses the default of 4)")
+		}
+	}
+	for _, id := range c.HumanAuthorUserIDs {
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("human_author_user_ids must not contain empty entries — an empty id would match every author-less message (webhooks, classic bots), which is exactly what the guard exists to refuse")
 		}
 	}
 	return nil

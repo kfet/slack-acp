@@ -287,3 +287,19 @@ func TestGetBackfillMaxMessages(t *testing.T) {
 		t.Fatalf("override backfill max: got %d", got)
 	}
 }
+
+// TestValidateRejectsEmptyHumanAuthorID: an empty id in the list would
+// match every author-less message (webhooks, classic bots) if the
+// lookup were ever reordered, and it is always an operator typo. The
+// guard refuses "" unconditionally today; this keeps the config from
+// expressing the intent at all.
+func TestValidateRejectsEmptyHumanAuthorID(t *testing.T) {
+	c := &Config{HumanAuthorUserIDs: []string{"U1", "  "}}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "human_author_user_ids") {
+		t.Fatalf("got %v", err)
+	}
+	if err := (&Config{HumanAuthorUserIDs: []string{"U1"}}).Validate(); err != nil {
+		t.Fatalf("a well-formed list must validate: %v", err)
+	}
+}
