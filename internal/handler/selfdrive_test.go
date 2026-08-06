@@ -8,6 +8,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/kfet/slack-acp/internal/ratelimit"
 	"github.com/kfet/slack-acp/internal/slackproto"
 )
 
@@ -16,15 +17,15 @@ import (
 func TestSelfDriveRateCap(t *testing.T) {
 	// Injected clock: no sleeping, no wall-clock polling.
 	now := time.Unix(0, 0)
-	b := newSelfDriveBucket(4, func() time.Time { return now })
+	b := ratelimit.New(4, defaultSelfDrivePerMinute, func() time.Time { return now })
 
 	// Burst of 4 is allowed, the 5th is refused.
 	for i := 0; i < 4; i++ {
-		if !b.allow() {
+		if !b.Allow() {
 			t.Fatalf("event %d refused inside the cap", i+1)
 		}
 	}
-	if b.allow() {
+	if b.Allow() {
 		t.Fatal("5th event admitted past a cap of 4")
 	}
 
@@ -32,34 +33,34 @@ func TestSelfDriveRateCap(t *testing.T) {
 	// that not enough time has passed for a *single* token: at 4/min
 	// one token takes 15s.
 	now = now.Add(14 * time.Second)
-	if b.allow() {
+	if b.Allow() {
 		t.Fatal("admitted before even one token had refilled")
 	}
 
 	// A full window restores the whole burst.
 	now = now.Add(time.Minute)
 	for i := 0; i < 4; i++ {
-		if !b.allow() {
+		if !b.Allow() {
 			t.Fatalf("event %d refused after refill", i+1)
 		}
 	}
-	if b.allow() {
+	if b.Allow() {
 		t.Fatal("refill exceeded the cap")
 	}
 }
 
 func TestSelfDriveRateCapPartialRefill(t *testing.T) {
 	now := time.Unix(0, 0)
-	b := newSelfDriveBucket(4, func() time.Time { return now })
+	b := ratelimit.New(4, defaultSelfDrivePerMinute, func() time.Time { return now })
 	for i := 0; i < 4; i++ {
-		b.allow()
+		b.Allow()
 	}
 	// Quarter of a window → one token back, not four.
 	now = now.Add(15 * time.Second)
-	if !b.allow() {
+	if !b.Allow() {
 		t.Fatal("quarter window should return one token")
 	}
-	if b.allow() {
+	if b.Allow() {
 		t.Fatal("quarter window returned more than one token")
 	}
 }
@@ -70,19 +71,19 @@ func TestSelfDriveRateCapDefaultsAndDisabled(t *testing.T) {
 
 	// Non-positive rate falls back to the default rather than
 	// admitting everything or nothing.
-	b := newSelfDriveBucket(0, clock)
+	b := ratelimit.New(0, defaultSelfDrivePerMinute, clock)
 	for i := 0; i < defaultSelfDrivePerMinute; i++ {
-		if !b.allow() {
+		if !b.Allow() {
 			t.Fatalf("default cap refused event %d", i+1)
 		}
 	}
-	if b.allow() {
+	if b.Allow() {
 		t.Fatal("default cap not enforced")
 	}
 
 	// A nil bucket (hatch off) never admits: fail closed.
-	var nilBucket *selfDriveBucket
-	if nilBucket.allow() {
+	var nilBucket *ratelimit.Bucket
+	if nilBucket.Allow() {
 		t.Fatal("nil bucket admitted an event")
 	}
 }
@@ -259,11 +260,11 @@ func TestHandleSelfDriveDroppedWhenHatchOff(t *testing.T) {
 func TestSelfDriveBucketDefaultClock(t *testing.T) {
 	// A nil Now falls back to time.Now; one immediate allow needs no
 	// wall-clock time to pass.
-	b := newSelfDriveBucket(1, nil)
-	if !b.allow() {
+	b := ratelimit.New(1, defaultSelfDrivePerMinute, nil)
+	if !b.Allow() {
 		t.Fatal("default-clock bucket refused the first event")
 	}
-	if b.allow() {
+	if b.Allow() {
 		t.Fatal("cap of 1 admitted a second event")
 	}
 }

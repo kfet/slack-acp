@@ -116,6 +116,12 @@ type Config struct {
 	// `slack-acp verify`, which posts as a named human. See
 	// docs/self-verification.md.
 	HumanAuthorUserIDs []string `json:"human_author_user_ids,omitempty"`
+
+	// HumanAuthorPerMinute caps how often the reclassification above
+	// may fire — the loop backstop of last resort, mirroring
+	// self_drive_per_minute. Ignored unless HumanAuthorUserIDs is set.
+	// 0 = default 12.
+	HumanAuthorPerMinute int `json:"human_author_per_minute,omitempty"`
 }
 
 // Load reads and validates the config file.
@@ -172,6 +178,9 @@ func (c *Config) Validate() error {
 		if c.SelfDrivePerMinute < 0 {
 			return fmt.Errorf("self_drive_per_minute must be >= 1 when self_drive_sentinel is set (0 or omitted uses the default of 4)")
 		}
+	}
+	if c.HumanAuthorPerMinute < 0 {
+		return fmt.Errorf("human_author_per_minute must be >= 1 (0 or omitted uses the default of 12)")
 	}
 	for _, id := range c.HumanAuthorUserIDs {
 		if strings.TrimSpace(id) == "" {

@@ -45,8 +45,16 @@ All notable changes to this project will be documented in this file.
   config field. Empty (the default) is byte-for-byte the previous behaviour;
   a non-empty list logs a loud startup warning. Listing the relay's own bot
   user id cannot open the self-loop — the unconditional clause is evaluated
-  first. Drops are now journalled as `bot_authored` vs `api_authored` so the
-  two are distinguishable at a glance.
+  first. Reclassification additionally requires that **our own app** posted the
+  message (`app_id`, read from the raw Socket Mode envelope since slack-go does
+  not surface it; our own app id is learned at startup via `bots.info`, and if
+  that lookup fails the reclassification is inert) and is bounded by a token
+  bucket, `human_author_per_minute`, default 12. Drops are journalled as
+  `bot_authored`, `api_authored`, `foreign_app` or `human_author_rate_cap` so
+  they are distinguishable at a glance.
+- The self-drive hatch's token bucket moved to `internal/ratelimit` and is now
+  shared with the human-author cap, so the second backstop cannot drift into a
+  subtly weaker copy of the first.
 
 ### Fixed
 

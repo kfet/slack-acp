@@ -16,6 +16,7 @@ import (
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/slack-acp/internal/journal"
+	"github.com/kfet/slack-acp/internal/ratelimit"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
 	"github.com/kfet/slack-acp/internal/statusline"
@@ -78,7 +79,7 @@ type Handler struct {
 	waitIdleWaits int // # goroutines parked in WaitIdle's Cond.Wait (test sync)
 
 	// selfDrive rate-caps hatch events. Nil when the hatch is off.
-	selfDrive *selfDriveBucket
+	selfDrive *ratelimit.Bucket
 }
 
 // New constructs a handler.
@@ -92,7 +93,7 @@ func New(cfg Config) *Handler {
 		if cfg.SelfDrivePerMinute <= 0 {
 			h.cfg.SelfDrivePerMinute = defaultSelfDrivePerMinute
 		}
-		h.selfDrive = newSelfDriveBucket(h.cfg.SelfDrivePerMinute, cfg.Now)
+		h.selfDrive = ratelimit.New(h.cfg.SelfDrivePerMinute, defaultSelfDrivePerMinute, cfg.Now)
 	}
 	return h
 }

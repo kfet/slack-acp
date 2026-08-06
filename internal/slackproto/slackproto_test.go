@@ -171,7 +171,7 @@ func TestHandleEventsAPIAppMention(t *testing.T) {
 				Text:            "<@Ubot> hi",
 			},
 		},
-	})
+	}, "")
 	got := h.seen()
 	if len(got) != 1 || got[0].UserID != "U1" || got[0].Text != "hi" || got[0].ThreadTS != "100.0" {
 		t.Fatalf("got %+v", got)
@@ -185,7 +185,7 @@ func TestHandleEventsAPINotCallback(t *testing.T) {
 	h := &stubHandler{}
 	c := newClientForDispatch(t, h)
 	// URLVerification etc. is short-circuited.
-	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{Type: slackevents.URLVerification})
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{Type: slackevents.URLVerification}, "")
 	if len(h.seen()) != 0 {
 		t.Fatal("non-callback should be dropped")
 	}
@@ -206,7 +206,7 @@ func TestHandleEventsAPIDM(t *testing.T) {
 				Text:            "hi",
 			},
 		},
-	})
+	}, "")
 	got := h.seen()
 	if len(got) != 1 || !got[0].IsDM {
 		t.Fatalf("got %+v", got)
@@ -231,7 +231,7 @@ func TestHandleEventsAPIForwardsUntaggedThreadReply(t *testing.T) {
 				Text:            "just a reply",
 			},
 		},
-	})
+	}, "")
 	got := h.seen()
 	if len(got) != 1 {
 		t.Fatalf("expected 1 forwarded, got %+v", got)
@@ -260,7 +260,7 @@ func TestHandleEventsAPIDropsTaggedThreadReply(t *testing.T) {
 				Text:            "<@Ubot> hey",
 			},
 		},
-	})
+	}, "")
 	if n := len(h.seen()); n != 0 {
 		t.Fatalf("tagged reply must not be forwarded via message.channels; got %d", n)
 	}
@@ -283,7 +283,7 @@ func TestHandleEventsAPIDropsTopLevelChannelMessage(t *testing.T) {
 				Text:        "hello channel",
 			},
 		},
-	})
+	}, "")
 	if n := len(h.seen()); n != 0 {
 		t.Fatalf("top-level channel message must not be forwarded; got %d", n)
 	}
@@ -303,7 +303,7 @@ func TestHandleEventsAPIDropsBotsAndEditsAndNonIM(t *testing.T) {
 		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 			Type:       slackevents.CallbackEvent,
 			InnerEvent: slackevents.EventsAPIInnerEvent{Data: m},
-		})
+		}, "")
 	}
 	if len(h.seen()) != 0 {
 		t.Fatalf("expected all dropped, got %+v", h.seen())
@@ -316,7 +316,7 @@ func TestHandleEventsAPIIgnoresUnknownInner(t *testing.T) {
 	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 		Type:       slackevents.CallbackEvent,
 		InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.ChannelCreatedEvent{}},
-	})
+	}, "")
 	if len(h.seen()) != 0 {
 		t.Fatal("unknown inner should be ignored")
 	}

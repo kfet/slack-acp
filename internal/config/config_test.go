@@ -303,3 +303,10 @@ func TestValidateRejectsEmptyHumanAuthorID(t *testing.T) {
 		t.Fatalf("a well-formed list must validate: %v", err)
 	}
 }
+
+func TestValidateRejectsNegativeHumanAuthorPerMinute(t *testing.T) {
+	if err := (&Config{HumanAuthorPerMinute: -1}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "human_author_per_minute") {
+		t.Fatalf("got %v", err)
+	}
+}

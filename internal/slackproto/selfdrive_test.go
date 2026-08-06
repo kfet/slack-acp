@@ -51,7 +51,7 @@ func TestAppMentionRejectsBotAuthoredAlways(t *testing.T) {
 			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 				Type:       slackevents.CallbackEvent,
 				InnerEvent: slackevents.EventsAPIInnerEvent{Data: tc.ev},
-			})
+			}, "")
 			if got := h.seen(); len(got) != 0 {
 				t.Fatalf("app_mention accepted a bot-authored event: %+v", got)
 			}
@@ -67,7 +67,7 @@ func TestAppMentionStillAcceptsHumans(t *testing.T) {
 		InnerEvent: slackevents.EventsAPIInnerEvent{
 			Data: &slackevents.AppMentionEvent{User: "U1", Channel: "C1", TimeStamp: "1.0", Text: "<@Ubot> hi"},
 		},
-	})
+	}, "")
 	got := h.seen()
 	if len(got) != 1 || got[0].Text != "hi" || got[0].SelfDrive {
 		t.Fatalf("got %+v", got)
@@ -176,7 +176,7 @@ func TestSelfDriveHatchMatrix(t *testing.T) {
 			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 				Type:       slackevents.CallbackEvent,
 				InnerEvent: slackevents.EventsAPIInnerEvent{Data: tc.ev},
-			})
+			}, "")
 			got := h.seen()
 			if !tc.wantAccepted {
 				if len(got) != 0 {
@@ -214,7 +214,7 @@ func TestHumanMessagesUnaffectedByHatch(t *testing.T) {
 				User: "U1", Channel: "C1", TimeStamp: "101.0", ThreadTimeStamp: "100.0", Text: "ambient reply",
 			},
 		},
-	})
+	}, "")
 	got := h.seen()
 	if len(got) != 1 || got[0].SelfDrive || got[0].Text != "ambient reply" {
 		t.Fatalf("got %+v", got)
@@ -241,7 +241,7 @@ func TestSelfPostedTSSuppression(t *testing.T) {
 				Text: testSentinel + " echo of our own post",
 			},
 		},
-	})
+	}, "")
 	if got := h.seen(); len(got) != 0 {
 		t.Fatalf("self-posted ts should be suppressed, got %+v", got)
 	}
@@ -429,7 +429,7 @@ func TestSelfDriveWarnsWhenSentinelIsNotAPrefix(t *testing.T) {
 				Text: "you asked " + testSentinel + " so here it is",
 			},
 		},
-	})
+	}, "")
 	if got := h.seen(); len(got) != 0 {
 		t.Fatalf("mid-text sentinel must still be dropped, got %+v", got)
 	}
@@ -466,7 +466,7 @@ func TestSelfDriveNoWarningWhenSentinelAbsentOrHatchOff(t *testing.T) {
 						BotID: "B1", User: "Ubot", Channel: "C1", TimeStamp: "100.0", Text: tc.text,
 					},
 				},
-			})
+			}, "")
 			if buf.Len() != 0 {
 				t.Errorf("unexpected warning: %q", buf.String())
 			}
@@ -489,7 +489,7 @@ func TestSelfDriveAcceptedPrefixDoesNotWarn(t *testing.T) {
 				Text: testSentinel + " go",
 			},
 		},
-	})
+	}, "")
 	if len(h.seen()) != 1 {
 		t.Fatal("prefix message should have been accepted")
 	}

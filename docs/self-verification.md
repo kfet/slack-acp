@@ -72,20 +72,45 @@ and never a bot post substituted in.
 The guard has two clauses that are **not** equally negotiable:
 
 ```go
-func (c *Client) refuseAuthor(user, botID string, edited bool) string {
-	// 1. SELF-AUTHORSHIP — unconditional, no override, ever.
-	if user == "" || user == c.botUserID || edited {
-		return journal.ReasonBotAuthored
-	}
-	// 2. bot_id as a proxy for "not a human" — overridable per named id.
-	if botID != "" {
-		if _, ok := c.humanAuthors[user]; !ok {
-			return journal.ReasonAPIAuthored
-		}
-	}
-	return ""
-}
+// 1. SELF-AUTHORSHIP — unconditional, no override, ever, evaluated first.
+if user == "" || user == c.botUserID || edited { return ReasonBotAuthored }
+if botID == "" { return "" }               // typed in a client: ordinary human
+
+// 2. the bot_id PROXY — three conditions, ALL required:
+if _, named := c.humanAuthors[user]; !named { return ReasonAPIAuthored }
+if c.appID == "" || appID != c.appID       { return ReasonForeignApp }
+if !c.humanAuthorRate.Allow()              { return ReasonHumanAuthorRateCap }
+return ""
 ```
+
+Clause 1 lives in `slackproto`, which runs strictly **before** the handler's
+`allowed_user_ids` check — so no allowlist configuration can reorder it. There
+is a test asserting the relay's own reply is still refused with *every*
+override switched on at once, including its own id in the human list.
+
+The three conditions in clause 2 each close a different hole:
+
+| Condition | Hole it closes |
+| --- | --- |
+| author is named | any API post reclassified as human |
+| **`app_id` is ours** | a *third-party* app posting as that user — a workflow or integration the person once installed — being trusted |
+| rate cap (`human_author_per_minute`, default 12) | loop backstop of last resort, mirroring the self-drive hatch |
+
+**Why `app_id` and not `bot_id`.** Measured on a live workspace: an app's
+user-token surface gets its **own** `bot_id`, distinct from its bot-token
+`bot_id`, while both carry the same `app_id`.
+
+```
+BOT-token post   -> bot_id=B0B3VCV278U  app_id=A0B3PMFHUSJ  user=U0B3AAQ7HE3
+USER-token post  -> bot_id=B0BNE4AUS9L  app_id=A0B3PMFHUSJ  user=U9EA2KLTH
+```
+
+So `bot_id` equality would have rejected the harness while *looking* correct.
+`app_id` is the only field that identifies the posting app. slack-go does not
+surface it on the typed event structs, so the relay reads it off the raw Socket
+Mode envelope; it learns its own app id at startup via `bots.info` (no new
+scope). **If that lookup fails the reclassification is inert** — a guard that
+cannot verify its precondition refuses.
 
 Clause 1 is what makes a reply → trigger → reply loop **structurally
 impossible**: the relay posts its replies as its own bot user, so it can

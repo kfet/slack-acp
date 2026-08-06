@@ -3,13 +3,20 @@ package slackproto
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
+	"github.com/slack-go/slack/socketmode"
 
 	"github.com/kfet/slack-acp/internal/journal"
+	"github.com/kfet/slack-acp/internal/ratelimit"
 )
 
 // TestMain diverts the ingest journal for the whole package. Every
@@ -130,7 +137,7 @@ func TestIngestJournalRecordsEveryDecision(t *testing.T) {
 			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 				Type:       slackevents.CallbackEvent,
 				InnerEvent: slackevents.EventsAPIInnerEvent{Data: tc.inner},
-			})
+			}, "")
 
 			recs := records()
 			if len(recs) != 1 {
@@ -163,7 +170,7 @@ func TestIngestJournalSelfDrivePaths(t *testing.T) {
 			InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.MessageEvent{
 				User: bot, Channel: "C1", TimeStamp: "1.0", Text: testSentinel + " go",
 			}},
-		})
+		}, "")
 
 		recs := records()
 		if len(recs) != 1 || recs[0].Path != journal.PathSelfDrive ||
@@ -187,7 +194,7 @@ func TestIngestJournalSelfDrivePaths(t *testing.T) {
 			InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.MessageEvent{
 				User: bot, Channel: "C1", TimeStamp: "1.0", Text: testSentinel + " go",
 			}},
-		})
+		}, "")
 
 		recs := records()
 		if len(recs) != 1 || recs[0].Decision != journal.DecisionDrop || recs[0].Reason != journal.ReasonSelfPostedTS {
@@ -227,14 +234,14 @@ func TestAPIAuthoredMessagesAreRefusedUnlessTheAuthorIsNamed(t *testing.T) {
 		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 			Type:       slackevents.CallbackEvent,
 			InnerEvent: slackevents.EventsAPIInnerEvent{Data: mention},
-		})
+		}, "")
 		recs := records()
 		if len(recs) != 1 || recs[0].Decision != journal.DecisionDrop || recs[0].Reason != journal.ReasonAPIAuthored {
 			t.Fatalf("got %+v", recs)
 		}
 	})
 
-	t.Run("admitted when the author is named", func(t *testing.T) {
+	t.Run("admitted when the author is named AND our app posted it", func(t *testing.T) {
 		var got Event
 		c, err := New("xoxb-x", "xapp-x", handlerFunc(func(_ context.Context, ev Event) { got = ev }),
 			WithHumanAuthors(map[string]struct{}{human: {}}))
@@ -242,11 +249,12 @@ func TestAPIAuthoredMessagesAreRefusedUnlessTheAuthorIsNamed(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.botUserID = bot
+		armHumanAuthors(c)
 		records := captureJournal(t)
 		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 			Type:       slackevents.CallbackEvent,
 			InnerEvent: slackevents.EventsAPIInnerEvent{Data: mention},
-		})
+		}, ourAppID)
 		recs := records()
 		if len(recs) != 1 || recs[0].Decision != journal.DecisionDeliver || recs[0].Reason != journal.ReasonMention {
 			t.Fatalf("got %+v", recs)
@@ -286,7 +294,7 @@ func TestNamingTheBotCannotOpenTheSelfLoop(t *testing.T) {
 			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 				Type:       slackevents.CallbackEvent,
 				InnerEvent: slackevents.EventsAPIInnerEvent{Data: ev},
-			})
+			}, "")
 			if delivered != 0 {
 				t.Fatal("the relay must never act on its own message, whatever the config says")
 			}
@@ -313,7 +321,7 @@ func TestAuthorlessMessagesAreAlwaysRefused(t *testing.T) {
 		InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.AppMentionEvent{
 			BotID: "B1", Channel: "C1", TimeStamp: "1.0", Text: "<@UBOT> hi",
 		}},
-	})
+	}, "")
 	recs := records()
 	if len(recs) != 1 || recs[0].Reason != journal.ReasonBotAuthored {
 		t.Fatalf("got %+v", recs)
@@ -333,18 +341,294 @@ func TestNamedHumanOnTheMessagePathIsAmbientNotSelfDrive(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.botUserID = "UBOT"
+	armHumanAuthors(c)
 	records := captureJournal(t)
 	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
 		Type: slackevents.CallbackEvent,
 		InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.MessageEvent{
 			User: human, BotID: "B1", Channel: "C1", TimeStamp: "2.0", ThreadTimeStamp: "1.0", Text: "follow-up",
 		}},
-	})
+	}, ourAppID)
 	if got.SelfDrive {
 		t.Fatal("a named human is a human, not a self-drive event")
 	}
 	recs := records()
 	if len(recs) != 1 || recs[0].Reason != journal.ReasonAmbientThreadReply {
 		t.Fatalf("got %+v", recs)
+	}
+}
+
+// ourAppID stands in for the app id Run() learns from bots.info.
+const ourAppID = "A0OURAPP"
+
+// armHumanAuthors completes what Run() would do for a client whose
+// reclassification is configured: learn our own app id and arm the
+// rate cap. Tests construct Clients directly, so without this the
+// reclassification correctly stays shut.
+func armHumanAuthors(c *Client) {
+	c.appID = ourAppID
+	c.humanAuthorRate = ratelimit.New(0, defaultHumanAuthorPerMinute, nil)
+}
+
+// TestHumanAuthorRequiresOurOwnApp closes the widest hole in the
+// reclassification: naming a human must NOT hand trust to every app
+// that person ever installed. A third-party app posting as the named
+// user carries a different app_id and stays refused.
+//
+// This is not theoretical — measured against a live workspace, an
+// app's user-token surface gets its own bot_id (B0BNE4AUS9L) distinct
+// from its bot-token bot_id (B0B3VCV278U) while BOTH carry the same
+// app_id. So app_id is the only field that identifies the poster, and
+// bot_id equality would have been the wrong test.
+func TestHumanAuthorRequiresOurOwnApp(t *testing.T) {
+	const human = "U9EA2KLTH"
+	mention := &slackevents.AppMentionEvent{
+		User: human, BotID: "B_OTHER", Channel: "C1", TimeStamp: "1.0", Text: "<@UBOT> hi",
+	}
+	for name, appID := range map[string]string{
+		"a third-party app posting as the named user": "A0SOMEONEELSE",
+		"an envelope with no app id at all":           "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := New("xoxb-x", "xapp-x", handlerFunc(func(context.Context, Event) {}),
+				WithHumanAuthors(map[string]struct{}{human: {}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.botUserID = "UBOT"
+			armHumanAuthors(c)
+			records := captureJournal(t)
+			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+				Type:       slackevents.CallbackEvent,
+				InnerEvent: slackevents.EventsAPIInnerEvent{Data: mention},
+			}, appID)
+			recs := records()
+			if len(recs) != 1 || recs[0].Reason != journal.ReasonForeignApp {
+				t.Fatalf("got %+v", recs)
+			}
+		})
+	}
+}
+
+// TestHumanAuthorFailsClosedWithoutOurAppID: if bots.info failed at
+// startup we never learned our own app id. The reclassification must
+// then refuse everything rather than match on an empty string.
+func TestHumanAuthorFailsClosedWithoutOurAppID(t *testing.T) {
+	const human = "U9EA2KLTH"
+	c, err := New("xoxb-x", "xapp-x", handlerFunc(func(context.Context, Event) {}),
+		WithHumanAuthors(map[string]struct{}{human: {}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.botUserID = "UBOT"
+	c.humanAuthorRate = ratelimit.New(0, defaultHumanAuthorPerMinute, nil)
+	// c.appID deliberately left empty — bots.info did not answer.
+	records := captureJournal(t)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.AppMentionEvent{
+			User: human, BotID: "B1", Channel: "C1", TimeStamp: "1.0", Text: "<@UBOT> hi",
+		}},
+	}, "")
+	recs := records()
+	if len(recs) != 1 || recs[0].Reason != journal.ReasonForeignApp {
+		t.Fatalf("an unknown own-app-id must fail closed, got %+v", recs)
+	}
+}
+
+// TestHumanAuthorIsRateCapped pins the loop backstop. If every other
+// guard somehow failed, this is what bounds the damage to a handful of
+// wasted prompts instead of a runaway spiral.
+func TestHumanAuthorIsRateCapped(t *testing.T) {
+	const human = "U9EA2KLTH"
+	delivered := 0
+	c, err := New("xoxb-x", "xapp-x", handlerFunc(func(context.Context, Event) { delivered++ }),
+		WithHumanAuthors(map[string]struct{}{human: {}}), WithHumanAuthorRate(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.botUserID = "UBOT"
+	c.appID = ourAppID
+	frozen := time.Now()
+	c.humanAuthorRate = ratelimit.New(2, defaultHumanAuthorPerMinute, func() time.Time { return frozen })
+
+	records := captureJournal(t)
+	for i := 0; i < 4; i++ {
+		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+			Type: slackevents.CallbackEvent,
+			InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.AppMentionEvent{
+				User: human, BotID: "B1", Channel: "C1", TimeStamp: fmt.Sprintf("%d.0", i), Text: "<@UBOT> hi",
+			}},
+		}, ourAppID)
+	}
+	if delivered != 2 {
+		t.Fatalf("cap of 2 must admit exactly 2, got %d", delivered)
+	}
+	capped := 0
+	for _, r := range records() {
+		if r.Reason == journal.ReasonHumanAuthorRateCap {
+			capped++
+		}
+	}
+	if capped != 2 {
+		t.Fatalf("the two refusals must be journalled as rate-capped, got %d", capped)
+	}
+}
+
+// TestSelfAuthorshipBeatsEveryOtherGate is the security test the
+// advisor asked for explicitly: the relay's OWN reply must be refused
+// even when the reclassification list is populated AND the downstream
+// user allowlist is populated. Clause 1 is evaluated first, in
+// slackproto, which runs strictly before the handler's allowlist — so
+// no configuration anywhere can reach it.
+func TestSelfAuthorshipBeatsEveryOtherGate(t *testing.T) {
+	const bot = "UBOT"
+	for name, ev := range map[string]any{
+		"app_mention": &slackevents.AppMentionEvent{
+			User: bot, BotID: "B1", Channel: "C1", TimeStamp: "1.0", Text: "<@UBOT> loop",
+		},
+		"message": &slackevents.MessageEvent{
+			User: bot, BotID: "B1", Channel: "C1", TimeStamp: "2.0", ThreadTimeStamp: "1.0", Text: "<@UBOT> loop",
+		},
+		"edited app_mention": &slackevents.AppMentionEvent{
+			User: "UHUMAN", BotID: "", Channel: "C1", TimeStamp: "3.0", Text: "<@UBOT> loop",
+			Edited: &slackevents.Edited{User: "UHUMAN", TimeStamp: "3.1"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			delivered := 0
+			c, err := New("xoxb-x", "xapp-x",
+				handlerFunc(func(context.Context, Event) { delivered++ }),
+				// Every override switched ON at once, including the
+				// bot's own id in the human list.
+				WithHumanAuthors(map[string]struct{}{bot: {}, "UHUMAN": {}}),
+				WithSelfDrive(NewSelfDrive(testSentinel)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.botUserID = bot
+			armHumanAuthors(c)
+			records := captureJournal(t)
+			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+				Type:       slackevents.CallbackEvent,
+				InnerEvent: slackevents.EventsAPIInnerEvent{Data: ev},
+			}, ourAppID)
+			if delivered != 0 {
+				t.Fatal("no configuration may let the relay act on its own message")
+			}
+			recs := records()
+			if len(recs) != 1 || recs[0].Decision != journal.DecisionDrop {
+				t.Fatalf("got %+v", recs)
+			}
+		})
+	}
+}
+
+// TestAppIDOfRawEnvelope covers the raw-payload extraction, which
+// exists because slack-go does not surface app_id on the typed event
+// structs even though Slack delivers it.
+func TestAppIDOfRawEnvelope(t *testing.T) {
+	if got := appIDOf(nil); got != "" {
+		t.Errorf("nil request: got %q", got)
+	}
+	if got := appIDOf(&socketmode.Request{Payload: []byte(`{"event":{"app_id":"A0OURAPP"}}`)}); got != ourAppID {
+		t.Errorf("got %q", got)
+	}
+	if got := appIDOf(&socketmode.Request{Payload: []byte(`{not json`)}); got != "" {
+		t.Errorf("unparseable payload must fail closed, got %q", got)
+	}
+	if got := appIDOf(&socketmode.Request{Payload: []byte(`{"event":{}}`)}); got != "" {
+		t.Errorf("absent app_id: got %q", got)
+	}
+}
+
+// runWithFakeSlack drives Run against a fake Web API until socketmode
+// gives up, so the startup path (auth.test → bots.info) is exercised
+// for real rather than by poking fields.
+func runWithFakeSlack(t *testing.T, botsInfo string, opts ...Option) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth.test":
+			_, _ = w.Write([]byte(`{"ok":true,"user":"botname","user_id":"Ubot","team":"T","team_id":"T1","bot_id":"B_OURS"}`))
+		case "/bots.info":
+			_, _ = w.Write([]byte(botsInfo))
+		case "/apps.connections.open":
+			_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	api := slack.New("xoxb-x", slack.OptionAPIURL(srv.URL+"/"), slack.OptionAppLevelToken("xapp-x"))
+	c := &Client{api: api, sm: socketmode.New(api), handler: &stubHandler{}}
+	for _, o := range opts {
+		o(c)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Run(ctx); err == nil {
+		t.Fatal("expected socketmode to fail so Run returns")
+	}
+	return c
+}
+
+// TestRunLearnsOurOwnAppID pins the startup half of the app_id
+// narrowing: the relay must discover which app it IS before it can
+// require that a reclassified message came from that app.
+func TestRunLearnsOurOwnAppID(t *testing.T) {
+	c := runWithFakeSlack(t, `{"ok":true,"bot":{"id":"B_OURS","app_id":"A0OURAPP","user_id":"Ubot"}}`,
+		WithHumanAuthors(map[string]struct{}{"U9EA2KLTH": {}}))
+	if c.appID != ourAppID {
+		t.Fatalf("app id not learned: %q", c.appID)
+	}
+	if c.humanAuthorRate == nil {
+		t.Fatal("the rate cap must be armed alongside")
+	}
+}
+
+// TestRunFailsClosedWhenBotsInfoFails: if we cannot learn our own app
+// id, the reclassification must be INERT rather than matching
+// anything. A guard that cannot verify its precondition must refuse.
+func TestRunFailsClosedWhenBotsInfoFails(t *testing.T) {
+	c := runWithFakeSlack(t, `{"ok":false,"error":"missing_scope"}`,
+		WithHumanAuthors(map[string]struct{}{"U9EA2KLTH": {}}))
+	if c.appID != "" {
+		t.Fatalf("app id must stay empty: %q", c.appID)
+	}
+	if got := c.refuseAuthor("U9EA2KLTH", "B1", "A0OURAPP", false); got != journal.ReasonForeignApp {
+		t.Fatalf("must refuse with no known app id, got %q", got)
+	}
+}
+
+// TestRunSkipsBotsInfoWhenNotConfigured: the default deployment must
+// not make an extra API call (or need the scope) for a feature it is
+// not using.
+func TestRunSkipsBotsInfoWhenNotConfigured(t *testing.T) {
+	c := runWithFakeSlack(t, `{"ok":false,"error":"should_not_be_called"}`)
+	if c.appID != "" || c.humanAuthorRate != nil {
+		t.Fatalf("nothing should have been armed: appID=%q rate=%v", c.appID, c.humanAuthorRate)
+	}
+}
+
+func TestHumanAuthorPerMinuteOrDefault(t *testing.T) {
+	c := &Client{}
+	if got := c.humanAuthorPerMinuteOrDefault(); got != defaultHumanAuthorPerMinute {
+		t.Errorf("got %d", got)
+	}
+	c.humanAuthorPerMinute = 3
+	if got := c.humanAuthorPerMinuteOrDefault(); got != 3 {
+		t.Errorf("got %d", got)
+	}
+}
+
+func TestSortedKeysIsStable(t *testing.T) {
+	got := sortedKeys(map[string]struct{}{"UB": {}, "UA": {}, "UC": {}})
+	if len(got) != 3 || got[0] != "UA" || got[1] != "UB" || got[2] != "UC" {
+		t.Fatalf("got %v", got)
+	}
+	if len(sortedKeys(nil)) != 0 {
+		t.Fatal("nil set must render empty")
 	}
 }

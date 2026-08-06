@@ -79,7 +79,13 @@ const (
 	// slackproto, app_mention path.
 	ReasonBotAuthored = "bot_authored" // self-authorship: our own bot, no author, or an edit
 	ReasonAPIAuthored = "api_authored" // carries a bot_id and the author is not a named human
-	ReasonMention     = "mention"
+	// ReasonForeignApp: the author IS a named human, but a different
+	// app posted on their behalf. Naming a human must not hand trust
+	// to every app that person ever installed.
+	ReasonForeignApp = "foreign_app"
+	// ReasonHumanAuthorRateCap: the reclassification's loop backstop.
+	ReasonHumanAuthorRateCap = "human_author_rate_cap"
+	ReasonMention            = "mention"
 
 	// slackproto, message.* path.
 	ReasonSubType            = "subtype"                 // edit / join / our own chat.update

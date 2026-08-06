@@ -11,10 +11,12 @@ package slackproto
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,7 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 
 	"github.com/kfet/slack-acp/internal/journal"
+	"github.com/kfet/slack-acp/internal/ratelimit"
 )
 
 // Event is a normalised inbound message the handler cares about.
@@ -70,6 +73,18 @@ type Client struct {
 	// humanAuthors names user ids whose API-authored (bot_id-stamped)
 	// messages are treated as human. Nil/empty = the strict default.
 	humanAuthors map[string]struct{}
+	// humanAuthorPerMinute overrides the reclassification cap. 0 =
+	// default.
+	humanAuthorPerMinute int
+	// humanAuthorRate bounds how often that reclassification may fire.
+	// Nil until Run arms it, and a nil bucket admits nothing.
+	humanAuthorRate *ratelimit.Bucket
+	// appID is OUR OWN Slack app id, learned at startup via bots.info.
+	// The reclassification requires the posting app to be this one, so
+	// a third-party app posting as a named user is still refused.
+	// Empty means we never learned it — in which case the
+	// reclassification refuses everything, i.e. it fails CLOSED.
+	appID string
 }
 
 // Option customises a Client.
@@ -88,6 +103,19 @@ func WithSelfDrive(d *SelfDrive) Option {
 func WithHumanAuthors(ids map[string]struct{}) Option {
 	return func(c *Client) { c.humanAuthors = ids }
 }
+
+// WithHumanAuthorRate overrides the per-minute cap on the human-author
+// reclassification. 0 uses the default.
+func WithHumanAuthorRate(perMinute int) Option {
+	return func(c *Client) { c.humanAuthorPerMinute = perMinute }
+}
+
+// defaultHumanAuthorPerMinute bounds the reclassification. It is the
+// loop backstop: if every other guard failed, this is what turns a
+// runaway spiral into a handful of wasted prompts and a loud log. The
+// only intended consumer is `slack-acp verify`, which posts a fixed
+// handful of messages per run.
+const defaultHumanAuthorPerMinute = 12
 
 // New constructs a Client. botToken is xoxb-, appToken is xapp-.
 func New(botToken, appToken string, h Handler, opts ...Option) (*Client, error) {
@@ -130,6 +158,26 @@ func (c *Client) Run(ctx context.Context) error {
 	c.botUserID = auth.UserID
 	kitlog.Debugf("slack: connected as %s (%s)", auth.User, auth.UserID)
 
+	// Learn our own app id, but only when the reclassification is
+	// actually configured — no config, no extra API call.
+	//
+	// This must be OUR app: Slack mints a SEPARATE bot_id for an app's
+	// user-token surface (measured: bot token posts carry
+	// B0B3VCV278U, user token posts B0BNE4AUS9L, same app
+	// A0B3PMFHUSJ), so bot_id equality is the wrong test and app_id is
+	// the right one. If we cannot learn it, the reclassification stays
+	// shut — failing closed is the only safe direction for a guard.
+	if len(c.humanAuthors) > 0 {
+		c.humanAuthorRate = ratelimit.New(c.humanAuthorPerMinute, defaultHumanAuthorPerMinute, nil)
+		if info, ierr := c.api.GetBotInfoContext(ctx, slack.GetBotInfoParameters{Bot: auth.BotID}); ierr == nil {
+			c.appID = info.AppID
+			log.Printf("slack-acp: human_author_user_ids active for %s — reclassification is limited to app %s at %d/min; the relay still refuses its OWN messages unconditionally",
+				strings.Join(sortedKeys(c.humanAuthors), ","), c.appID, c.humanAuthorPerMinuteOrDefault())
+		} else {
+			log.Printf("slack-acp: WARNING could not determine our own app id (bots.info: %v) — human_author_user_ids is INERT, every API-authored message stays refused. This fails closed on purpose.", ierr)
+		}
+	}
+
 	go c.consume(ctx, c.sm.Events)
 	return c.sm.RunContext(ctx)
 }
@@ -164,7 +212,11 @@ func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 			return
 		}
 		c.sm.Ack(*evt.Request)
-		c.handleEventsAPI(ctx, api)
+		// slack-go does not surface app_id on the typed event structs,
+		// but Slack does deliver it — and it is the field that tells
+		// us WHICH app posted a message. Pull it off the raw envelope
+		// rather than doing without.
+		c.handleEventsAPI(ctx, api, appIDOf(evt.Request))
 	case socketmode.EventTypeDisconnect:
 		kitlog.Debugf("slack: disconnected")
 	default:
@@ -172,7 +224,7 @@ func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 	}
 }
 
-func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIEvent) {
+func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIEvent, appID string) {
 	if api.Type != slackevents.CallbackEvent {
 		return
 	}
@@ -207,7 +259,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		// AppMentionEvent has no SubType field; Edited is its
 		// equivalent — it marks an event that is not an original human
 		// post, which is what SubType screens for on the message path.
-		if reason := c.refuseAuthor(ev.User, ev.BotID, ev.Edited != nil); reason != "" {
+		if reason := c.refuseAuthor(ev.User, ev.BotID, appID, ev.Edited != nil); reason != "" {
 			rec.Decision, rec.Reason = journal.DecisionDrop, reason
 			journal.Log(rec)
 			kitlog.Debugf("slack: drop %s app_mention in %s ts=%s", reason, ev.Channel, ev.TimeStamp)
@@ -248,7 +300,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 
 		text := ev.Text
 		selfDrive := false
-		if c.refuseAuthor(ev.User, ev.BotID, false) != "" {
+		if c.refuseAuthor(ev.User, ev.BotID, appID, false) != "" {
 			// Not a human post. The ONLY way through is the self-drive
 			// hatch: a sentinel anchored at the start of the message.
 			stripped, ok := c.selfDrive.Accept(text)
@@ -363,16 +415,83 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 //     the two as identical is what made the app_mention path
 //     untestable. An operator may name specific human user ids to
 //     exempt from this clause and nothing else.
-func (c *Client) refuseAuthor(user, botID string, edited bool) string {
+func (c *Client) refuseAuthor(user, botID, appID string, edited bool) string {
+	// CLAUSE 1 — SELF-AUTHORSHIP. Unconditional. Evaluated first.
+	// No config reaches this: not humanAuthors, not the allowlist
+	// (which lives downstream in the handler and therefore cannot run
+	// before it), not the self-drive hatch on this path. It is the
+	// single property that makes a reply → trigger → reply loop
+	// structurally impossible, and it must stay that way.
 	if user == "" || user == c.botUserID || edited {
 		return journal.ReasonBotAuthored
 	}
-	if botID != "" {
-		if _, ok := c.humanAuthors[user]; !ok {
-			return journal.ReasonAPIAuthored
-		}
+	if botID == "" {
+		// Typed in a Slack client. Ordinary human.
+		return ""
+	}
+
+	// CLAUSE 2 — the bot_id PROXY, narrowly overridable.
+	//
+	// Slack stamps a bot_id on every API-posted message, including one
+	// sent with a user token on behalf of a real person, so bot_id
+	// means "sent through an app", not "sent by a robot". Three
+	// conditions must ALL hold to reclassify, and each closes a
+	// different hole:
+	if _, named := c.humanAuthors[user]; !named {
+		return journal.ReasonAPIAuthored
+	}
+	// ...the posting app must be OURS. Without this the relay would
+	// trust ANY third-party app that posts as the named user — a
+	// workflow, an integration, anything that person ever installed —
+	// which is far wider than the intent. c.appID is empty when we
+	// could not learn it, and an empty appID matches nothing, so this
+	// fails closed.
+	if c.appID == "" || appID != c.appID {
+		return journal.ReasonForeignApp
+	}
+	// ...and it is rate-capped, as the loop backstop of last resort.
+	if !c.humanAuthorRate.Allow() {
+		log.Printf("HUMAN-AUTHOR REFUSED (rate cap %d/min exceeded): user=%s — dropping; check for a reply loop",
+			c.humanAuthorPerMinuteOrDefault(), user)
+		return journal.ReasonHumanAuthorRateCap
 	}
 	return ""
+}
+
+// appIDOf extracts event.app_id from a raw Socket Mode envelope. A
+// missing or unparseable payload yields "", which the guard treats as
+// "not our app" — failing closed.
+func appIDOf(req *socketmode.Request) string {
+	if req == nil {
+		return ""
+	}
+	var env struct {
+		Event struct {
+			AppID string `json:"app_id"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(req.Payload, &env); err != nil {
+		return ""
+	}
+	return env.Event.AppID
+}
+
+// humanAuthorPerMinuteOrDefault reports the effective cap, for logging.
+func (c *Client) humanAuthorPerMinuteOrDefault() int {
+	if c.humanAuthorPerMinute > 0 {
+		return c.humanAuthorPerMinute
+	}
+	return defaultHumanAuthorPerMinute
+}
+
+// sortedKeys gives a stable rendering of a set for log output.
+func sortedKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // mentionsBot reports whether text contains an <@botID> mention. Used
