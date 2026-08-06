@@ -161,7 +161,12 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	}
 
 	if ev.BotUserID != "" {
-		isMention := strings.Contains(ev.Text, fmt.Sprintf("<@%s>", ev.BotUserID))
+		// ev.IsMention is authoritative: the app_mention path strips the
+		// mention from Text, so the Contains check below can never see
+		// it there. The Contains fallback is kept only for the
+		// message.* path and for legacy callers that populate Text but
+		// not the flag.
+		isMention := ev.IsMention || strings.Contains(ev.Text, fmt.Sprintf("<@%s>", ev.BotUserID))
 		// A self-drive message is addressed *by its sentinel* — the
 		// hatch cannot rely on @-mentioning the bot, because 3a kills
 		// the app_mention twin. So it summons like a mention does,

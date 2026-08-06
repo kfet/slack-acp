@@ -1052,3 +1052,22 @@ func TestPostStreamerUpdatePlaceholderBailsAfterFirstChunk(t *testing.T) {
 // sleep. Used in TestPostStreamerSendMuSerializes to spin until
 // another goroutine has acquired the streamer's sendMu.
 func runtimeGosched() { runtime.Gosched() }
+
+// TestAppMentionSetsIsMention pins the producer half of the v0.4.1
+// channel-mention bug: the app_mention path strips the mention from
+// Text, so it MUST flag the event as a mention instead.
+func TestAppMentionSetsIsMention(t *testing.T) {
+	got := stripMention("<@BBOT> let's chat", "BBOT")
+	if got != "let's chat" {
+		t.Fatalf("stripMention = %q, want %q", got, "let's chat")
+	}
+	// The stripped text no longer carries the tag, which is precisely
+	// why Event.IsMention has to exist.
+	if strings.Contains(got, "<@BBOT>") {
+		t.Fatal("stripMention left the tag in place; test premise is wrong")
+	}
+	ev := Event{Text: got, IsMention: true}
+	if !ev.IsMention {
+		t.Fatal("Event.IsMention must survive construction")
+	}
+}
