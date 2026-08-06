@@ -365,6 +365,56 @@ func (r *Runner) checkSelfDrive(ctx context.Context) Result {
 
 // ---- assertions ----
 
+// terminalRefusals are the drop reasons that mean the relay refused a
+// message OUTRIGHT — there is no other envelope still in flight that
+// could yet deliver it, so waiting out the timeout is pure delay.
+//
+// Membership matters and is not obvious. Slack delivers a tagged
+// message as TWO envelopes, so a perfectly healthy mention legitimately
+// produces a drop alongside its delivery:
+//
+//	app_mention     deliver/mention            <- the real one
+//	message_channel drop/not_thread_reply      <- the twin, correctly dropped
+//
+// So not_thread_reply and mention_duplicate must NOT be here: treating
+// them as terminal would fail a check that is about to pass. Everything
+// below is a refusal of the message itself, on every path at once.
+var terminalRefusals = map[string]bool{
+	journal.ReasonBotAuthored:        true,
+	journal.ReasonAPIAuthored:        true,
+	journal.ReasonSelfDriveNotAccept: true,
+	journal.ReasonSelfPostedTS:       true,
+	journal.ReasonSubType:            true,
+}
+
+// refusal reports the reason the relay refused this message outright,
+// or "" if nothing terminal has been seen yet. A handler-stage drop is
+// always terminal: the handler is the last stage.
+func refusal(recs []journal.Record) string {
+	for _, rec := range recs {
+		if rec.Decision != journal.DecisionDrop {
+			continue
+		}
+		if rec.Stage == journal.StageHandler || terminalRefusals[rec.Reason] {
+			return rec.Reason
+		}
+	}
+	return ""
+}
+
+// verdict aborts a wait early with a decided answer. PollWaiter treats
+// any cond error as fatal, which is exactly the semantics wanted: the
+// relay has already decided, so there is nothing left to wait for.
+//
+// Without this a contradicted expectation burned the FULL timeout and
+// then reported whatever error the dying poll happened to produce,
+// rather than the decision sitting in the journal. Five such checks
+// turned a 20-second run into 15 minutes and pointed the operator at
+// the wrong subsystem.
+type verdict struct{ reason string }
+
+func (v *verdict) Error() string { return v.reason }
+
 // expectRun asserts the full happy path for one message: the protocol
 // layer delivered it on the expected surface, the handler ran a prompt
 // for it, and a reply from the bot actually landed in the thread.
@@ -375,11 +425,17 @@ func (r *Runner) expectRun(ctx context.Context, name, channel, threadTS, ts stri
 		if recs, err = r.recordsFor(ctx, channel, ts); err != nil {
 			return false, err
 		}
-		return hasRecord(recs, journal.StageHandler, journal.DecisionRun, journal.ReasonPrompt), nil
+		if hasRecord(recs, journal.StageHandler, journal.DecisionRun, journal.ReasonPrompt) {
+			return true, nil
+		}
+		if reason := refusal(recs); reason != "" {
+			return false, &verdict{fmt.Sprintf("the relay REFUSED it with reason=%q — it will not be processed, so there is nothing left to wait for", reason)}
+		}
+		return false, nil
 	})
 	if err != nil {
 		return Result{Name: name, Status: StatusFail, Records: recs,
-			Detail: fmt.Sprintf("no handler run/prompt record for ts=%s: %v", ts, err)}
+			Detail: fmt.Sprintf("expected a prompt for ts=%s: %v", ts, err)}
 	}
 	if !hasRecordPath(recs, journal.StageProto, path, journal.DecisionDeliver, deliverReason) {
 		return Result{Name: name, Status: StatusFail, Records: recs,
@@ -416,6 +472,9 @@ func (r *Runner) expectDrop(ctx context.Context, name, channel, threadTS, ts str
 		var err error
 		if recs, err = r.recordsFor(ctx, channel, ts); err != nil {
 			return false, err
+		}
+		if hasRecord(recs, journal.StageHandler, journal.DecisionRun, journal.ReasonPrompt) {
+			return false, &verdict{fmt.Sprintf("ts=%s was RUN, not dropped — the guard under test let it through", ts)}
 		}
 		for _, reason := range reasons {
 			if hasRecord(recs, "", journal.DecisionDrop, reason) {

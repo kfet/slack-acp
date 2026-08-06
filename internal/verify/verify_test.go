@@ -362,21 +362,51 @@ func TestDropCheckFailsWhenTheRelayRepliedAnyway(t *testing.T) {
 	}
 }
 
-// TestDropCheckFailsWhenAlsoRun catches a message that was both
-// dropped on one path and run on another.
-func TestDropCheckFailsWhenAlsoRun(t *testing.T) {
+// TestDropCheckFailsWhenTheRunArrivesAfterTheDrop covers the race the
+// re-read exists for: Slack delivers a tagged message as two
+// independent envelopes, so a `run` on the second path can land after
+// the harness has already observed the `drop` on the first. Waiting
+// alone would have declared this a PASS.
+func TestDropCheckFailsWhenTheRunArrivesAfterTheDrop(t *testing.T) {
 	j := &fakeJournal{}
 	bot, user := newWorkspace()
+	var lateChannel, lateTS string
 	user.onPost = func(_ *fakeSlack, channel, threadTS, ts, _ string) {
 		if threadTS != ts {
 			j.dropped(channel, ts, journal.PathMessage, journal.ReasonAmbientUnknownThrd)
-			j.add(journal.Record{Stage: journal.StageHandler, Decision: journal.DecisionRun, Reason: journal.ReasonPrompt, Channel: channel, TS: ts})
+			lateChannel, lateTS = channel, ts
 		}
 	}
-	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	// The wait sees only the drop; the run lands between the wait
+	// returning and the re-read.
+	lateWait := func(ctx context.Context, cond func(context.Context) (bool, error)) error {
+		err := immediateWait(ctx, cond)
+		if lateTS != "" {
+			j.add(journal.Record{Stage: journal.StageHandler, Decision: journal.DecisionRun,
+				Reason: journal.ReasonPrompt, Channel: lateChannel, TS: lateTS})
+		}
+		return err
+	}
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: lateWait})
 	res := r.checkAmbientUnknownThread(context.Background())
 	if res.Status != StatusFail || !strings.Contains(res.Detail, "dropped AND run") {
 		t.Fatalf("got %+v", res)
+	}
+}
+
+// TestRefusalIgnoresNonDropRecords pins that a deliver/run record never
+// reads as a refusal.
+func TestRefusalIgnoresNonDropRecords(t *testing.T) {
+	recs := []journal.Record{
+		{Stage: journal.StageProto, Decision: journal.DecisionDeliver, Reason: journal.ReasonMention},
+		{Stage: journal.StageProto, Decision: journal.DecisionDrop, Reason: journal.ReasonMentionDuplicate},
+	}
+	if got := refusal(recs); got != "" {
+		t.Fatalf("neither a delivery nor the mention twin is a refusal, got %q", got)
+	}
+	if got := refusal(append(recs, journal.Record{Stage: journal.StageHandler,
+		Decision: journal.DecisionDrop, Reason: journal.ReasonAllowlist})); got != journal.ReasonAllowlist {
+		t.Fatalf("a handler-stage drop is always terminal, got %q", got)
 	}
 }
 
@@ -715,5 +745,162 @@ func TestDropCheckFailsWhenTheJournalIsUnreadable(t *testing.T) {
 	res := r.checkAmbientUnknownThread(context.Background())
 	if res.Status != StatusFail || !strings.Contains(res.Detail, "read ingest journal") {
 		t.Fatalf("got %+v", res)
+	}
+}
+
+// TestRunCheckFailsFastOnTerminalRefusal is the regression test for the
+// diagnosis failure that followed the first live run: a mention the
+// relay refused outright still burned the FULL wait budget, and then
+// reported whatever error the dying poll produced ("context deadline
+// exceeded" from the journal read) instead of the refusal sitting in
+// the journal. Five such checks turned a 20-second run into 15 minutes
+// and sent an operator after a slow journald that was answering in
+// 36ms. The check must now stop the moment the relay has decided, and
+// say what it decided.
+func TestRunCheckFailsFastOnTerminalRefusal(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	user.onPost = func(_ *fakeSlack, channel, _, ts, _ string) {
+		j.dropped(channel, ts, journal.PathAppMention, journal.ReasonAPIAuthored)
+	}
+
+	polls := 0
+	countingWait := func(ctx context.Context, cond func(context.Context) (bool, error)) error {
+		for {
+			polls++
+			ok, err := cond(ctx)
+			if err != nil {
+				return err
+			}
+			if ok {
+				return nil
+			}
+			if polls > 5 {
+				t.Fatal("the check kept waiting after the relay had already refused the message")
+			}
+		}
+	}
+
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: countingWait})
+	r.botUserID = "UBOT"
+	res, _ := r.checkMention(context.Background(), "app_mention_public", "C_PUB")
+
+	if res.Status != StatusFail {
+		t.Fatalf("got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "REFUSED") || !strings.Contains(res.Detail, journal.ReasonAPIAuthored) {
+		t.Fatalf("the failure must name the relay's actual decision, got: %s", res.Detail)
+	}
+	if polls != 1 {
+		t.Fatalf("want a single poll before the verdict, got %d", polls)
+	}
+}
+
+// TestRunCheckDoesNotMistakeTheMentionTwinForARefusal is the other half
+// of the fail-fast contract, and the subtle one. Slack delivers a
+// tagged message as TWO envelopes, so a perfectly healthy mention
+// legitimately produces a drop *alongside* its delivery:
+//
+//	app_mention     deliver/mention
+//	message_channel drop/not_thread_reply
+//
+// Treating that drop as terminal would fail a check that is about to
+// pass — turning a passing relay red.
+func TestRunCheckDoesNotMistakeTheMentionTwinForARefusal(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	user.onPost = func(_ *fakeSlack, channel, threadTS, ts, _ string) {
+		// The twin drop lands FIRST, exactly as it does live.
+		j.dropped(channel, ts, journal.PathMessage, journal.ReasonNotThreadReply)
+		j.delivered(channel, ts, journal.PathAppMention, journal.ReasonMention)
+		bot.botReply(threadTS)
+	}
+
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	r.botUserID = "UBOT"
+	res, _ := r.checkMention(context.Background(), "app_mention_public", "C_PUB")
+	if res.Status != StatusPass {
+		t.Fatalf("the app_mention twin must not be read as a refusal: %+v", res)
+	}
+}
+
+// TestDropCheckFailsFastWhenRun mirrors the above for negative checks.
+func TestDropCheckFailsFastWhenRun(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	user.onPost = func(_ *fakeSlack, channel, _, ts, _ string) {
+		j.delivered(channel, ts, journal.PathMessage, journal.ReasonAmbientThreadReply)
+	}
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	res := r.checkAmbientUnknownThread(context.Background())
+	if res.Status != StatusFail || !strings.Contains(res.Detail, "was RUN, not dropped") {
+		t.Fatalf("got %+v", res)
+	}
+}
+
+// TestRunCheckFailsWhenTheDeliveryRecordIsMissingEntirely covers the
+// case where the handler ran but slackproto never journalled a
+// delivery — an impossible state that would mean the two stages
+// disagree, and must be reported rather than passed.
+func TestRunCheckFailsWhenTheDeliveryRecordIsMissingEntirely(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	user.onPost = func(_ *fakeSlack, channel, threadTS, ts, _ string) {
+		j.add(journal.Record{Stage: journal.StageHandler, Path: journal.PathAppMention,
+			Decision: journal.DecisionRun, Reason: journal.ReasonPrompt, Channel: channel, TS: ts})
+		bot.botReply(threadTS)
+	}
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	r.botUserID = "UBOT"
+	res, _ := r.checkMention(context.Background(), "app_mention_public", "C_PUB")
+	if res.Status != StatusFail || !strings.Contains(res.Detail, "expected slackproto deliver") {
+		t.Fatalf("got %+v", res)
+	}
+}
+
+// TestRunCheckKeepsWaitingWhileUndecided covers the ordinary case the
+// fail-fast must not break: the relay has not journalled anything for
+// this ts yet, so the check keeps polling rather than concluding
+// either way. Getting this wrong in the other direction would make
+// every check a race against the relay's first log line.
+func TestRunCheckKeepsWaitingWhileUndecided(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	var pending func()
+	user.onPost = func(_ *fakeSlack, channel, threadTS, ts, _ string) {
+		// Deliberately journal NOTHING yet — the relay is still busy.
+		pending = func() {
+			j.delivered(channel, ts, journal.PathAppMention, journal.ReasonMention)
+			bot.botReply(threadTS)
+		}
+	}
+	polls := 0
+	twoPhaseWait := func(ctx context.Context, cond func(context.Context) (bool, error)) error {
+		for {
+			polls++
+			ok, err := cond(ctx)
+			if err != nil {
+				return err
+			}
+			if ok {
+				return nil
+			}
+			if pending != nil {
+				pending()
+				pending = nil
+			}
+			if polls > 10 {
+				return errors.New("gave up")
+			}
+		}
+	}
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: twoPhaseWait})
+	r.botUserID = "UBOT"
+	res, _ := r.checkMention(context.Background(), "app_mention_public", "C_PUB")
+	if res.Status != StatusPass {
+		t.Fatalf("an undecided relay must be waited for, not failed: %+v", res)
+	}
+	if polls < 2 {
+		t.Fatalf("expected the check to poll more than once, got %d", polls)
 	}
 }
