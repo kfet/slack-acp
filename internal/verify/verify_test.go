@@ -904,3 +904,47 @@ func TestRunCheckKeepsWaitingWhileUndecided(t *testing.T) {
 		t.Fatalf("expected the check to poll more than once, got %d", polls)
 	}
 }
+
+// TestDropCheckFailsFastOnAnEarlierGuard: a message refused by an
+// EARLIER guard than the one under test never reaches that guard, so
+// the check cannot prove anything about it. Waiting out the budget for
+// a reason that can no longer arrive wastes minutes and reports a
+// timeout instead of the guard that actually fired — and, worse,
+// invites reading the result as "the guard under test worked".
+func TestDropCheckFailsFastOnAnEarlierGuard(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	user.onPost = func(_ *fakeSlack, channel, threadTS, ts, _ string) {
+		if threadTS != ts {
+			// Refused for authorship, long before the ambient gate.
+			j.dropped(channel, ts, journal.PathMessage, journal.ReasonAPIAuthored)
+		}
+	}
+	polls := 0
+	countingWait := func(ctx context.Context, cond func(context.Context) (bool, error)) error {
+		for {
+			polls++
+			ok, err := cond(ctx)
+			if err != nil {
+				return err
+			}
+			if ok {
+				return nil
+			}
+			if polls > 5 {
+				t.Fatal("kept waiting for a guard the message never reached")
+			}
+		}
+	}
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: countingWait})
+	res := r.checkAmbientUnknownThread(context.Background())
+	if res.Status != StatusFail {
+		t.Fatalf("got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "UNVERIFIED, not proven") || !strings.Contains(res.Detail, journal.ReasonAPIAuthored) {
+		t.Fatalf("the failure must name the guard that actually fired: %s", res.Detail)
+	}
+	if polls != 1 {
+		t.Fatalf("want a single poll, got %d", polls)
+	}
+}

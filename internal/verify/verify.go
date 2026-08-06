@@ -481,6 +481,15 @@ func (r *Runner) expectDrop(ctx context.Context, name, channel, threadTS, ts str
 				return true, nil
 			}
 		}
+		// Dropped, but for a reason this check was not testing. That is
+		// still a decided outcome — the message was refused earlier
+		// than the guard under test, so the guard was never reached and
+		// waiting cannot change that. Report which guard actually
+		// fired, rather than timing out on the one that didn't.
+		if got := refusal(recs); got != "" {
+			return false, &verdict{fmt.Sprintf("dropped as %q, before ever reaching the guard under test (%s) — that guard is therefore UNVERIFIED, not proven",
+				got, strings.Join(reasons, "|"))}
+		}
 		return false, nil
 	})
 	if err != nil {
