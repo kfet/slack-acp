@@ -189,12 +189,10 @@ func main() {
 	}
 
 	// Named human authors. Empty by default, which is byte-for-byte
-	// the strict behaviour; non-empty is loud, because it narrows the
-	// bot_id proxy on the ingest guards.
+	// the strict behaviour. slackproto logs the loud warning at
+	// connect time, once it knows our own app id and the effective
+	// rate cap — the two facts that bound what this actually permits.
 	humanAuthors := toSet(cfg.HumanAuthorUserIDs)
-	if len(humanAuthors) > 0 {
-		log.Printf("slack-acp: WARNING human_author_user_ids is set (%d id(s)) — messages posted through an app on behalf of these users are treated as human-authored. The self-authorship guard is unaffected: the relay still refuses its own messages unconditionally. Intended for `slack-acp verify`, not production.", len(humanAuthors))
-	}
 
 	h := handler.New(handler.Config{
 		Router:              r,
@@ -211,7 +209,8 @@ func main() {
 
 	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h,
 		slackproto.WithSelfDrive(selfDrive),
-		slackproto.WithHumanAuthors(humanAuthors))
+		slackproto.WithHumanAuthors(humanAuthors),
+		slackproto.WithHumanAuthorRate(cfg.HumanAuthorPerMinute))
 	if err != nil {
 		log.Fatalf("slack: %v", err)
 	}
