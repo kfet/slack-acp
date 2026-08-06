@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`slack-acp verify` — a self-verification harness.** One command, no
+  interactive input, that drives real messages through real Slack and reports
+  PASS/FAIL/SKIP for each inbound path: DM, `app_mention` in a public channel,
+  `app_mention` in a private channel, an un-mentioned ambient reply in a known
+  thread, an ambient reply in an unknown thread (must be dropped), a
+  bot-authored echo (must be dropped), and the self-drive hatch. Human-authored
+  checks post with a Slack **user token** (`xoxp-`), which is the only way to
+  produce a message Slack considers human — and therefore the only way to
+  exercise the `app_mention` guard, which drops every bot-authored mention with
+  no exception. No production guard is weakened and no test-only ingest
+  affordance was added; without a user token the affected checks report SKIP
+  rather than a quiet pass. Each check asserts on **both** the ingest journal
+  and the actual Slack thread, and deletes its own messages afterwards. Setup
+  and rationale: [docs/self-verification.md](docs/self-verification.md).
+- **Ingest-decision journal.** Every inbound Slack event now emits a stable
+  JSONL record (`SLACK-ACP-INGEST {…}`) at normal log level saying what the
+  relay decided and why — `deliver`/`run`/`drop` plus a reason from a fixed
+  vocabulary. `journalctl --user -u slack-acp | grep SLACK-ACP-INGEST` answers
+  "why didn't the bot reply?" without enabling debug mode and re-provoking the
+  problem. Message text is deliberately not recorded, so the journal cannot
+  spill conversation content into journald.
+- The Slack app manifest declares the `chat:write` **user** scope required by
+  `slack-acp verify`. Operators must reinstall the app for it to take effect.
+
 ### Fixed
 
 - **Channel @-mentions are no longer dropped.** `slackproto` strips the

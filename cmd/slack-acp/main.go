@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
@@ -25,6 +27,7 @@ import (
 	"github.com/kfet/slack-acp/internal/skills"
 	"github.com/kfet/slack-acp/internal/slackproto"
 	"github.com/kfet/slack-acp/internal/sysprompt"
+	"github.com/kfet/slack-acp/internal/verify"
 )
 
 var version = "dev"
@@ -42,6 +45,11 @@ func main() {
 		case "install-service":
 			if err := runInstallService(os.Args[2:]); err != nil {
 				log.Fatalf("install-service: %v", err)
+			}
+			return
+		case "verify":
+			if err := runVerify(os.Args[2:]); err != nil {
+				log.Fatalf("verify: %v", err)
 			}
 			return
 		}
@@ -296,6 +304,77 @@ func runInstallService(args []string) error {
 		DryRun:     *dryRun,
 		Force:      *force,
 	})
+}
+
+// runVerify drives the self-verification harness: it posts real
+// messages into real Slack and asserts on both the relay's ingest
+// journal and the resulting thread state.
+//
+// Tokens are read from the environment only — never from a flag, so
+// they cannot appear in `ps` output or a shell history — and are never
+// printed.
+func runVerify(args []string) error {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	public := fs.String("public-channel", os.Getenv("SLACK_VERIFY_PUBLIC_CHANNEL"), "public channel id to test in (env SLACK_VERIFY_PUBLIC_CHANNEL)")
+	private := fs.String("private-channel", os.Getenv("SLACK_VERIFY_PRIVATE_CHANNEL"), "private channel id to test in (env SLACK_VERIFY_PRIVATE_CHANNEL); empty skips that check")
+	unit := fs.String("unit", "slack-acp", "systemd user unit whose journal carries the relay's ingest records")
+	since := fs.String("since", "10 min ago", "journalctl --since window")
+	journalCmd := fs.String("journal-cmd", "", "override the journal reader with a shell command line (e.g. `ssh host journalctl --user -u slack-acp --since \"10 min ago\"`); default reads the local unit")
+	sentinel := fs.String("self-drive-sentinel", "", "self-drive sentinel, if the relay is configured with one; empty skips that check")
+	timeout := fs.Duration("timeout", 3*time.Minute, "per-assertion wait budget")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *public == "" {
+		return errors.New("a public channel id is required (--public-channel or SLACK_VERIFY_PUBLIC_CHANNEL)")
+	}
+
+	botToken := os.Getenv("SLACK_BOT_TOKEN")
+	if botToken == "" {
+		return errors.New("SLACK_BOT_TOKEN is not set")
+	}
+	var user verify.Slack
+	if t := os.Getenv("SLACK_USER_TOKEN"); t != "" {
+		user = verify.NewSlack(t)
+	} else {
+		log.Printf("verify: SLACK_USER_TOKEN is not set — every human-authored check will SKIP. See docs/self-verification.md.")
+	}
+
+	src, err := verify.NewCommandSource(verify.DefaultJournalArgv(*unit, *since))
+	if *journalCmd != "" {
+		src, err = verify.NewShellSource(*journalCmd)
+	}
+	if err != nil {
+		return err
+	}
+
+	runner, err := verify.New(verify.Config{
+		Bot:               verify.NewSlack(botToken),
+		User:              user,
+		Journal:           src,
+		PublicChannel:     *public,
+		PrivateChannel:    *private,
+		SelfDriveSentinel: *sentinel,
+		Wait:              verify.PollWaiter(500*time.Millisecond, *timeout),
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	log.Printf("verify: nonce %s", runner.Nonce())
+	results, err := runner.Run(ctx)
+	if err != nil {
+		return err
+	}
+	report, ok := verify.Summarise(results)
+	fmt.Print(report)
+	if !ok {
+		return errors.New("one or more checks FAILED")
+	}
+	return nil
 }
 
 func toSet(ss []string) map[string]struct{} {

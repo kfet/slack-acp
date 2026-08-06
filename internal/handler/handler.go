@@ -15,6 +15,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/slack-acp/internal/journal"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
 	"github.com/kfet/slack-acp/internal/statusline"
@@ -135,12 +136,26 @@ func (h *Handler) SetAPI(api *slack.Client) { h.cfg.API = api }
 
 // Handle is called by slackproto.Client for each inbound event.
 func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
+	rec := journal.Record{
+		Stage:    journal.StageHandler,
+		Path:     journalPath(ev),
+		Channel:  ev.ChannelID,
+		TS:       ev.TS,
+		ThreadTS: ev.ThreadTS,
+		User:     ev.UserID,
+	}
+	drop := func(reason string) {
+		rec.Decision, rec.Reason = journal.DecisionDrop, reason
+		journal.Log(rec)
+	}
 	if !h.allowed(ev) {
+		drop(journal.ReasonAllowlist)
 		kitlog.Debugf("handler: drop ev from user=%s channel=%s (not allowed)", ev.UserID, ev.ChannelID)
 		return
 	}
 	text := strings.TrimSpace(ev.Text)
 	if text == "" {
+		drop(journal.ReasonEmptyText)
 		return
 	}
 	key := router.ConvKey{ChannelID: ev.ChannelID, ThreadTS: ev.ThreadTS}
@@ -157,6 +172,7 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	// allowlists so a refusal is only ever logged for an event that
 	// would otherwise have run.
 	if ev.SelfDrive && !h.admitSelfDrive(ev) {
+		drop(journal.ReasonSelfDriveRateCap)
 		return
 	}
 
@@ -177,11 +193,15 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 			// This is an ambient (non-summoning) thread reply. Only forward
 			// if Ambient is enabled and we're already in this thread.
 			if !h.cfg.Ambient || !h.cfg.Router.Known(key) {
+				drop(journal.ReasonAmbientUnknownThrd)
 				kitlog.Debugf("handler: drop ambient reply in unknown thread %s", key)
 				return
 			}
 		}
 	}
+
+	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
+	journal.Log(rec)
 
 	// Cancel any in-flight prompt for this thread, then start a new one.
 	h.cancelInflight(ctx, key)
@@ -195,6 +215,24 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 			kitlog.Debugf("handler: prompt error: %v", err)
 		}
 	}()
+}
+
+// journalPath classifies an already-normalised event back onto the
+// inbound surface it arrived on, so handler-stage records line up with
+// the slackproto-stage record for the same ts. SelfDrive wins over
+// IsDM: a self-driven DM is still the hatch being exercised, and that
+// is the distinction an operator (or the verifier) cares about.
+func journalPath(ev slackproto.Event) journal.Path {
+	switch {
+	case ev.SelfDrive:
+		return journal.PathSelfDrive
+	case ev.IsDM:
+		return journal.PathMessageIM
+	case ev.IsMention:
+		return journal.PathAppMention
+	default:
+		return journal.PathMessage
+	}
 }
 
 func (h *Handler) allowed(ev slackproto.Event) bool {

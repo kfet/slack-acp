@@ -27,7 +27,8 @@ type appManifest struct {
 	} `json:"features"`
 	OAuthConfig struct {
 		Scopes struct {
-			Bot []string `json:"bot"`
+			Bot  []string `json:"bot"`
+			User []string `json:"user"`
 		} `json:"scopes"`
 	} `json:"oauth_config"`
 	Settings struct {
@@ -84,6 +85,23 @@ func TestManifestGrantsHistoryScopeForEveryChannelType(t *testing.T) {
 		if !contains(m.OAuthConfig.Scopes.Bot, scope) {
 			t.Errorf("manifest bot scopes missing %q", scope)
 		}
+	}
+}
+
+// TestManifestGrantsUserScopeForSelfVerification pins the user-token
+// scope. `slack-acp verify` posts its human-authored checks with an
+// xoxp- user token, because that is the ONLY way to produce a message
+// Slack considers human — and therefore the only way to exercise the
+// app_mention guard, which drops every bot-authored mention with no
+// exception. Without this scope the app_mention checks cannot run at
+// all and the harness reports SKIP.
+//
+// Adding a user scope requires the operator to REINSTALL the app,
+// authenticated as the identity the harness will post as.
+func TestManifestGrantsUserScopeForSelfVerification(t *testing.T) {
+	m := loadManifest(t)
+	if !contains(m.OAuthConfig.Scopes.User, "chat:write") {
+		t.Error("manifest user scopes missing \"chat:write\" — slack-acp verify cannot post as a human without it")
 	}
 }
 

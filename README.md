@@ -193,6 +193,36 @@ refuses bot-authored events, so the sentinel itself is the addressing
 mechanism. See [`docs/ambient-threads.md`](docs/ambient-threads.md) for
 the full loop-guard design.
 
+## Verifying a deployment
+
+`slack-acp verify` drives real messages through real Slack and reports
+PASS/FAIL for every inbound path — DM, `app_mention` in public and
+private channels, ambient replies in known and unknown threads, the
+bot-echo drop, and the self-drive hatch. It asserts on both the relay's
+ingest journal and the resulting thread state, and cleans up after
+itself.
+
+```
+slack-acp verify --public-channel C… --private-channel C…
+```
+
+The human-authored checks post with a Slack **user token** (`xoxp-`),
+because that is the only way to produce a message Slack considers human
+— and therefore the only way to exercise the `app_mention` guard, which
+refuses every bot-authored mention. One browser step is needed once to
+add the user scope; see
+[`docs/self-verification.md`](docs/self-verification.md).
+
+Independently of the harness, every inbound event is journalled:
+
+```
+journalctl --user -u slack-acp | grep SLACK-ACP-INGEST
+```
+
+Each line says which path the event arrived on, whether it was
+delivered, run, or dropped, and why — so "the bot didn't reply" is a
+one-command diagnosis with no debug mode and no re-provoking.
+
 ## Repository layout
 
 ```
@@ -205,6 +235,8 @@ internal/router/      (channel,thread_ts) → ACP session map + GC
 internal/skills/      embedded skill bundle + fir-style catalog (wraps `acp-kit/skills`)
 internal/slackproto/  Socket Mode client + throttled message streamer
 internal/sysprompt/   Slack-mrkdwn sysprompt composer injected per session
+internal/journal/     stable JSONL ingest-decision records
+internal/verify/      `slack-acp verify` self-verification harness
 docs/                 design notes + Slack app manifest template
 ```
 
