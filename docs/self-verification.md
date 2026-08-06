@@ -96,7 +96,44 @@ The three conditions in clause 2 each close a different hole:
 | **`app_id` is ours** | a *third-party* app posting as that user — a workflow or integration the person once installed — being trusted |
 | rate cap (`human_author_per_minute`, default 12) | loop backstop of last resort, mirroring the self-drive hatch |
 
-**Why `app_id` and not `bot_id`.** Measured on a live workspace: an app's
+### Evidence — captured, not remembered
+
+This key exists **because Slack always attaches app provenance to an API
+post.** That claim was wrong the first time it was made from memory, and it
+cost a release-blocking detour, so the raw capture lives here permanently.
+Do not re-litigate it from recollection; re-measure it.
+
+Captured off the wire from a Socket Mode connection (relay stopped, throwaway
+probe owning the socket), for a `chat.postMessage` sent with an `xoxp-` **user**
+token by a real human:
+
+```json
+{
+  "type": "app_mention",
+  "user": "U9EA2KLTH",
+  "bot_id": "B0BNE4AUS9L",
+  "app_id": "A0B3PMFHUSJ",
+  "bot_profile": {
+    "id": "B0BNE4AUS9L",
+    "name": "slack-acp-test",
+    "app_id": "A0B3PMFHUSJ",
+    "team_id": "T9CF8H2EM"
+  },
+  "channel": "C0BNJ53E1SQ",
+  "ts": "1786020999.037789",
+  "text": "<@U0B3AAQ7HE3> RAWPROBE mention via USER token (auto-deleted)"
+}
+```
+
+The `message` twin of the same post carries the same `bot_id` / `app_id` plus
+`"channel_type": "channel"`. Neither event carries a `subtype`.
+
+So a message authored by a human, posted through an app, is **indistinguishable
+by `bot_id` alone** from one posted by a robot. That is the entire reason
+clause 2 exists. Without `human_author_user_ids` the `app_mention` path cannot
+be exercised by any automated means at all.
+
+**Why `app_id` and not `bot_id`.** Measured on the same workspace: an app's
 user-token surface gets its **own** `bot_id`, distinct from its bot-token
 `bot_id`, while both carry the same `app_id`.
 
@@ -111,6 +148,40 @@ surface it on the typed event structs, so the relay reads it off the raw Socket
 Mode envelope; it learns its own app id at startup via `bots.info` (no new
 scope). **If that lookup fails the reclassification is inert** — a guard that
 cannot verify its precondition refuses.
+
+### The `edited` clause, measured
+
+A mention introduced by *editing* an existing message is refused, for the same
+reason the message path refuses subtypes: a mention must be an original post.
+That had been asserted only against our own belief about what Slack sends —
+the exact gap that let the original mention bug reach release — so it was
+measured:
+
+```json
+{ "type": "app_mention", "user": "U9EA2KLTH",
+  "edited": { "ts": "1786021953.000000", "user": "U9EA2KLTH" },
+  "text": "<@U0B3AAQ7HE3> … a mention added by EDITING" }
+```
+
+`edited` is present, so clause 1 refuses it; the message twin arrives as
+`subtype: message_changed` and is dropped by the subtype guard. The
+`edited_mention_dropped` harness check now pins this against real Slack.
+
+### A correctness note for whoever refactors this next
+
+It is tempting to read the two distinct bot ids above and conclude that clause 1
+could simply compare `bot_id` values — the relay's own posts carry
+`B0B3VCV278U`, the harness's carry `B0BNE4AUS9L`, so they *look* cleanly
+separable.
+
+**Do not do that.** Clause 1 compares `user` against our bot's **user id**
+(`U0B3AAQ7HE3`), and that is what makes it correct. It holds for every message
+the relay could ever author, including ones with no `bot_id` at all, and it does
+not depend on Slack's choice to mint separate bot ids per token surface — an
+implementation detail we observed, not a contract we were given. Rewriting
+clause 1 in terms of `bot_id` would make loop safety depend on that detail.
+`TestSelfAuthorshipBeatsEveryOtherGate` and
+`TestSelfAuthoredIsRefusedEvenWithTheAllowlistPopulated` exist to catch it.
 
 Clause 1 is what makes a reply → trigger → reply loop **structurally
 impossible**: the relay posts its replies as its own bot user, so it can
@@ -250,7 +321,8 @@ The bot must be a member of both channels.
 | `app_mention_private` | Same as the first, in the private channel | as above |
 | `dm` | Bot opens the IM with the test user; user token posts into it | delivered on `message_im`/`dm`, prompt run, bot replies |
 | `ambient_thread_reply_unknown_dropped` | User token starts an unrelated thread (no mention) and replies to it | **dropped** with `ambient_unknown_thread`, no reply |
-| `bot_echo_dropped` | **Bot token** posts `<@BOT> …` into its own thread | **dropped** (`bot_authored` / `self_drive_not_accepted` / `self_posted_ts`), no reply |
+| `edited_mention_dropped` | User token posts *without* a mention, then `chat.update`s one in | **dropped** (`bot_authored`), no reply |
+| `bot_echo_dropped` | **Bot token** posts `<@BOT> …` into its own thread | **dropped** (`bot_authored` / `api_authored` / `self_drive_not_accepted` / `self_posted_ts`), no reply |
 | `self_drive_hatch` | Bot token posts a sentinel-prefixed message | delivered on `self_drive`, prompt run, bot replies |
 
 Everything the harness posts carries a per-run nonce and is deleted on

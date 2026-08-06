@@ -52,6 +52,16 @@ func (s *slackAPI) Post(ctx context.Context, channel, threadTS, text string) (st
 	return ts, nil
 }
 
+func (s *slackAPI) Update(ctx context.Context, channel, ts, text string) error {
+	if _, _, _, err := s.api.UpdateMessageContext(ctx, channel, ts,
+		slack.MsgOptionText(text, false),
+		slack.MsgOptionDisableLinkUnfurl(),
+	); err != nil {
+		return fmt.Errorf("chat.update: %w", err)
+	}
+	return nil
+}
+
 func (s *slackAPI) Delete(ctx context.Context, channel, ts string) error {
 	if _, _, err := s.api.DeleteMessageContext(ctx, channel, ts); err != nil {
 		return fmt.Errorf("chat.delete: %w", err)

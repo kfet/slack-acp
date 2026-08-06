@@ -46,15 +46,17 @@ func (w *workspace) replies(threadTS string) []Message {
 // fakeSlack is one token's view of the workspace: it records posts,
 // serves thread replies, and can simulate the relay answering.
 type fakeSlack struct {
-	ws       *workspace
-	userID   string
-	isBot    bool
-	authErr  error
-	postErr  error
-	openErr  error
-	replyErr error
-	deleted  []string
-	dmID     string
+	ws        *workspace
+	userID    string
+	isBot     bool
+	authErr   error
+	postErr   error
+	openErr   error
+	replyErr  error
+	updateErr error
+	onUpdate  func(f *fakeSlack, channel, ts, text string)
+	deleted   []string
+	dmID      string
 
 	// onPost is invoked after every successful post, letting a test
 	// script the relay's reaction (e.g. "the bot replies").
@@ -95,6 +97,16 @@ func (f *fakeSlack) botReply(threadTS string) string {
 	ts := f.ws.nextTS("200")
 	f.ws.add(threadTS, Message{TS: ts, User: "UBOT", BotID: "B1", Text: "answer"})
 	return ts
+}
+
+func (f *fakeSlack) Update(_ context.Context, channel, ts, text string) error {
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	if f.onUpdate != nil {
+		f.onUpdate(f, channel, ts, text)
+	}
+	return nil
 }
 
 func (f *fakeSlack) Delete(_ context.Context, _, ts string) error {
@@ -186,6 +198,11 @@ func scriptedRelay(j *fakeJournal, botID string) (bot, user *fakeSlack) {
 		}
 	}
 	bot.onPost, user.onPost = react, react
+	// An @-mention introduced by EDITING is delivered with `edited`
+	// set and refused by the self-authorship clause.
+	user.onUpdate = func(_ *fakeSlack, channel, ts, _ string) {
+		j.dropped(channel, ts, journal.PathAppMention, journal.ReasonBotAuthored)
+	}
 	return bot, user
 }
 
@@ -227,7 +244,8 @@ func TestRunAllChecksPass(t *testing.T) {
 	byName := resultsByName(t, results)
 	for _, want := range []string{
 		"app_mention_public", "ambient_thread_reply_known", "app_mention_private",
-		"dm", "ambient_thread_reply_unknown_dropped", "bot_echo_dropped", "self_drive_hatch",
+		"dm", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped",
+		"bot_echo_dropped", "self_drive_hatch",
 	} {
 		res, ok := byName[want]
 		if !ok {
@@ -241,7 +259,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !allOK {
 		t.Fatalf("Summarise says not ok:\n%s", report)
 	}
-	if !strings.Contains(report, "7 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(report, "8 passed, 0 failed, 0 skipped") {
 		t.Fatalf("unexpected summary:\n%s", report)
 	}
 }
@@ -284,7 +302,7 @@ func TestChecksSkipWithoutUserToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	byName := resultsByName(t, results)
-	for _, name := range []string{"app_mention_public", "app_mention_private", "dm", "ambient_thread_reply_known", "ambient_thread_reply_unknown_dropped"} {
+	for _, name := range []string{"app_mention_public", "app_mention_private", "dm", "ambient_thread_reply_known", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped"} {
 		res := byName[name]
 		if res.Status != StatusSkip {
 			t.Errorf("%s: want SKIP without a user token, got %s (%s)", name, res.Status, res.Detail)
@@ -946,5 +964,19 @@ func TestDropCheckFailsFastOnAnEarlierGuard(t *testing.T) {
 	}
 	if polls != 1 {
 		t.Fatalf("want a single poll, got %d", polls)
+	}
+}
+
+// TestEditedMentionCheckFailsWhenTheEditCannotBeMade: the edit is the
+// entire point of the check, so a failed chat.update must not be
+// reported as a passing drop.
+func TestEditedMentionCheckFailsWhenTheEditCannotBeMade(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	user.updateErr = errors.New("cant_update_message")
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	res := r.checkEditedMention(context.Background())
+	if res.Status != StatusFail || !strings.Contains(res.Detail, "chat.update") {
+		t.Fatalf("got %+v", res)
 	}
 }

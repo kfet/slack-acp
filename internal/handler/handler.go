@@ -149,6 +149,24 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 		rec.Decision, rec.Reason = journal.DecisionDrop, reason
 		journal.Log(rec)
 	}
+	// DEFENCE IN DEPTH — the relay must never act on its own message.
+	//
+	// slackproto refuses a self-authored event before it ever reaches
+	// here, and that stays the primary guard. This is the backstop for
+	// a future ingest path that forgets: the invariant must not depend
+	// on which layer happened to notice. Deliberately placed BEFORE
+	// the allowlist, because a populated allowlist must never be able
+	// to reorder or widen it — that ordering is what the cross-layer
+	// test pins.
+	//
+	// Self-drive is the one sanctioned exception: it is bot-authored
+	// by definition, opt-in, sentinel-anchored, rate-capped, and
+	// carries its own loop guards.
+	if ev.BotUserID != "" && ev.UserID == ev.BotUserID && !ev.SelfDrive {
+		drop(journal.ReasonBotAuthored)
+		kitlog.Debugf("handler: drop self-authored ev in %s ts=%s", ev.ChannelID, ev.TS)
+		return
+	}
 	if !h.allowed(ev) {
 		drop(journal.ReasonAllowlist)
 		kitlog.Debugf("handler: drop ev from user=%s channel=%s (not allowed)", ev.UserID, ev.ChannelID)

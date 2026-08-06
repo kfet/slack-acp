@@ -2,6 +2,7 @@ package config
 
 import (
 	"io"
+	"os"
 
 	"github.com/kfet/acp-kit/client"
 )
@@ -18,9 +19,20 @@ import (
 // back. Withholding the secret is the only durable defence, and it costs
 // nothing: the agent never needs to call Slack itself, because the relay
 // owns that side of the wire.
+//
+// SLACK_USER_TOKEN belongs here even though the relay never reads it.
+// `slack-acp verify` needs it, and the deployment carries it in the same
+// env file the supervisor exports — so it lands in the relay's
+// environment and would be inherited by the agent. That is sharper than
+// it looks now that human_author_user_ids exists: a message posted with
+// that token, through this app, on behalf of a named human is
+// deliberately reclassified as human-authored, so an agent holding it
+// could post as that human and summon ITSELF — a reply → trigger → reply
+// loop, and one the blanket bot_id refusal used to make impossible.
 var slackSecretEnvNames = []string{
 	"SLACK_BOT_TOKEN",
 	"SLACK_APP_TOKEN",
+	"SLACK_USER_TOKEN",
 }
 
 // AgentClientConfig assembles the acp-kit client.Config used to spawn
@@ -57,7 +69,31 @@ func (c *Config) AgentClientConfig(stderr io.Writer) client.Config {
 		Command:        c.AgentCmd,
 		Cwd:            c.StateDir,
 		SecretEnvNames: slackSecretEnvNames,
-		Secrets:        []string{c.BotToken, c.AppToken},
+		Secrets:        c.secretValues(),
 		Stderr:         stderr,
 	}
+}
+
+// secretValues collects the live token values to strip by value,
+// whatever variable carries them.
+//
+// Empty values are dropped, and that is not cosmetic: tokens usually
+// arrive via the environment rather than the config file, so
+// c.BotToken/c.AppToken are routinely "" — and an empty string is a
+// substring of every value in the environment. Declaring one invites a
+// scrub that either matches everything or is silently skipped,
+// depending on the implementation on the other side. Say only what we
+// actually mean.
+//
+// The user token is read from the environment because the relay
+// deliberately does not carry it in Config — it is harness-only — but
+// it still must not reach the agent. It is never logged.
+func (c *Config) secretValues() []string {
+	var out []string
+	for _, v := range []string{c.BotToken, c.AppToken, os.Getenv("SLACK_USER_TOKEN")} {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

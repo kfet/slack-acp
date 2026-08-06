@@ -90,6 +90,8 @@ type Slack interface {
 	// Post publishes a message, returning its ts. threadTS may be empty
 	// for a top-level post.
 	Post(ctx context.Context, channel, threadTS, text string) (string, error)
+	// Update edits a message in place.
+	Update(ctx context.Context, channel, ts, text string) error
 	// Delete removes a message. Slack only permits deleting messages
 	// authored by the calling token.
 	Delete(ctx context.Context, channel, ts string) error
@@ -247,6 +249,7 @@ func (r *Runner) Run(ctx context.Context) ([]Result, error) {
 	out = append(out, r.checkPrivateMention(ctx))
 	out = append(out, r.checkDM(ctx))
 	out = append(out, r.checkAmbientUnknownThread(ctx))
+	out = append(out, r.checkEditedMention(ctx))
 	out = append(out, r.checkBotEcho(ctx))
 	out = append(out, r.checkSelfDrive(ctx))
 	return out, nil
@@ -327,6 +330,36 @@ func (r *Runner) checkAmbientUnknownThread(ctx context.Context) Result {
 	}
 	return r.expectDrop(ctx, name, r.cfg.PublicChannel, parent, ts,
 		[]string{journal.ReasonAmbientUnknownThrd})
+}
+
+// checkEditedMention covers the one clause-1 branch nothing else
+// reaches live: an @-mention introduced by EDITING an existing message.
+//
+// Slack delivers that as an app_mention carrying `edited`, which the
+// guard refuses — a mention must be an original post, for the same
+// reason the message path refuses subtypes. Measured shape:
+//
+//	{"type":"app_mention","user":"U…","edited":{"ts":"…","user":"U…"}}
+//
+// Without this check the `edited` clause was asserted only by unit
+// test, i.e. against our own belief about what Slack sends — the exact
+// gap that let the original mention bug reach release.
+func (r *Runner) checkEditedMention(ctx context.Context) Result {
+	const name = "edited_mention_dropped"
+	if r.cfg.User == nil {
+		return Result{Name: name, Status: StatusSkip, Detail: skipNoUserToken}
+	}
+	// Post WITHOUT a mention, then edit one in.
+	ts, err := r.post(ctx, r.cfg.User, r.cfg.PublicChannel, "", r.label("plain, no mention yet"))
+	if err != nil {
+		return failf(name, "post as user: %v", err)
+	}
+	if err := r.cfg.User.Update(ctx, r.cfg.PublicChannel, ts,
+		r.label(fmt.Sprintf("<@%s> a mention added by EDITING", r.botUserID))); err != nil {
+		return failf(name, "chat.update as user: %v", err)
+	}
+	return r.expectDrop(ctx, name, r.cfg.PublicChannel, ts, ts,
+		[]string{journal.ReasonBotAuthored})
 }
 
 func (r *Runner) checkBotEcho(ctx context.Context) Result {

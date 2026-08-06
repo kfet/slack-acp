@@ -34,6 +34,10 @@ func fakeSlackServer(t *testing.T, ok bool) (*httptest.Server, *[]string) {
 		seen = append(seen, "chat.postMessage thread_ts="+r.Form.Get("thread_ts"))
 		reply(w, map[string]any{"channel": "C1", "ts": "1.1"})
 	})
+	mux.HandleFunc("/chat.update", func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, "chat.update")
+		reply(w, map[string]any{"channel": "C1", "ts": "1.1"})
+	})
 	mux.HandleFunc("/chat.delete", func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, "chat.delete")
 		reply(w, map[string]any{"channel": "C1", "ts": "1.1"})
@@ -90,6 +94,9 @@ func TestSlackAdapterHappyPath(t *testing.T) {
 		t.Fatalf("got %+v want %+v", msgs[1], want)
 	}
 
+	if err := api.Update(ctx, "C1", "1.1", "edited"); err != nil {
+		t.Fatal(err)
+	}
 	if err := api.Delete(ctx, "C1", "1.1"); err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +121,9 @@ func TestSlackAdapterSurfacesAPIErrors(t *testing.T) {
 	}
 	if _, err := api.Post(ctx, "C1", "", "x"); err == nil || !strings.Contains(err.Error(), "chat.postMessage") {
 		t.Errorf("Post: got %v", err)
+	}
+	if err := api.Update(ctx, "C1", "1.1", "x"); err == nil || !strings.Contains(err.Error(), "chat.update") {
+		t.Errorf("Update: got %v", err)
 	}
 	if err := api.Delete(ctx, "C1", "1.1"); err == nil || !strings.Contains(err.Error(), "chat.delete") {
 		t.Errorf("Delete: got %v", err)
