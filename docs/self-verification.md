@@ -32,11 +32,27 @@ The consequence is that **no bot-authored message can ever exercise
 being lost across the slackproto→handler boundary, fixed in v0.4.2)
 survived to release and needed a human to find.
 
-`chat.postMessage` with a user token produces a genuine human message:
-`user=U<the human>`, no `bot_id`, no `subtype`, no `edited`. It clears
-the guard the way a person does, over the same websocket, through
-Slack's own servers. Nothing is bypassed — that is the point, and it is
-why the results are worth trusting.
+`chat.postMessage` with a user token produces a message from a genuine
+human `user` — `user=U<the human>`, no `subtype`, no `edited` — delivered
+over the same websocket, through Slack's own servers.
+
+**But it is not enough on its own, and the reason matters.** Ground truth
+from a live workspace, posting with a user token:
+
+```
+"user":    "U9EA2KLTH"      ← the human, as expected
+"bot_id":  "B0BNE4AUS9L"    ← the posting app's own bot id, set anyway
+"app_id":  "A0B3PMFHUSJ"
+```
+
+Slack stamps the posting app's identity onto **every** API message,
+user token or not. There appears to be no way for any API caller to
+produce a message Slack presents as "typed in a client". So `bot_id`
+means *"sent through an app"*, not *"sent by a robot"* — and the guard
+was using it as a proxy for the latter.
+
+That proxy is what made `app_mention` untestable. The fix is to make
+the guard precise rather than to weaken it; see below.
 
 Rejected alternatives, for the record:
 
@@ -47,10 +63,61 @@ Rejected alternatives, for the record:
 | A second bot app mentioning the first | Still dropped by `ev.BotID != ""` — correctly; two bots can loop through each other. |
 | `username`/`icon_url` impersonation, incoming webhooks | `bot_id` is still set. |
 
-**No production guard is weakened and no test-only ingest affordance
-exists.** If the user token is absent, the affected checks report
-`SKIP` with the reason — never a quiet pass, and never a bot post
-substituted in.
+**No test-only ingest affordance exists.** If the user token is absent,
+the affected checks report `SKIP` with the reason — never a quiet pass,
+and never a bot post substituted in.
+
+## The guard, made precise
+
+The guard has two clauses that are **not** equally negotiable:
+
+```go
+func (c *Client) refuseAuthor(user, botID string, edited bool) string {
+	// 1. SELF-AUTHORSHIP — unconditional, no override, ever.
+	if user == "" || user == c.botUserID || edited {
+		return journal.ReasonBotAuthored
+	}
+	// 2. bot_id as a proxy for "not a human" — overridable per named id.
+	if botID != "" {
+		if _, ok := c.humanAuthors[user]; !ok {
+			return journal.ReasonAPIAuthored
+		}
+	}
+	return ""
+}
+```
+
+Clause 1 is what makes a reply → trigger → reply loop **structurally
+impossible**: the relay posts its replies as its own bot user, so it can
+never act on its own message. It runs first and has no override — an
+operator who writes the bot's own user id into the list changes nothing
+(there is a test for exactly that).
+
+Clause 2 is the proxy, and only it is overridable, via
+`human_author_user_ids` in the config:
+
+```json
+{ "human_author_user_ids": ["U9EA2KLTH"] }
+```
+
+- **Empty (the default) is byte-for-byte the previous behaviour** and is
+  the correct production setting.
+- It cannot be on by accident: an operator must write a specific `U…`
+  id down. Same trust level as `allowed_user_ids`.
+- A non-empty list logs a loud startup warning.
+- Listing a *bot's* user id would admit that bot — so don't. The relay
+  can still never be driven by itself.
+
+### What remains irreducible
+
+A listed identity's messages are API-authored. At the Events API level
+Slack offers no way to distinguish "this human typed it in a client"
+from "an app posted it as this human". Naming an id in
+`human_author_user_ids` accepts that: anyone holding a user token for
+that person can drive the relay at machine speed. Note the loop is still
+not self-sustaining — the relay's own replies can never re-trigger it —
+so this is the same threat model as a human with a script, which the
+guard was never meant to stop.
 
 ## One-time Slack setup (a human must do this in a browser)
 

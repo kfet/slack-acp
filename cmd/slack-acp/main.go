@@ -188,6 +188,14 @@ func main() {
 		log.Printf("slack-acp: WARNING self-drive hatch ENABLED (%d/min) — bot-authored messages beginning with the configured sentinel will be executed. Do not run this in production.", cfg.GetSelfDrivePerMinute())
 	}
 
+	// Named human authors. Empty by default, which is byte-for-byte
+	// the strict behaviour; non-empty is loud, because it narrows the
+	// bot_id proxy on the ingest guards.
+	humanAuthors := toSet(cfg.HumanAuthorUserIDs)
+	if len(humanAuthors) > 0 {
+		log.Printf("slack-acp: WARNING human_author_user_ids is set (%d id(s)) — messages posted through an app on behalf of these users are treated as human-authored. The self-authorship guard is unaffected: the relay still refuses its own messages unconditionally. Intended for `slack-acp verify`, not production.", len(humanAuthors))
+	}
+
 	h := handler.New(handler.Config{
 		Router:              r,
 		AllowedUserIDs:      allowedUsers,
@@ -201,7 +209,9 @@ func main() {
 		SelfDrivePerMinute:  cfg.GetSelfDrivePerMinute(),
 	})
 
-	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h, slackproto.WithSelfDrive(selfDrive))
+	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h,
+		slackproto.WithSelfDrive(selfDrive),
+		slackproto.WithHumanAuthors(humanAuthors))
 	if err != nil {
 		log.Fatalf("slack: %v", err)
 	}

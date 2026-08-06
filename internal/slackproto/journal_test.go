@@ -195,3 +195,156 @@ func TestIngestJournalSelfDrivePaths(t *testing.T) {
 		}
 	})
 }
+
+// TestAPIAuthoredMessagesAreRefusedUnlessTheAuthorIsNamed is the
+// regression test for the finding that made this whole guard precise:
+// Slack stamps the posting app's bot_id onto EVERY API message,
+// including a chat.postMessage sent with a user (xoxp-) token on
+// behalf of a real person. Ground truth from a live workspace:
+//
+//	"user":   "U9EA2KLTH"    <- the human
+//	"bot_id": "B0BNE4AUS9L"  <- the app's own bot id, set anyway
+//
+// So bot_id means "sent through an app", not "sent by a robot".
+// Conflating the two made the app_mention path impossible to exercise
+// automatically, which is why a mention bug reached release.
+func TestAPIAuthoredMessagesAreRefusedUnlessTheAuthorIsNamed(t *testing.T) {
+	const (
+		bot   = "UBOT"
+		human = "U9EA2KLTH"
+	)
+	mention := &slackevents.AppMentionEvent{
+		User: human, BotID: "B0BNE4AUS9L", Channel: "C1", TimeStamp: "1.0", Text: "<@UBOT> hi",
+	}
+
+	t.Run("refused by default", func(t *testing.T) {
+		c, err := New("xoxb-x", "xapp-x", handlerFunc(func(context.Context, Event) {}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.botUserID = bot
+		records := captureJournal(t)
+		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+			Type:       slackevents.CallbackEvent,
+			InnerEvent: slackevents.EventsAPIInnerEvent{Data: mention},
+		})
+		recs := records()
+		if len(recs) != 1 || recs[0].Decision != journal.DecisionDrop || recs[0].Reason != journal.ReasonAPIAuthored {
+			t.Fatalf("got %+v", recs)
+		}
+	})
+
+	t.Run("admitted when the author is named", func(t *testing.T) {
+		var got Event
+		c, err := New("xoxb-x", "xapp-x", handlerFunc(func(_ context.Context, ev Event) { got = ev }),
+			WithHumanAuthors(map[string]struct{}{human: {}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.botUserID = bot
+		records := captureJournal(t)
+		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+			Type:       slackevents.CallbackEvent,
+			InnerEvent: slackevents.EventsAPIInnerEvent{Data: mention},
+		})
+		recs := records()
+		if len(recs) != 1 || recs[0].Decision != journal.DecisionDeliver || recs[0].Reason != journal.ReasonMention {
+			t.Fatalf("got %+v", recs)
+		}
+		if !got.IsMention || got.UserID != human {
+			t.Fatalf("delivered event wrong: %+v", got)
+		}
+	})
+}
+
+// TestNamingTheBotCannotOpenTheSelfLoop is the security test for the
+// override. The self-authorship clause is evaluated FIRST and has no
+// override, so an operator who lists the relay's own bot user id — by
+// accident or otherwise — changes nothing. A reply → trigger → reply
+// loop stays structurally impossible.
+func TestNamingTheBotCannotOpenTheSelfLoop(t *testing.T) {
+	const bot = "UBOT"
+	for name, ev := range map[string]any{
+		"app_mention": &slackevents.AppMentionEvent{
+			User: bot, BotID: "B1", Channel: "C1", TimeStamp: "1.0", Text: "<@UBOT> loop",
+		},
+		"message": &slackevents.MessageEvent{
+			User: bot, BotID: "B1", Channel: "C1", TimeStamp: "2.0", ThreadTimeStamp: "1.0", Text: "<@UBOT> loop",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			delivered := 0
+			c, err := New("xoxb-x", "xapp-x",
+				handlerFunc(func(context.Context, Event) { delivered++ }),
+				// The operator has (wrongly) named the bot itself.
+				WithHumanAuthors(map[string]struct{}{bot: {}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.botUserID = bot
+			records := captureJournal(t)
+			c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+				Type:       slackevents.CallbackEvent,
+				InnerEvent: slackevents.EventsAPIInnerEvent{Data: ev},
+			})
+			if delivered != 0 {
+				t.Fatal("the relay must never act on its own message, whatever the config says")
+			}
+			recs := records()
+			if len(recs) != 1 || recs[0].Decision != journal.DecisionDrop {
+				t.Fatalf("got %+v", recs)
+			}
+		})
+	}
+}
+
+// TestAuthorlessMessagesAreAlwaysRefused covers webhooks and classic
+// bots, which carry no user at all. No list entry can match "".
+func TestAuthorlessMessagesAreAlwaysRefused(t *testing.T) {
+	c, err := New("xoxb-x", "xapp-x", handlerFunc(func(context.Context, Event) {}),
+		WithHumanAuthors(map[string]struct{}{"": {}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.botUserID = "UBOT"
+	records := captureJournal(t)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.AppMentionEvent{
+			BotID: "B1", Channel: "C1", TimeStamp: "1.0", Text: "<@UBOT> hi",
+		}},
+	})
+	recs := records()
+	if len(recs) != 1 || recs[0].Reason != journal.ReasonBotAuthored {
+		t.Fatalf("got %+v", recs)
+	}
+}
+
+// TestNamedHumanOnTheMessagePathIsAmbientNotSelfDrive pins that the
+// override lands the event on the *ambient* path, not the self-drive
+// hatch: a named human's un-tagged thread reply must behave exactly
+// like any other human's.
+func TestNamedHumanOnTheMessagePathIsAmbientNotSelfDrive(t *testing.T) {
+	const human = "U9EA2KLTH"
+	var got Event
+	c, err := New("xoxb-x", "xapp-x", handlerFunc(func(_ context.Context, ev Event) { got = ev }),
+		WithHumanAuthors(map[string]struct{}{human: {}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.botUserID = "UBOT"
+	records := captureJournal(t)
+	c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+		Type: slackevents.CallbackEvent,
+		InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.MessageEvent{
+			User: human, BotID: "B1", Channel: "C1", TimeStamp: "2.0", ThreadTimeStamp: "1.0", Text: "follow-up",
+		}},
+	})
+	if got.SelfDrive {
+		t.Fatal("a named human is a human, not a self-drive event")
+	}
+	recs := records()
+	if len(recs) != 1 || recs[0].Reason != journal.ReasonAmbientThreadReply {
+		t.Fatalf("got %+v", recs)
+	}
+}

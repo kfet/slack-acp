@@ -12,5 +12,6 @@
   "silent_sentinel": "<<SILENT>>",
   "self_drive_sentinel": "",
   "self_drive_per_minute": 4,
+  "human_author_user_ids": [],
   "hide_thinking": false
 }

@@ -346,7 +346,8 @@ func (r *Runner) checkBotEcho(ctx context.Context) Result {
 		return failf(name, "post as bot: %v", err)
 	}
 	return r.expectDrop(ctx, name, r.cfg.PublicChannel, parent, ts,
-		[]string{journal.ReasonBotAuthored, journal.ReasonSelfDriveNotAccept, journal.ReasonSelfPostedTS})
+		[]string{journal.ReasonBotAuthored, journal.ReasonAPIAuthored,
+			journal.ReasonSelfDriveNotAccept, journal.ReasonSelfPostedTS})
 }
 
 func (r *Runner) checkSelfDrive(ctx context.Context) Result {
