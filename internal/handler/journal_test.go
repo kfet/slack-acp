@@ -164,3 +164,66 @@ func assertOneRecord(t *testing.T, recs []journal.Record, path journal.Path, dec
 		t.Fatalf("record must always carry channel and ts: %+v", got)
 	}
 }
+
+// TestSelfAuthoredIsRefusedEvenWithTheAllowlistPopulated pins the
+// ordering the whole loop-safety argument rests on: the relay's own
+// message is refused BEFORE allowed_user_ids is consulted, so no
+// allowlist configuration can reorder or widen it — not even one that
+// explicitly names the bot itself.
+//
+// slackproto already refuses this upstream; this is the defence-in-depth
+// backstop, so the invariant survives a future ingest path that forgets.
+func TestSelfAuthoredIsRefusedEvenWithTheAllowlistPopulated(t *testing.T) {
+	for name, allowed := range map[string]map[string]struct{}{
+		"no allowlist":                    nil,
+		"allowlist naming a human":        {"UHUMAN": {}},
+		"allowlist naming the bot itself": {"UBOT": {}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fa := newFakeAgent()
+			fs := newFakeSlack()
+			t.Cleanup(fs.close)
+			h := New(Config{
+				Router: newTestRouter(t, fa), API: fs.client(),
+				PromptTimeout: 5 * time.Second, Ambient: true,
+				AllowedUserIDs: allowed,
+			})
+			records := captureJournal(t)
+			h.Handle(context.Background(), slackproto.Event{
+				UserID: "UBOT", BotUserID: "UBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0",
+				Text: "my own reply, quoted back", IsMention: true,
+			})
+			waitForIdle(t, h)
+
+			recs := records()
+			if len(recs) != 1 || recs[0].Decision != journal.DecisionDrop ||
+				recs[0].Reason != journal.ReasonBotAuthored {
+				t.Fatalf("want a single bot_authored drop, got %+v", recs)
+			}
+			if fs.posts != 0 {
+				t.Fatal("the relay replied to itself — the loop guard failed")
+			}
+		})
+	}
+}
+
+// TestSelfDriveIsStillAdmittedByTheSelfAuthorshipBackstop guards the
+// other direction: the backstop above must not break the one
+// sanctioned bot-authored path, or the hatch becomes dead code.
+func TestSelfDriveIsStillAdmittedByTheSelfAuthorshipBackstop(t *testing.T) {
+	fa := newFakeAgent()
+	fs := newFakeSlack()
+	t.Cleanup(fs.close)
+	h := New(Config{
+		Router: newTestRouter(t, fa), API: fs.client(),
+		PromptTimeout: 5 * time.Second, Ambient: true,
+		SelfDrive: slackproto.NewSelfDrive("!!drive!!"), SelfDrivePerMinute: 4,
+	})
+	records := captureJournal(t)
+	h.Handle(context.Background(), slackproto.Event{
+		UserID: "UBOT", BotUserID: "UBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0",
+		Text: "do the thing", SelfDrive: true,
+	})
+	waitForIdle(t, h)
+	assertOneRecord(t, records(), journal.PathSelfDrive, journal.DecisionRun, journal.ReasonPrompt)
+}

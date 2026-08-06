@@ -27,6 +27,10 @@ All notable changes to this project will be documented in this file.
   "why didn't the bot reply?" without enabling debug mode and re-provoking the
   problem. Message text is deliberately not recorded, so the journal cannot
   spill conversation content into journald.
+- `slack-acp verify` gained an `edited_mention_dropped` check: an @-mention
+  introduced by *editing* a message must be refused. That guard had been
+  asserted only against our own belief about what Slack delivers; it is now
+  pinned against real Slack.
 - The Slack app manifest declares the `chat:write` **user** scope required by
   `slack-acp verify`. Operators must reinstall the app for it to take effect.
 
@@ -56,6 +60,23 @@ All notable changes to this project will be documented in this file.
   shared with the human-author cap, so the second backstop cannot drift into a
   subtly weaker copy of the first.
 
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
+
 ### Fixed
 
 - **Channel @-mentions are no longer dropped.** `slackproto` strips the
@@ -74,6 +95,23 @@ All notable changes to this project will be documented in this file.
   @-mention, self-drive) now bypass abstain entirely.
 
 ## [0.4.1] - 2026-08-02
+
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
 
 ### Fixed
 
@@ -127,6 +165,23 @@ All notable changes to this project will be documented in this file.
   chunks can be suppressed via the new `hide_thinking` config key (default
   `false`, thoughts still shown as italic one-liners). Tool calls remain
   suppressed as before.
+
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
 
 ### Fixed
 
@@ -224,6 +279,23 @@ All notable changes to this project will be documented in this file.
   `last_ts` checkpoint dedups at-least-once delivery and drives optional backfill
   of missed messages via `conversations.replies`.
 
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
+
 ### Fixed
 
 - `slackproto`: don't forward `message.channels` replies that already `@`-mention
@@ -248,6 +320,23 @@ All notable changes to this project will be documented in this file.
   docs, skills and the formula template were updated accordingly.
 
 ## [0.1.1] - 2026-05-27
+
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
 
 ### Fixed
 - `slackproto.PostStreamer`: spinner-vs-Append race where a slow
@@ -346,12 +435,46 @@ All notable changes to this project will be documented in this file.
   `acp-kit/skills`; the per-content-hash extraction, frontmatter
   parsing, and catalog formatting all live upstream.
 
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
+
 ### Fixed
 - `TestWaitIdleCancel` race: the helper goroutine's `ctx.Done` branch
   could run before the waiter parked in `Cond.Wait`. Added a
   `waitIdleWaits` counter so the test waits for the parked state
   before cancelling; the broadcast that wakes the waiter is now
   deterministically exercised.
+
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
 
 ### Fixed
 - `session_idle_timeout_seconds` config now drives router idle GC
@@ -537,6 +660,23 @@ All notable changes to this project will be documented in this file.
 - `router.Router.Close()` releases the `os.Root` handle on shutdown;
   `cmd/slack-acp` defers it. Now documented as not safe to call
   concurrently with `GetOrCreate` / `Cancel` (shutdown-only).
+
+### Security
+
+- **`SLACK_USER_TOKEN` is now scrubbed from the spawned agent's environment.**
+  `slack-acp verify` needs a Slack user token and the deployment carries it in
+  the same env file the supervisor exports, so it reached the relay's
+  environment and was inherited by the agent. Combined with
+  `human_author_user_ids` that was a live loop vector as well as a leak: a
+  message posted with that token, through this app, on behalf of a named human
+  is deliberately reclassified as human-authored, so an agent holding it could
+  post as that human and summon itself. Also fixed alongside: empty token
+  values are no longer declared as secrets to scrub — tokens usually arrive via
+  the environment, so the config fields are routinely empty, and an empty
+  string is a substring of every value in the environment.
+- A self-authorship refusal now also runs in the handler, *before* the
+  `allowed_user_ids` check, as defence in depth: the relay must never act on
+  its own message regardless of which ingest path delivered it.
 
 ### Fixed
 - handler: `clearInflight` previously compared cancel funcs via
