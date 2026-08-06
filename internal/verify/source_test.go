@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kfet/slack-acp/internal/journal"
 )
@@ -94,5 +95,41 @@ func TestNewShellSourcePreservesQuoting(t *testing.T) {
 	}
 	if _, err := NewShellSource("   "); err == nil {
 		t.Error("a blank command line must be rejected")
+	}
+}
+
+// TestJournalReadIsNotBoundedByTheCallersDeadline is the regression
+// test for a misdiagnosis, not a crash. The harness polls this inside a
+// wait budget; when that budget expired it used to kill the in-flight
+// journalctl and report "context deadline exceeded", which reads as
+// "journald is broken" when the truth was "the thing you waited for
+// never happened". A read must succeed (or fail on its own terms)
+// regardless of the caller's deadline.
+func TestJournalReadIsNotBoundedByTheCallersDeadline(t *testing.T) {
+	line := `SLACK-ACP-INGEST {"stage":"handler","decision":"run","reason":"prompt","channel":"C1","ts":"1.0"}`
+	src, err := NewShellSource(`printf '%s\n' '` + line + `'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A context that is ALREADY past its deadline.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+
+	recs, err := src.Records(ctx)
+	if err != nil {
+		t.Fatalf("an expired caller deadline must not break the read: %v", err)
+	}
+	if len(recs) != 1 || recs[0].TS != "1.0" {
+		t.Fatalf("got %+v", recs)
+	}
+}
+
+// TestCommandSourceAppliesDefaultTimeout covers the zero-value guard: a
+// CommandSource built as a literal (not via the constructors) must
+// still bound its read rather than hang forever.
+func TestCommandSourceAppliesDefaultTimeout(t *testing.T) {
+	src := &CommandSource{Argv: []string{"sh", "-c", "echo hi"}} // Timeout unset
+	if _, err := src.Records(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
