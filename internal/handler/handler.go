@@ -404,7 +404,17 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// leak into the thread with no way to retract it cleanly. The
 	// first real chunk (if any) posts the message; if the agent
 	// abstains, nothing was ever posted.
-	abstaining := h.cfg.Ambient && h.cfg.SilentSentinel != ""
+	//
+	// "Ambient-only" has to mean ambient-only in the CODE too: an
+	// addressed turn (DM, @-mention, or self-drive) is never
+	// abstain-eligible. Gating on h.cfg.Ambient alone made every
+	// channel mention abstainable, and because slackproto strips the
+	// <@BOT> tag out of Text the agent had no evidence it was being
+	// addressed at all — so it read a direct summon as idle chatter
+	// and abstained. Silent, non-deterministic, and indistinguishable
+	// from the relay being down.
+	addressed := ev.IsDM || ev.IsMention || ev.SelfDrive
+	abstaining := h.cfg.Ambient && h.cfg.SilentSentinel != "" && !addressed
 
 	var sink client.SessionUpdateSink = baseSink
 	var abstainSinkPtr *abstainSink

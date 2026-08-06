@@ -915,6 +915,59 @@ func TestAbstainSuppressesPostOnSentinel(t *testing.T) {
 	}
 }
 
+// TestAbstainOffForAddressedMention is the regression test for the
+// second half of the v0.4.1 channel bug: with Ambient enabled, an
+// explicit @-mention was still routed through the abstain sink, so an
+// agent that judged the (mention-stripped) text to be idle chatter
+// could answer a direct summon with <<SILENT>> and post nothing.
+// Addressed turns must bypass abstain entirely.
+func TestAbstainOffForAddressedMention(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	done := make(chan struct{})
+	fa.promptHook = func(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
+		// The agent emits exactly the silent sentinel. On an addressed
+		// turn that must still be posted, not swallowed.
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "<<SILENT>>"}}}},
+		})
+		close(done)
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{
+		Router:         r,
+		API:            fs.client(),
+		PromptTimeout:  5 * time.Second,
+		Ambient:        true,
+		SilentSentinel: "<<SILENT>>",
+	})
+
+	h.Handle(context.Background(), slackproto.Event{
+		UserID:    "U1",
+		BotUserID: "BBOT",
+		ChannelID: "C1",
+		ThreadTS:  "1.0",
+		TS:        "1.0",
+		Text:      "let's chat",
+		IsMention: true,
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt never invoked for an addressed mention")
+	}
+	waitForIdle(t, h)
+	if fs.posts == 0 {
+		t.Fatal("an addressed @-mention must never be abstained away")
+	}
+}
+
 // TestAbstainOffWhenNotAmbient verifies the addressed/DM path is
 // unaffected by abstain: even if the agent emits the sentinel text,
 // with Ambient=false it is posted normally (no suppression).
