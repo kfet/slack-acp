@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Channel @-mentions are no longer dropped.** `slackproto` strips the
+  `<@BOT>` tag out of `Text` on the `app_mention` path, so the handler's
+  attempt to re-derive "was this a mention?" from `Text` was always false. A
+  genuine channel @-mention was therefore classified as an ambient reply and
+  dropped whenever the thread was not already known — the bot was unreachable
+  in channels (DMs were unaffected). The mention is now carried across the
+  boundary as an explicit `Event.IsMention` flag.
+- **An @-mention is never answered with silence under ambient mode.** Abstain
+  eligibility was gated on `ambient && silent_sentinel != ""` alone, which made
+  *every* turn abstainable — including direct @-mentions and DMs, contradicting
+  the documented "ambient-only" rule. Combined with the stripped mention above,
+  the agent had no evidence it was being addressed and could answer a direct
+  summon with the silent sentinel, posting nothing at all. Addressed turns (DM,
+  @-mention, self-drive) now bypass abstain entirely.
+
 ## [0.4.1] - 2026-08-02
 
 ### Fixed
