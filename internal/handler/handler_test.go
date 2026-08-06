@@ -768,6 +768,53 @@ func TestHandleAmbientModeDropsUnknownThread(t *testing.T) {
 	}
 }
 
+// TestHandleMentionFlagSummonsUnknownThread is the regression test for
+// the v0.4.1 bug where an @-mention in a channel was silently dropped.
+// slackproto strips the bot mention from Text on the app_mention path,
+// so the handler's old strings.Contains(Text, "<@BOT>") check always
+// saw false, classified a genuine summon as an ambient reply, and
+// dropped it because the thread was not yet known. The IsMention flag
+// carries the fact across that boundary.
+func TestHandleMentionFlagSummonsUnknownThread(t *testing.T) {
+	fa := newFakeAgent()
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	done := make(chan struct{})
+	fa.promptHook = func(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
+		close(done)
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{
+		Router:        r,
+		API:           fs.client(),
+		Ambient:       true,
+		PromptTimeout: 5 * time.Second,
+	})
+
+	// A top-level @-mention in a channel: thread is NOT known, and Text
+	// has the mention already stripped (exactly what slackproto sends).
+	h.Handle(context.Background(), slackproto.Event{
+		UserID:    "U1",
+		BotUserID: "BBOT",
+		ChannelID: "C1",
+		ThreadTS:  "1.0",
+		TS:        "1.0",
+		Text:      "let's chat",
+		IsDM:      false,
+		IsMention: true,
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an @-mention must summon the bot even in an unknown thread")
+	}
+	waitForIdle(t, h)
+}
+
 // TestHandleAmbientModeForwardsKnownThread verifies that ambient replies
 // are forwarded to threads the bot is already in.
 func TestHandleAmbientModeForwardsKnownThread(t *testing.T) {

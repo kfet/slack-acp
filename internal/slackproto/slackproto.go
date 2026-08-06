@@ -39,6 +39,12 @@ type Event struct {
 	Text string
 	// IsDM is true for direct-message conversations (channel.im).
 	IsDM bool
+	// IsMention is true when this event came from the app_mention path,
+	// i.e. the sender explicitly @-mentioned the bot. It must be carried
+	// as a flag because Text has the mention STRIPPED by the time the
+	// handler sees it — re-deriving "was this a mention?" from Text is
+	// what broke channel mentions before v0.4.2.
+	IsMention bool
 	// SelfDrive marks an event admitted by the self-drive escape hatch
 	// (a bot-authored message carrying the configured sentinel prefix).
 	// The handler uses it to bypass the *user* allowlist — and nothing
@@ -184,6 +190,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
 			TS:        ev.TimeStamp,
 			Text:      stripMention(ev.Text, c.botUserID),
+			IsMention: true,
 		})
 	case *slackevents.MessageEvent:
 		// Subtype events are always dropped, hatch or no hatch. The
