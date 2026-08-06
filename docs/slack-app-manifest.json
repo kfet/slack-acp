@@ -26,6 +26,9 @@
                 "im:read",
                 "im:write",
                 "users:read"
+            ],
+            "user": [
+                "chat:write"
             ]
         },
         "pkce_enabled": false

@@ -3,11 +3,14 @@ package slackproto
 import (
 	"bytes"
 	"context"
+	"io"
 	"log"
 	"strings"
 	"testing"
 
 	"github.com/slack-go/slack/slackevents"
+
+	"github.com/kfet/slack-acp/internal/journal"
 )
 
 const testSentinel = "!!drive!!"
@@ -514,11 +517,20 @@ func TestSelfDriveContainsButNotPrefix(t *testing.T) {
 
 // captureWarnings redirects the standard logger into buf, returning a
 // restore func. Used to assert on operator-visible output.
+//
+// The ingest journal is diverted to io.Discard for the duration: it
+// shares the standard logger in production (journald wants one stream)
+// but it is a *separate* stream conceptually, and these tests assert
+// on the presence/absence of operator warnings only. Without the
+// diversion every warning assertion would also have to know the
+// journal's line format.
 func captureWarnings(buf *bytes.Buffer) func() {
 	prevOut, prevFlags, prevPrefix := log.Writer(), log.Flags(), log.Prefix()
 	log.SetOutput(buf)
 	log.SetFlags(0)
+	restoreJournal := journal.SetOutput(io.Discard)
 	return func() {
+		restoreJournal()
 		log.SetOutput(prevOut)
 		log.SetFlags(prevFlags)
 		log.SetPrefix(prevPrefix)

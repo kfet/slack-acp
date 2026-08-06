@@ -24,6 +24,8 @@ import (
 	"github.com/slack-go/slack/socketmode"
 
 	kitlog "github.com/kfet/acp-kit/log"
+
+	"github.com/kfet/slack-acp/internal/journal"
 )
 
 // Event is a normalised inbound message the handler cares about.
@@ -166,6 +168,14 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 	}
 	switch ev := api.InnerEvent.Data.(type) {
 	case *slackevents.AppMentionEvent:
+		rec := journal.Record{
+			Stage:    journal.StageProto,
+			Path:     journal.PathAppMention,
+			Channel:  ev.Channel,
+			TS:       ev.TimeStamp,
+			ThreadTS: firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
+			User:     ev.User,
+		}
 		// ABSOLUTE GUARD — app_mention never accepts a bot-authored
 		// event. No exception, ever, and deliberately no conditional
 		// security logic on this path: the self-drive sentinel does
@@ -181,9 +191,13 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		// equivalent — it marks an event that is not an original human
 		// post, which is what SubType screens for on the message path.
 		if ev.BotID != "" || ev.User == c.botUserID || ev.User == "" || ev.Edited != nil {
+			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonBotAuthored
+			journal.Log(rec)
 			kitlog.Debugf("slack: drop bot-authored app_mention in %s ts=%s", ev.Channel, ev.TimeStamp)
 			return
 		}
+		rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonMention
+		journal.Log(rec)
 		c.deliver(ctx, Event{
 			UserID:    ev.User,
 			ChannelID: ev.Channel,
@@ -193,12 +207,25 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			IsMention: true,
 		})
 	case *slackevents.MessageEvent:
+		rec := journal.Record{
+			Stage:    journal.StageProto,
+			Path:     journal.PathMessage,
+			Channel:  ev.Channel,
+			TS:       ev.TimeStamp,
+			ThreadTS: firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
+			User:     ev.User,
+		}
+		if ev.ChannelType == "im" {
+			rec.Path = journal.PathMessageIM
+		}
 		// Subtype events are always dropped, hatch or no hatch. The
 		// relay streams by *editing* its own message, so every
 		// throttled chat.update arrives here as message_changed; if
 		// those reached the hatch, one self-drive reply would
 		// re-trigger on each update. Only original posts are matched.
 		if ev.SubType != "" {
+			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSubType
+			journal.Log(rec)
 			return
 		}
 
@@ -209,6 +236,8 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			// hatch: a sentinel anchored at the start of the message.
 			stripped, ok := c.selfDrive.Accept(text)
 			if !ok {
+				rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSelfDriveNotAccept
+				journal.Log(rec)
 				// Operator-visible, not debug: a sentinel that is
 				// present but not leading is the exact shape of the
 				// hatch "silently doing nothing", and this line is
@@ -222,14 +251,19 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			}
 			// Second layer: never act on a ts we posted ourselves.
 			if c.selfDrive.SeenTS(ev.TimeStamp) {
+				rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSelfPostedTS
+				journal.Log(rec)
 				kitlog.Debugf("slack: drop self-posted ts=%s in %s", ev.TimeStamp, ev.Channel)
 				return
 			}
 			text, selfDrive = stripMention(stripped, c.botUserID), true
+			rec.Path = journal.PathSelfDrive
 		}
 
 		// Forward DMs unconditionally.
 		if ev.ChannelType == "im" {
+			rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonDM
+			journal.Log(rec)
 			c.deliver(ctx, Event{
 				UserID:    ev.User,
 				ChannelID: ev.Channel,
@@ -248,6 +282,8 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		// app_mention twin is already dead, so suppressing here too
 		// would drop a mention+sentinel message on *both* paths.
 		if selfDrive {
+			rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonSelfDrive
+			journal.Log(rec)
 			c.deliver(ctx, Event{
 				UserID:    ev.User,
 				ChannelID: ev.Channel,
@@ -269,7 +305,16 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		// second delivery cancels the first in-flight prompt and
 		// restarts it. app_mention is the canonical path for tagged
 		// messages; message.channels is only for *un-tagged* replies.
-		if ev.ThreadTimeStamp != "" && !mentionsBot(ev.Text, c.botUserID) {
+		switch {
+		case ev.ThreadTimeStamp == "":
+			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonNotThreadReply
+			journal.Log(rec)
+		case mentionsBot(ev.Text, c.botUserID):
+			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonMentionDuplicate
+			journal.Log(rec)
+		default:
+			rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonAmbientThreadReply
+			journal.Log(rec)
 			c.deliver(ctx, Event{
 				UserID:    ev.User,
 				ChannelID: ev.Channel,
