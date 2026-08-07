@@ -11,12 +11,13 @@ All notable changes to this project will be documented in this file.
   PASS/FAIL/SKIP for each inbound path: DM, `app_mention` in a public channel,
   `app_mention` in a private channel, an un-mentioned ambient reply in a known
   thread, an ambient reply in an unknown thread (must be dropped), a
-  bot-authored echo (must be dropped), and the self-drive hatch. Human-authored
-  checks post with a Slack **user token** (`xoxp-`), which is the only way to
-  produce a message Slack considers human — and therefore the only way to
-  exercise the `app_mention` guard, which drops every bot-authored mention with
-  no exception. No production guard is weakened and no test-only ingest
-  affordance was added; without a user token the affected checks report SKIP
+  bot-authored echo (must be dropped), an @-mention introduced by *editing* a
+  message (must be dropped), and the self-drive hatch. Human-authored checks
+  post with a Slack **user token** (`xoxp-`), because a message authored by a
+  person is the only thing that can exercise the `app_mention` guard, which
+  refuses every message the relay itself could have produced (see *Changed*
+  below for how that guard is now split). No test-only ingest affordance was
+  added; without a user token the affected checks report SKIP
   rather than a quiet pass. Each check asserts on **both** the ingest journal
   and the actual Slack thread, and deletes its own messages afterwards. Setup
   and rationale: [docs/self-verification.md](docs/self-verification.md).
