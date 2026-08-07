@@ -53,7 +53,8 @@ All notable changes to this project will be documented in this file.
   message (`app_id`, read from the raw Socket Mode envelope since slack-go does
   not surface it; our own app id is learned at startup via `bots.info`, and if
   that lookup fails the reclassification is inert) and is bounded by a token
-  bucket, `human_author_per_minute`, default 12. Drops are journalled as
+  bucket, `human_author_per_minute`, default 30 (one token per *message*, not
+  per delivered envelope — Slack sends a tagged message twice). Drops are journalled as
   `bot_authored`, `api_authored`, `foreign_app` or `human_author_rate_cap` so
   they are distinguishable at a glance.
 - The self-drive hatch's token bucket moved to `internal/ratelimit` and is now

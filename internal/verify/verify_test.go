@@ -980,3 +980,29 @@ func TestEditedMentionCheckFailsWhenTheEditCannotBeMade(t *testing.T) {
 		t.Fatalf("got %+v", res)
 	}
 }
+
+// TestTerminalRefusalsCoverEveryOutrightRefusal: a reason that means
+// "the relay refused this message outright" but is missing from the
+// set makes the check time out instead of reporting the cause — the
+// exact diagnostic failure that cost an operator a wrong diagnosis.
+// Reasons that co-occur with a successful delivery must stay OUT.
+func TestTerminalRefusalsCoverEveryOutrightRefusal(t *testing.T) {
+	for _, reason := range []string{
+		journal.ReasonBotAuthored, journal.ReasonAPIAuthored,
+		journal.ReasonForeignApp, journal.ReasonHumanAuthorRateCap,
+		journal.ReasonSelfDriveNotAccept, journal.ReasonSelfPostedTS,
+		journal.ReasonSubType,
+	} {
+		if !terminalRefusals[reason] {
+			t.Errorf("%q refuses a message outright and must be terminal", reason)
+		}
+	}
+	// Slack delivers a tagged message as two envelopes; the twin's drop
+	// accompanies a real delivery, so treating it as terminal would
+	// fail a check that is about to pass.
+	for _, reason := range []string{journal.ReasonNotThreadReply, journal.ReasonMentionDuplicate} {
+		if terminalRefusals[reason] {
+			t.Errorf("%q accompanies a successful delivery and must NOT be terminal", reason)
+		}
+	}
+}

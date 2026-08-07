@@ -79,6 +79,10 @@ type Client struct {
 	// humanAuthorRate bounds how often that reclassification may fire.
 	// Nil until Run arms it, and a nil bucket admits nothing.
 	humanAuthorRate *ratelimit.Bucket
+	// chargedMu/chargedKey collapse the TWO envelopes Slack delivers
+	// for one tagged message into a single charge. See charge().
+	chargedMu  sync.Mutex
+	chargedKey string
 	// appID is OUR OWN Slack app id, learned at startup via bots.info.
 	// The reclassification requires the posting app to be this one, so
 	// a third-party app posting as a named user is still refused.
@@ -112,10 +116,12 @@ func WithHumanAuthorRate(perMinute int) Option {
 
 // defaultHumanAuthorPerMinute bounds the reclassification. It is the
 // loop backstop: if every other guard failed, this is what turns a
-// runaway spiral into a handful of wasted prompts and a loud log. The
-// only intended consumer is `slack-acp verify`, which posts a fixed
-// handful of messages per run.
-const defaultHumanAuthorPerMinute = 12
+// runaway spiral into a handful of wasted prompts and a loud log.
+//
+// Sized against the only intended consumer, `slack-acp verify`, which
+// costs about seven tokens per run — a backstop that throttles the
+// legitimate user is a bug, not a safety feature.
+const defaultHumanAuthorPerMinute = 30
 
 // New constructs a Client. botToken is xoxb-, appToken is xapp-.
 func New(botToken, appToken string, h Handler, opts ...Option) (*Client, error) {
@@ -211,6 +217,14 @@ func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 		if !ok {
 			return
 		}
+		// Ack derefs Request; socketmode always sets it for an
+		// EventsAPI event, but a nil here would panic the consume
+		// goroutine and take the relay's whole ingest down. Cheap to
+		// refuse instead.
+		if evt.Request == nil {
+			kitlog.Debugf("slack: events_api envelope with no request; ignoring")
+			return
+		}
 		c.sm.Ack(*evt.Request)
 		// slack-go does not surface app_id on the typed event structs,
 		// but Slack does deliver it — and it is the field that tells
@@ -259,7 +273,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		// AppMentionEvent has no SubType field; Edited is its
 		// equivalent — it marks an event that is not an original human
 		// post, which is what SubType screens for on the message path.
-		if reason := c.refuseAuthor(ev.User, ev.BotID, appID, ev.Edited != nil); reason != "" {
+		if reason := c.refuseAuthor(ev.User, ev.BotID, appID, ev.Channel+"/"+ev.TimeStamp, ev.Edited != nil); reason != "" {
 			rec.Decision, rec.Reason = journal.DecisionDrop, reason
 			journal.Log(rec)
 			kitlog.Debugf("slack: drop %s app_mention in %s ts=%s", reason, ev.Channel, ev.TimeStamp)
@@ -300,7 +314,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 
 		text := ev.Text
 		selfDrive := false
-		if c.refuseAuthor(ev.User, ev.BotID, appID, false) != "" {
+		if c.refuseAuthor(ev.User, ev.BotID, appID, ev.Channel+"/"+ev.TimeStamp, false) != "" {
 			// Not a human post. The ONLY way through is the self-drive
 			// hatch: a sentinel anchored at the start of the message.
 			stripped, ok := c.selfDrive.Accept(text)
@@ -415,7 +429,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 //     the two as identical is what made the app_mention path
 //     untestable. An operator may name specific human user ids to
 //     exempt from this clause and nothing else.
-func (c *Client) refuseAuthor(user, botID, appID string, edited bool) string {
+func (c *Client) refuseAuthor(user, botID, appID, key string, edited bool) string {
 	// CLAUSE 1 — SELF-AUTHORSHIP. Unconditional. Evaluated first.
 	// No config reaches this: not humanAuthors, not the allowlist
 	// (which lives downstream in the handler and therefore cannot run
@@ -450,12 +464,43 @@ func (c *Client) refuseAuthor(user, botID, appID string, edited bool) string {
 		return journal.ReasonForeignApp
 	}
 	// ...and it is rate-capped, as the loop backstop of last resort.
-	if !c.humanAuthorRate.Allow() {
+	if !c.charge(key) {
 		log.Printf("HUMAN-AUTHOR REFUSED (rate cap %d/min exceeded): user=%s — dropping; check for a reply loop",
 			c.humanAuthorPerMinuteOrDefault(), user)
 		return journal.ReasonHumanAuthorRateCap
 	}
 	return ""
+}
+
+// charge consumes one token per MESSAGE, not per envelope.
+//
+// Slack delivers a tagged message twice — once as app_mention, once as
+// message.channels — and both reach refuseAuthor before the duplicate
+// is recognised further down. Charging each would make the configured
+// number mean half what an operator reads it to mean, and it measurably
+// throttled the harness (a cap of 2 admitted one mention, not two).
+//
+// A single-slot memo is enough because the pair arrives back-to-back.
+// It can only ever collapse genuine duplicates: the key includes the
+// Slack-assigned ts, which is unique per message per channel, so two
+// distinct messages can never share one charge. If some other event is
+// interleaved between the pair the memo misses and we charge twice —
+// degrading to the old behaviour, never to something more permissive.
+func (c *Client) charge(key string) bool {
+	c.chargedMu.Lock()
+	if key != "" && key == c.chargedKey {
+		c.chargedMu.Unlock()
+		return true // same message, second envelope: already paid for
+	}
+	c.chargedMu.Unlock()
+
+	if !c.humanAuthorRate.Allow() {
+		return false
+	}
+	c.chargedMu.Lock()
+	c.chargedKey = key
+	c.chargedMu.Unlock()
+	return true
 }
 
 // appIDOf extracts event.app_id from a raw Socket Mode envelope. A

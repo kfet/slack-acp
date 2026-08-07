@@ -94,7 +94,7 @@ The three conditions in clause 2 each close a different hole:
 | --- | --- |
 | author is named | any API post reclassified as human |
 | **`app_id` is ours** | a *third-party* app posting as that user — a workflow or integration the person once installed — being trusted |
-| rate cap (`human_author_per_minute`, default 12) | loop backstop of last resort, mirroring the self-drive hatch |
+| rate cap (`human_author_per_minute`, default 30) | loop backstop of last resort, mirroring the self-drive hatch |
 
 ### Evidence — captured, not remembered
 
@@ -132,6 +132,11 @@ So a message authored by a human, posted through an app, is **indistinguishable
 by `bot_id` alone** from one posted by a robot. That is the entire reason
 clause 2 exists. Without `human_author_user_ids` the `app_mention` path cannot
 be exercised by any automated means at all.
+
+One token is charged per **message**, not per delivered envelope: Slack sends a
+tagged message twice (`app_mention` + `message.channels`) and both reach the
+guard, so charging each would make the configured number mean half what it
+reads as. A `slack-acp verify` run costs about seven tokens.
 
 **Why `app_id` and not `bot_id`.** Measured on the same workspace: an app's
 user-token surface gets its **own** `bot_id`, distinct from its bot-token
