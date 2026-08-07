@@ -597,7 +597,7 @@ func TestRunFailsClosedWhenBotsInfoFails(t *testing.T) {
 	if c.appID != "" {
 		t.Fatalf("app id must stay empty: %q", c.appID)
 	}
-	if got := c.refuseAuthor("U9EA2KLTH", "B1", "A0OURAPP", false); got != journal.ReasonForeignApp {
+	if got := c.refuseAuthor("U9EA2KLTH", "B1", "A0OURAPP", "C1/1.0", false); got != journal.ReasonForeignApp {
 		t.Fatalf("must refuse with no known app id, got %q", got)
 	}
 }
@@ -631,4 +631,87 @@ func TestSortedKeysIsStable(t *testing.T) {
 	if len(sortedKeys(nil)) != 0 {
 		t.Fatal("nil set must render empty")
 	}
+}
+
+// TestOneTaggedMessageCostsOneToken is the regression test for a
+// backstop that throttled its own legitimate user.
+//
+// Slack delivers a tagged message TWICE — as app_mention and as
+// message.channels — and both reach refuseAuthor before the duplicate
+// is recognised. Charging each made the configured number mean half
+// what an operator reads it to mean: measured, a cap of 2 admitted ONE
+// mention rather than two, so two harness runs inside a minute would
+// fail with a confusing symptom.
+func TestOneTaggedMessageCostsOneToken(t *testing.T) {
+	const human = "U9EA2KLTH"
+	delivered := 0
+	c, err := New("xoxb-x", "xapp-x", handlerFunc(func(context.Context, Event) { delivered++ }),
+		WithHumanAuthors(map[string]struct{}{human: {}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.botUserID = "UBOT"
+	c.appID = ourAppID
+	frozen := time.Now()
+	c.humanAuthorRate = ratelimit.New(2, 2, func() time.Time { return frozen })
+
+	// Two DISTINCT tagged messages, each arriving as both envelopes.
+	for _, ts := range []string{"1.0", "2.0"} {
+		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+			Type: slackevents.CallbackEvent,
+			InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.AppMentionEvent{
+				User: human, BotID: "B1", Channel: "C1", TimeStamp: ts, ThreadTimeStamp: "0.9", Text: "<@UBOT> hi"}},
+		}, ourAppID)
+		c.handleEventsAPI(context.Background(), slackevents.EventsAPIEvent{
+			Type: slackevents.CallbackEvent,
+			InnerEvent: slackevents.EventsAPIInnerEvent{Data: &slackevents.MessageEvent{
+				User: human, BotID: "B1", Channel: "C1", TimeStamp: ts, ThreadTimeStamp: "0.9", Text: "<@UBOT> hi"}},
+		}, ourAppID)
+	}
+
+	if delivered != 2 {
+		t.Fatalf("a cap of 2 must admit 2 tagged messages, got %d — the twin is double-charging", delivered)
+	}
+}
+
+// TestChargeMemoCannotCollapseDistinctMessages: the memo keys on
+// channel+ts, which Slack guarantees unique per message, so it can only
+// ever collapse the two envelopes of ONE message — never grant a second
+// message a free ride.
+func TestChargeMemoCannotCollapseDistinctMessages(t *testing.T) {
+	c := &Client{humanAuthorRate: ratelimit.New(1, 1, nil)}
+	if !c.charge("C1/1.0") {
+		t.Fatal("first message must be charged")
+	}
+	if !c.charge("C1/1.0") {
+		t.Fatal("the same message's second envelope must ride free")
+	}
+	if c.charge("C1/2.0") {
+		t.Fatal("a DISTINCT message must not reuse the memo")
+	}
+	// An empty key never memoises.
+	c2 := &Client{humanAuthorRate: ratelimit.New(2, 2, nil)}
+	if !c2.charge("") || !c2.charge("") {
+		t.Fatal("empty keys must each be charged from the bucket")
+	}
+	if c2.charge("") {
+		t.Fatal("bucket should now be drained")
+	}
+}
+
+// TestDispatchIgnoresEnvelopeWithNoRequest: Ack derefs Request, so a
+// nil there would panic the consume goroutine and take the relay's
+// entire ingest down with it.
+func TestDispatchIgnoresEnvelopeWithNoRequest(t *testing.T) {
+	c, err := New("xoxb-x", "xapp-x", handlerFunc(func(context.Context, Event) {
+		t.Fatal("nothing should be delivered")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.dispatch(context.Background(), socketmode.Event{
+		Type: socketmode.EventTypeEventsAPI,
+		Data: slackevents.EventsAPIEvent{Type: slackevents.CallbackEvent},
+		// Request deliberately nil.
+	})
 }

@@ -415,6 +415,8 @@ func (r *Runner) checkSelfDrive(ctx context.Context) Result {
 var terminalRefusals = map[string]bool{
 	journal.ReasonBotAuthored:        true,
 	journal.ReasonAPIAuthored:        true,
+	journal.ReasonForeignApp:         true,
+	journal.ReasonHumanAuthorRateCap: true,
 	journal.ReasonSelfDriveNotAccept: true,
 	journal.ReasonSelfPostedTS:       true,
 	journal.ReasonSubType:            true,
