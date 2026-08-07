@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-07
+
 ### Added
 
 - **`slack-acp verify` — a self-verification harness.** One command, no
