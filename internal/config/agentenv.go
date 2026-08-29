@@ -4,6 +4,8 @@ import (
 	"io"
 	"os"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/kfet/acp-kit/client"
 )
 
@@ -29,6 +31,14 @@ import (
 // deliberately reclassified as human-authored, so an agent holding it
 // could post as that human and summon ITSELF — a reply → trigger → reply
 // loop, and one the blanket bot_id refusal used to make impossible.
+//
+// When the agent legitimately needs Slack reach beyond the thread it is
+// answering in — read another channel, post elsewhere — the sanctioned
+// path is the relay-hosted `slack` MCP server (internal/slackmcp,
+// config `agent_slack_access`), NOT a token. The relay makes every call
+// itself with its own client, enforces allowed_channel_ids on each one,
+// and logs it. That keeps the capability mediated and revocable; a token
+// would be neither. Do not weaken this scrub.
 var slackSecretEnvNames = []string{
 	"SLACK_BOT_TOKEN",
 	"SLACK_APP_TOKEN",
@@ -64,13 +74,22 @@ var slackSecretEnvNames = []string{
 // stderr is normally os.Stderr; it is a parameter so the assembly is
 // testable without touching process state. Env is left nil so
 // client.Start materialises and scrubs os.Environ() itself.
-func (c *Config) AgentClientConfig(stderr io.Writer) client.Config {
+//
+// mcpFor, when non-nil, supplies the per-session MCP servers advertised
+// to the agent — in practice the single relay-hosted `slack` server (see
+// internal/slackmcp), keyed by the session's cwd. It is nil when
+// agent_slack_access is "off", in which case the agent is offered no MCP
+// server at all. Note this is the ONLY channel by which the agent gains
+// Slack reach: it carries a socket path and a per-session token, never a
+// Slack credential.
+func (c *Config) AgentClientConfig(stderr io.Writer, mcpFor func(cwd string) []acp.McpServer) client.Config {
 	return client.Config{
-		Command:        c.AgentCmd,
-		Cwd:            c.StateDir,
-		SecretEnvNames: slackSecretEnvNames,
-		Secrets:        c.secretValues(),
-		Stderr:         stderr,
+		Command:              c.AgentCmd,
+		Cwd:                  c.StateDir,
+		SecretEnvNames:       slackSecretEnvNames,
+		Secrets:              c.secretValues(),
+		Stderr:               stderr,
+		MCPServersForSession: mcpFor,
 	}
 }
 

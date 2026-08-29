@@ -8,6 +8,8 @@
   "session_idle_timeout_seconds": 0,
   "no_progress_timeout_seconds": 0,
   "prompt_timeout_seconds": 0,
+  "agent_slack_access": "read",
+  "agent_posts_per_minute": 10,
   "model_probe_budget_seconds": 300,
   "system_prompt": "",
   "disable_system_prompt": false,

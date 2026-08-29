@@ -16,8 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/acp-kit/mcphost"
 	"github.com/kfet/distkit"
 	"github.com/kfet/slack-acp/internal/config"
 	"github.com/kfet/slack-acp/internal/dist"
@@ -27,6 +30,7 @@ import (
 	"github.com/kfet/slack-acp/internal/probe"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/skills"
+	"github.com/kfet/slack-acp/internal/slackmcp"
 	"github.com/kfet/slack-acp/internal/slackproto"
 	"github.com/kfet/slack-acp/internal/sysprompt"
 	"github.com/kfet/slack-acp/internal/verify"
@@ -35,6 +39,17 @@ import (
 var version = "dev"
 
 func main() {
+	// The relay re-execs itself as the stdio MCP server the agent
+	// spawns (see internal/slackmcp). This must come before anything
+	// else: in that mode the process is a dumb socket redirector, not a
+	// Slack bot, and must not parse flags, read config, or connect.
+	if handled, err := mcphost.MaybeRunRedir(slackmcp.RedirConfig()); handled {
+		if err != nil {
+			log.Fatalf("%s: %v", slackmcp.Subcommand, err)
+		}
+		return
+	}
+
 	// Subcommand dispatch (must happen before flag.Parse on the main
 	// flagset, since each subcommand has its own flags).
 	if len(os.Args) > 1 {
@@ -132,11 +147,35 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Relay-hosted `slack` MCP server: gives the agent mediated Slack
+	// reach beyond the thread it is answering in, without ever handing
+	// it a token. Created before the agent starts, because the agent's
+	// session/new must already carry the server config; the listener is
+	// opened (and tools registered) once the Slack client exists, which
+	// is still before any session can be created.
+	access := cfg.GetAgentSlackAccess()
+	var mcpHost *mcphost.Host
+	var mcpFor func(cwd string) []acp.McpServer
+	if access != config.AgentSlackAccessOff {
+		h, herr := mcphost.New(slackmcp.HostConfig())
+		if herr != nil {
+			log.Fatalf("slack-mcp: %v", herr)
+		}
+		mcpHost = h
+		defer mcpHost.Close()
+		mcpFor = func(cwd string) []acp.McpServer {
+			// Mint a fresh per-session token bound to this thread. The
+			// session key is derived server-side from the token, never
+			// sent by the agent, so it cannot be spoofed.
+			return mcpHost.ServerConfigForSession(router.SessionKeyForCwd(cwd))
+		}
+	}
+
 	// The agent runs with the relay's environment MINUS the Slack
 	// credentials — see Config.AgentClientConfig, which declares them as
 	// secrets for client.Start to scrub. That assembly lives in internal/
 	// so it stays under the coverage gate.
-	agent, err := client.Start(ctx, cfg.AgentClientConfig(os.Stderr))
+	agent, err := client.Start(ctx, cfg.AgentClientConfig(os.Stderr, mcpFor))
 	if err != nil {
 		log.Fatalf("agent start: %v", err)
 	}
@@ -233,6 +272,26 @@ func main() {
 	}
 	// API client is needed by the handler for posting; wire it now that we have it.
 	h.SetAPI(sc.API())
+
+	// Now that the Slack client exists, register the relay-hosted tools
+	// and open the socket. Must happen before the first ACP session is
+	// created, i.e. before we start serving Slack events.
+	if mcpHost != nil {
+		slackmcp.Register(mcpHost, slackmcp.NewRelay(slackmcp.RelayConfig{
+			API:               sc.API(),
+			AllowedChannelIDs: allowedChannels,
+			SelfDrive:         selfDrive,
+			PostsPerMinute:    cfg.GetAgentPostsPerMinute(),
+			Logf:              log.Printf,
+		}), access == config.AgentSlackAccessReadWrite)
+		if lerr := mcpHost.Listen(); lerr != nil {
+			log.Fatalf("slack-mcp listener: %v", lerr)
+		}
+		log.Printf("slack-acp: agent Slack access %q via MCP server %q on %s",
+			access, slackmcp.ServerName, mcpHost.SocketPath())
+	} else {
+		log.Printf("slack-acp: agent Slack access disabled (agent_slack_access=off)")
+	}
 
 	log.Printf("slack-acp: connecting to Slack…")
 	if err := sc.Run(ctx); err != nil && ctx.Err() == nil {
