@@ -7,6 +7,14 @@ import (
 )
 
 // defaultSelfDrivePerMinute is the hatch's rate cap when unset.
+//
+// The cap is loop guard #3, the backstop. The prefix-anchored sentinel
+// and the outbound scrub are meant to make a reply -> trigger -> reply
+// loop impossible; the cap is what bounds the damage if they ever fail,
+// turning a runaway spiral into at most a handful of wasted prompts and
+// a loud log. It is the reason no recursion-depth counter is needed.
+// The bucket itself is internal/ratelimit, shared with the
+// agent-initiated slack_post cap.
 const defaultSelfDrivePerMinute = 4
 
 // admitSelfDrive applies the rate cap to a hatch event and logs the

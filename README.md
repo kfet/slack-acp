@@ -176,6 +176,35 @@ built-in defaults.
 directory, and agent command without starting the bot — handy
 for verifying what a unit file or env will actually use.
 
+### Agent Slack access
+
+The spawned agent can reach Slack beyond the thread it is answering in —
+read another thread or channel, list the bot's channels, and (opt-in)
+post as the bot — through an MCP server the **relay** hosts. The agent
+never receives a Slack token; every call is made by the relay, checked
+against `allowed_channel_ids`, rate-capped, and logged.
+
+```json
+{
+  "agent_slack_access": "read",
+  "agent_posts_per_minute": 10
+}
+```
+
+| Value | Effect |
+| --- | --- |
+| `off` | No MCP server registered; the agent gets no Slack tools. |
+| `read` *(default)* | `slack_read_thread`, `slack_read_channel`, `slack_list_channels`. Exposes nothing the bot cannot already see. |
+| `read_write` | Adds `slack_post`. Opt-in: ambient thread text can steer the agent into posting elsewhere. |
+
+There is no search tool — Slack's `search.messages` requires a *user*
+token (`xoxp-`), which this process must never hold.
+
+**This adds two bot scopes** (`channels:read`, `groups:read`), so
+existing installs must reinstall the app before `slack_list_channels`
+works. See [`docs/agent-slack-access.md`](docs/agent-slack-access.md)
+for the threat model and the full mitigation list.
+
 ### Self-drive escape hatch (testing only)
 
 > **⚠️ This deliberately reopens the bot-message boundary. Leave
@@ -251,8 +280,10 @@ internal/dist/        release repo, asset naming, restart hint (distkit + instal
 internal/handler/     Slack event → ACP prompt + streaming sink
 internal/initcmd/     `slack-acp init` first-run wizard
 internal/installsvc/  systemd / launchd supervisor unit generator
+internal/ratelimit/   shared token bucket (self-drive hatch + agent posts)
 internal/router/      (channel,thread_ts) → ACP session map + GC
 internal/skills/      embedded skill bundle + fir-style catalog (wraps `acp-kit/skills`)
+internal/slackmcp/    relay-hosted `slack` MCP server (agent-initiated Slack calls)
 internal/slackproto/  Socket Mode client + throttled message streamer
 internal/sysprompt/   Slack-mrkdwn sysprompt composer injected per session
 internal/journal/     stable JSONL ingest-decision records
@@ -262,7 +293,8 @@ docs/                 design notes + Slack app manifest template
 
 Shared ACP primitives live in [`github.com/kfet/acp-kit`](https://github.com/kfet/acp-kit):
 `client` (ACP stdio agent process + permission gates), `log` (debug
-logger), `skills` (skill loader + catalog formatter). The same primitives
+logger), `skills` (skill loader + catalog formatter), `mcphost`
+(self-hosted MCP server + stdio redirector). The same primitives
 back `poe-acp`, so wire-level fixes land once.
 
 See [docs/design.md](docs/design.md) for goals, non-goals, and the

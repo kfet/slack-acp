@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,7 +75,9 @@ func TestManifestGrantsHistoryScopeForEveryChannelType(t *testing.T) {
 	want := []string{
 		"app_mentions:read",
 		"channels:history", // public channels
+		"channels:read",    // slack_list_channels (users.conversations), public
 		"groups:history",   // private channels
+		"groups:read",      // slack_list_channels (users.conversations), private
 		"im:history",       // DMs
 		"im:read",
 		"im:write",
@@ -102,6 +105,31 @@ func TestManifestGrantsUserScopeForSelfVerification(t *testing.T) {
 	m := loadManifest(t)
 	if !contains(m.OAuthConfig.Scopes.User, "chat:write") {
 		t.Error("manifest user scopes missing \"chat:write\" — slack-acp verify cannot post as a human without it")
+	}
+}
+
+// The relay-hosted `slack` MCP server (internal/slackmcp) lets the agent
+// post as the bot in read_write mode. The only thing stopping it posting
+// into a channel nobody invited the bot to is the ABSENCE of
+// chat:write.public — Slack rejects the call. Adding that scope would
+// silently widen the agent's reach to the whole workspace, so pin it out.
+func TestManifestWithholdsChatWritePublic(t *testing.T) {
+	m := loadManifest(t)
+	if contains(m.OAuthConfig.Scopes.Bot, "chat:write.public") {
+		t.Error("chat:write.public must stay OFF — bot-membership is what bounds agent-initiated posts")
+	}
+	// Same reasoning for search: search:read is user-token-only, and the
+	// BOT token — the only credential internal/slackmcp's Slack client
+	// ever holds — cannot carry it. (`slack-acp verify` does use an
+	// xoxp- user token, but it is read straight from the environment by
+	// the verify subcommand and is never handed to the relay's client,
+	// nor to the agent: see internal/config/agentenv.go, which scrubs
+	// SLACK_USER_TOKEN from the agent's environment by name and by
+	// value.)
+	for _, s := range m.OAuthConfig.Scopes.Bot {
+		if strings.HasPrefix(s, "search:") {
+			t.Errorf("search scope %q requires a user token (xoxp-); the bot token must not carry one", s)
+		}
 	}
 }
 

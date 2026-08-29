@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Agent Slack access via a relay-hosted MCP server** (`internal/slackmcp`).
+  The spawned ACP agent can now read other threads and channels, list the
+  bot's channels, and — opt-in — post as the bot, *without ever seeing a
+  Slack token*. Every call is made by the relay with its own client, checked
+  against `allowed_channel_ids`, rate-capped, and logged with the calling
+  session key. New config key `agent_slack_access` (`off` | `read` |
+  `read_write`, default `read`) plus `agent_posts_per_minute` (default 10).
+  Transport is `acp-kit/mcphost`, the same machinery behind poe-acp's `poe`
+  server; the relay re-execs itself as the stdio redirector via a new
+  `mcp-serve` subcommand. No search tool: `search.messages` requires a user
+  token. See [`docs/agent-slack-access.md`](docs/agent-slack-access.md).
+- **`channels:read` and `groups:read` bot scopes** in the app manifest, needed
+  by `slack_list_channels`. **Existing installs must reinstall the app** for
+  the new scopes to take effect.
 ## [0.8.2] - 2026-09-18
 
 ### Changed

@@ -336,3 +336,50 @@ func TestValidateRejectsNegativeHumanAuthorPerMinute(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// agent_slack_access is a typo-prone enum, and a typo must not silently
+// fall back to a default — the operator would get a different security
+// posture than the one they wrote down.
+func TestValidateAgentSlackAccess(t *testing.T) {
+	for _, v := range []string{"", AgentSlackAccessOff, AgentSlackAccessRead, AgentSlackAccessReadWrite} {
+		c := &Config{AgentSlackAccess: v}
+		if err := c.Validate(); err != nil {
+			t.Errorf("agent_slack_access %q rejected: %v", v, err)
+		}
+	}
+	c := &Config{AgentSlackAccess: "readwrite"}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("typo accepted")
+	}
+	// The error must list the legal values; an operator has no other
+	// place to look.
+	for _, want := range []string{"off", "read", "read_write", "readwrite"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestGetAgentSlackAccessDefaultsToRead(t *testing.T) {
+	// Read is the default because it exposes nothing the bot cannot
+	// already see, and no secret leaves the relay.
+	if got := (&Config{}).GetAgentSlackAccess(); got != AgentSlackAccessRead {
+		t.Fatalf("default = %q, want %q", got, AgentSlackAccessRead)
+	}
+	if got := (&Config{AgentSlackAccess: "off"}).GetAgentSlackAccess(); got != "off" {
+		t.Fatalf("explicit off = %q", got)
+	}
+}
+
+func TestAgentPostsPerMinute(t *testing.T) {
+	if got := (&Config{}).GetAgentPostsPerMinute(); got != 10 {
+		t.Fatalf("default = %d, want 10", got)
+	}
+	if got := (&Config{AgentPostsPerMinute: 3}).GetAgentPostsPerMinute(); got != 3 {
+		t.Fatalf("configured = %d, want 3", got)
+	}
+	if err := (&Config{AgentPostsPerMinute: -1}).Validate(); err == nil {
+		t.Fatal("negative agent_posts_per_minute accepted")
+	}
+}

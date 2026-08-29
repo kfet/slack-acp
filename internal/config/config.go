@@ -98,6 +98,30 @@ type Config struct {
 	// SelfDriveSentinel is set. Default 4.
 	SelfDrivePerMinute int `json:"self_drive_per_minute,omitempty"`
 
+	// AgentSlackAccess controls the relay-hosted `slack` MCP server that
+	// gives the spawned agent mediated, token-free Slack reach beyond the
+	// thread it is answering in. One of:
+	//
+	//   "off"        — no MCP server is registered at all.
+	//   "read"       — read tools only (default). The agent can read
+	//                  threads/channels the bot is already in, and list
+	//                  them. Nothing is exposed that the bot cannot
+	//                  already see, and no secret leaves the relay.
+	//   "read_write" — additionally exposes slack_post, letting the agent
+	//                  post as the bot into another channel or thread.
+	//                  Opt-in, because ambient thread text can steer the
+	//                  agent into posting elsewhere.
+	//
+	// The agent NEVER receives the Slack tokens in any mode — see
+	// agentenv.go. All calls are made by the relay process, and
+	// AllowedChannelIDs is enforced on every one of them.
+	AgentSlackAccess string `json:"agent_slack_access,omitempty"`
+
+	// AgentPostsPerMinute caps how many slack_post calls the relay will
+	// make on the agent's behalf per minute, across all sessions. Only
+	// meaningful when AgentSlackAccess is "read_write". Default 10.
+	AgentPostsPerMinute int `json:"agent_posts_per_minute,omitempty"`
+
 	// ModelProbeBudgetSeconds bounds the total time the startup model
 	// probe may spend retrying a not-yet-ready agent. Agents that block
 	// on external readiness (e.g. `fir --mode acp --wait-mcp` waiting
@@ -171,6 +195,15 @@ func (c *Config) Validate() error {
 	if c.ModelProbeBudgetSeconds < 0 {
 		return fmt.Errorf("model_probe_budget_seconds must be >= 0")
 	}
+	if c.AgentPostsPerMinute < 0 {
+		return fmt.Errorf("agent_posts_per_minute must be >= 0 (0 or omitted uses the default of %d)", defaultAgentPostsPerMinute)
+	}
+	switch c.AgentSlackAccess {
+	case "", AgentSlackAccessOff, AgentSlackAccessRead, AgentSlackAccessReadWrite:
+	default:
+		return fmt.Errorf("agent_slack_access must be one of %q, %q or %q (got %q)",
+			AgentSlackAccessOff, AgentSlackAccessRead, AgentSlackAccessReadWrite, c.AgentSlackAccess)
+	}
 	if c.SelfDriveSentinel != "" {
 		// Short tokens are the dangerous case: the hatch reopens the
 		// bot-message boundary, so an accidental or guessable prefix
@@ -212,6 +245,34 @@ func (c *Config) Validate() error {
 
 // minSelfDriveSentinel is the shortest accepted self-drive token.
 const minSelfDriveSentinel = 8
+
+// Accepted values for Config.AgentSlackAccess. See the field docs.
+const (
+	AgentSlackAccessOff       = "off"
+	AgentSlackAccessRead      = "read"
+	AgentSlackAccessReadWrite = "read_write"
+)
+
+// defaultAgentPostsPerMinute is the default slack_post rate cap.
+const defaultAgentPostsPerMinute = 10
+
+// GetAgentSlackAccess returns the configured agent Slack access mode,
+// defaulting to "read" when unset.
+func (c *Config) GetAgentSlackAccess() string {
+	if c.AgentSlackAccess == "" {
+		return AgentSlackAccessRead
+	}
+	return c.AgentSlackAccess
+}
+
+// GetAgentPostsPerMinute returns the configured slack_post rate cap or
+// the default.
+func (c *Config) GetAgentPostsPerMinute() int {
+	if c.AgentPostsPerMinute <= 0 {
+		return defaultAgentPostsPerMinute
+	}
+	return c.AgentPostsPerMinute
+}
 
 // GetSelfDrivePerMinute returns the configured hatch rate cap or the
 // default.

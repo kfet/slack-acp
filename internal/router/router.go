@@ -254,6 +254,20 @@ func (r *Router) cwdFor(key ConvKey) (string, error) {
 	return filepath.Join(r.stateDir, rel), nil
 }
 
+// SessionKeyForCwd maps a per-thread working directory
+// (<StateDir>/threads/<channel>/<thread_ts>) back to the "channel/ts"
+// key used to identify the conversation in MCP tool-call logs. It
+// matches router.ConvKey.String() so the two are greppable together.
+//
+// The key is bound server-side from the connection token by mcphost, so
+// this value is what the tools see as the caller's identity; it is never
+// supplied by the agent and cannot be spoofed.
+func SessionKeyForCwd(cwd string) string {
+	thread := filepath.Base(cwd)
+	channel := filepath.Base(filepath.Dir(cwd))
+	return channel + "/" + thread
+}
+
 // validateKeyComponent rejects values that could escape or distort the
 // state-dir layout when joined into a path.
 func validateKeyComponent(s string) error {

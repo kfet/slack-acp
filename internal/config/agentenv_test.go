@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/kfet/slack-acp/internal/config"
 )
 
@@ -24,7 +26,11 @@ func TestAgentClientConfigDeclaresCredentials(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 
-	got := c.AgentClientConfig(&stderr)
+	mcpFor := func(string) []acp.McpServer {
+		return []acp.McpServer{{Stdio: &acp.McpServerStdio{Name: "slack", Command: "/bin/slack-acp"}}}
+	}
+
+	got := c.AgentClientConfig(&stderr, mcpFor)
 
 	// Names dropped by variable name.
 	if want := []string{"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_USER_TOKEN"}; !reflect.DeepEqual(got.SecretEnvNames, want) {
@@ -47,6 +53,24 @@ func TestAgentClientConfigDeclaresCredentials(t *testing.T) {
 	if got.Stderr != &stderr {
 		t.Fatalf("Stderr not forwarded")
 	}
+	// The MCP hook is the agent's ONLY sanctioned route to Slack, so it
+	// must actually reach client.Start.
+	if got.MCPServersForSession == nil {
+		t.Fatal("MCPServersForSession not forwarded")
+	}
+	if srv := got.MCPServersForSession("/x"); len(srv) != 1 || srv[0].Stdio.Name != "slack" {
+		t.Fatalf("MCPServersForSession returned %+v", srv)
+	}
+}
+
+// A nil hook (agent_slack_access=off) must stay nil rather than becoming
+// an empty-but-present function: acp-kit treats nil as "advertise no
+// servers".
+func TestAgentClientConfigNilMCPHook(t *testing.T) {
+	c := &config.Config{}
+	if got := c.AgentClientConfig(nil, nil); got.MCPServersForSession != nil {
+		t.Fatal("MCPServersForSession should stay nil when no hook is supplied")
+	}
 }
 
 // The declared secrets must be exactly the two Slack credentials, so a
@@ -57,7 +81,7 @@ func TestAgentClientConfigDeclaresCredentials(t *testing.T) {
 func TestAgentClientConfigDoesNotOverScrub(t *testing.T) {
 	const providerName, providerValue = "ANTHROPIC_API_KEY", "sk-ant-provider-key"
 	c := &config.Config{BotToken: "xoxb-secret", AppToken: "xapp-secret"}
-	got := c.AgentClientConfig(nil)
+	got := c.AgentClientConfig(nil, nil)
 
 	for _, name := range got.SecretEnvNames {
 		if name == providerName {
@@ -93,7 +117,7 @@ func TestAgentClientConfigScrubsTheHarnessUserToken(t *testing.T) {
 	t.Setenv("SLACK_USER_TOKEN", "xoxp-harness-secret")
 	c := &config.Config{AgentCmd: []string{"fir"}, BotToken: "xoxb-s", AppToken: "xapp-s"}
 
-	got := c.AgentClientConfig(&bytes.Buffer{})
+	got := c.AgentClientConfig(&bytes.Buffer{}, nil)
 
 	if !slices.Contains(got.SecretEnvNames, "SLACK_USER_TOKEN") {
 		t.Errorf("SLACK_USER_TOKEN must be scrubbed by name, got %q", got.SecretEnvNames)
@@ -111,7 +135,7 @@ func TestAgentClientConfigNeverDeclaresAnEmptySecret(t *testing.T) {
 	t.Setenv("SLACK_USER_TOKEN", "")
 	c := &config.Config{AgentCmd: []string{"fir"}}
 
-	for _, s := range c.AgentClientConfig(&bytes.Buffer{}).Secrets {
+	for _, s := range c.AgentClientConfig(&bytes.Buffer{}, nil).Secrets {
 		if s == "" {
 			t.Fatal("an empty secret would match every value in the environment")
 		}

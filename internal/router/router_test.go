@@ -888,3 +888,13 @@ func TestLastTSClosedRouter(t *testing.T) {
 type discardSink struct{}
 
 func (discardSink) OnUpdate(context.Context, acp.SessionNotification) error { return nil }
+
+// SessionKeyForCwd must invert cwdFor and match ConvKey.String(), so
+// MCP tool-call logs and router logs can be grepped with the same key.
+func TestSessionKeyForCwd(t *testing.T) {
+	key := ConvKey{ChannelID: "C0123", ThreadTS: "1700000000.000100"}
+	cwd := filepath.Join("/var/lib/slack-acp", "threads", key.ChannelID, key.ThreadTS)
+	if got := SessionKeyForCwd(cwd); got != key.String() {
+		t.Fatalf("SessionKeyForCwd = %q, want %q", got, key.String())
+	}
+}

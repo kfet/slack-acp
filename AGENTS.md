@@ -21,15 +21,17 @@ internal/dist/        release repo, asset naming, restart hint (distkit + instal
 internal/handler/     Slack event → ACP prompt + streaming sink
 internal/initcmd/     `slack-acp init` first-run wizard
 internal/installsvc/  systemd / launchd supervisor unit generator
+internal/ratelimit/   shared token bucket (self-drive hatch + agent posts)
 internal/router/      (channel,thread_ts) → ACP session map + GC
 internal/skills/      embedded skill bundle + fir-style catalog (wraps `acp-kit/skills`)
+internal/slackmcp/    relay-hosted `slack` MCP server (agent-initiated Slack calls)
 internal/slackproto/  Socket Mode client + throttled message streamer
 internal/journal/     stable JSONL ingest-decision records (deliver/run/drop + reason)
 internal/sysprompt/   Slack-mrkdwn sysprompt composer injected per session
 internal/verify/      `slack-acp verify` self-verification harness
 ```
 
-Shared ACP primitives live in [`github.com/kfet/acp-kit`](https://github.com/kfet/acp-kit): `client` (acp.Client wrapper + stdio agent process + permission gates `AllowAll`/`ReadOnly`/`DenyAll`), `log` (debug logger), `skills` (skill loader + catalog formatter). The same primitives back `poe-acp`, so wire-level fixes land once.
+Shared ACP primitives live in [`github.com/kfet/acp-kit`](https://github.com/kfet/acp-kit): `client` (acp.Client wrapper + stdio agent process + permission gates `AllowAll`/`ReadOnly`/`DenyAll`), `log` (debug logger), `skills` (skill loader + catalog formatter), `mcphost` (in-process MCP server on a unix socket + stdio redirector, backing `internal/slackmcp` here and `poemcp` in poe-acp). The same primitives back `poe-acp`, so wire-level fixes land once.
 
 The handler owns `(channel,thread_ts) → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: Slack framing in `slackproto`, agent + ACP via `acp-kit/client`, session lifecycle in `router`, glue in `handler`.
 
