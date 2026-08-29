@@ -29,6 +29,37 @@ const (
 // the same context-protection reason.
 const maxTextRunes = 2000
 
+// slack_search clamps. Search fans out over channels, so every bound
+// here is doing double duty: protecting the agent's context, and keeping
+// one tool call from eating the whole shared read budget.
+const (
+	defaultSearchLimit = 20
+	maxSearchLimit     = 50
+	defaultSearchDays  = 7
+	maxSearchDays      = 30
+	// searchScanPerChannel is how many recent messages are pulled per
+	// channel. One conversations.history page, no paging: a search that
+	// pages is an enumeration walk wearing a hat.
+	searchScanPerChannel = 100
+	// maxSearchChannels bounds the fanout independently of the rate
+	// budget, so the shape of the failure does not depend on how much
+	// budget happened to be left.
+	maxSearchChannels = 50
+	// maxSearchThreadFetches bounds include_threads, which is one extra
+	// Slack call per threaded message.
+	maxSearchThreadFetches = 20
+)
+
+// Truncation reasons reported to the agent. Silent truncation is the
+// thing to avoid here: an agent that believes it searched everything
+// will confidently report a message does not exist.
+const (
+	noteLimit   = "hit the match limit; more matches may exist"
+	noteBudget  = "the shared Slack read budget ran out mid-scan; results are partial"
+	noteFanout  = "too many channels to scan in one call; narrow with `channel`"
+	noteThreads = "thread-reply scan hit its per-call cap; some replies were not scanned"
+)
+
 // defaultPostsPerMinute is the slack_post rate cap when unset. Mirrors
 // config.defaultAgentPostsPerMinute; the relay is constructed from
 // config, which resolves the default before we see it, so this is the
@@ -198,8 +229,21 @@ func (r *Relay) ReadChannel(ctx context.Context, sessionKey, channel string, lim
 // with the allowlist when one is configured — the agent must not even
 // learn the IDs of channels it may not read.
 func (r *Relay) ListChannels(ctx context.Context, sessionKey string) (string, error) {
-	if err := r.admitRead(ToolListChannels, sessionKey, ""); err != nil {
+	out, err := r.permittedChannels(ctx, ToolListChannels, sessionKey)
+	if err != nil {
 		return "", err
+	}
+	r.cfg.Logf("slack-mcp: tool=%s session=%s outcome=ok channels=%d", ToolListChannels, sessionKey, len(out))
+	return encode(out)
+}
+
+// permittedChannels lists the bot's channels intersected with the
+// allowlist, spending one read token. Shared by slack_list_channels and
+// by slack_search's fanout so the two can never disagree about what the
+// session may see.
+func (r *Relay) permittedChannels(ctx context.Context, tool, sessionKey string) ([]channelInfo, error) {
+	if err := r.admitRead(tool, sessionKey, ""); err != nil {
+		return nil, err
 	}
 	chans, _, err := r.cfg.API.GetConversationsForUserContext(ctx, &slack.GetConversationsForUserParameters{
 		Types:           []string{"public_channel", "private_channel"},
@@ -207,7 +251,7 @@ func (r *Relay) ListChannels(ctx context.Context, sessionKey string) (string, er
 		Limit:           200,
 	})
 	if err != nil {
-		return "", r.fail(ToolListChannels, sessionKey, "", fmt.Errorf("users.conversations: %w", err))
+		return nil, r.fail(tool, sessionKey, "", fmt.Errorf("users.conversations: %w", err))
 	}
 	out := make([]channelInfo, 0, len(chans))
 	for _, c := range chans {
@@ -216,8 +260,185 @@ func (r *Relay) ListChannels(ctx context.Context, sessionKey string) (string, er
 		}
 		out = append(out, channelInfo{ID: c.ID, Name: c.Name})
 	}
-	r.cfg.Logf("slack-mcp: tool=%s session=%s outcome=ok channels=%d", ToolListChannels, sessionKey, len(out))
-	return encode(out)
+	return out, nil
+}
+
+// searchMatch is one hit: the rendered message plus where it was found.
+// Search spans channels, so unlike the single-channel read tools the
+// result has to say which one each message came from.
+type searchMatch struct {
+	Channel     string `json:"channel"`
+	ChannelName string `json:"channel_name,omitempty"`
+	message
+}
+
+// searchResult is slack_search's envelope. The bookkeeping fields exist
+// so the agent can tell a real "no such message" from "the scan stopped
+// early" — the tool has no index behind it, and an agent that assumes
+// otherwise will report absence as fact.
+type searchResult struct {
+	Query           string        `json:"query"`
+	ChannelsScanned int           `json:"channels_scanned"`
+	ChannelsInScope int           `json:"channels_in_scope"`
+	Oldest          string        `json:"oldest"`
+	Truncated       bool          `json:"truncated"`
+	Note            string        `json:"note,omitempty"`
+	Matches         []searchMatch `json:"matches"`
+}
+
+// Search is a bounded local fanout, not Slack search. It pulls one page
+// of conversations.history from each channel the session may read
+// (exactly the allowlist the read tools enforce — never wider), matches
+// the query substring relay-side, and returns hits with the same
+// hygiene as the read tools.
+//
+// It calls no search.* Slack method and needs no search:read scope, so
+// it introduces no user token. The cost of that choice is that it is a
+// scan: bounded by channel count, page size, a time window, and the
+// shared read budget. Every one of those bounds, when hit, sets
+// `truncated` and a `note` — partial results are always labelled,
+// because a silently truncated search is worse than no search.
+func (r *Relay) Search(ctx context.Context, sessionKey string, p SearchParams) (string, error) {
+	query := strings.TrimSpace(p.Query)
+	if query == "" {
+		return "", r.fail(ToolSearch, sessionKey, p.Channel, errors.New("query is required"))
+	}
+	targets, err := r.searchTargets(ctx, sessionKey, p.Channel)
+	if err != nil {
+		return "", err
+	}
+	limit := clampSearchLimit(p.Limit)
+	oldest := fmt.Sprintf("%d.000000", r.now().Add(-time.Duration(clampSearchDays(p.Days))*24*time.Hour).Unix())
+
+	res := searchResult{Query: query, ChannelsInScope: len(targets), Oldest: oldest, Matches: []searchMatch{}}
+	if len(targets) > maxSearchChannels {
+		targets = targets[:maxSearchChannels]
+		res.truncate(noteFanout)
+	}
+	needle := strings.ToLower(query)
+	threadFetches := 0
+
+	for _, t := range targets {
+		if len(res.Matches) >= limit {
+			res.truncate(noteLimit)
+			break
+		}
+		// One token per channel: a fanout costs N reads, not 1.
+		if !r.reads.Allow() {
+			res.truncate(noteBudget)
+			r.cfg.Logf("slack-mcp: tool=%s session=%s channel=%s outcome=denied err=%s",
+				ToolSearch, sessionKey, t.ID, noteBudget)
+			break
+		}
+		resp, err := r.cfg.API.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{
+			ChannelID: t.ID,
+			Limit:     searchScanPerChannel,
+			Oldest:    oldest,
+		})
+		if err != nil {
+			return "", r.fail(ToolSearch, sessionKey, t.ID, fmt.Errorf("conversations.history: %w", err))
+		}
+		res.ChannelsScanned++
+		pool := resp.Messages
+		if p.IncludeThreads {
+			replies, note, err := r.searchThreads(ctx, sessionKey, t.ID, resp.Messages, &threadFetches)
+			if err != nil {
+				return "", err
+			}
+			pool = append(pool, replies...)
+			if note != "" {
+				res.truncate(note)
+			}
+		}
+		for _, m := range r.matches(ctx, pool, needle) {
+			if len(res.Matches) >= limit {
+				res.truncate(noteLimit)
+				break
+			}
+			res.Matches = append(res.Matches, searchMatch{Channel: t.ID, ChannelName: t.Name, message: m})
+		}
+	}
+	r.cfg.Logf("slack-mcp: tool=%s session=%s channel=%s outcome=ok query=%q channels=%d/%d matches=%d truncated=%v",
+		ToolSearch, sessionKey, p.Channel, truncate(query, 120), res.ChannelsScanned, res.ChannelsInScope,
+		len(res.Matches), res.Truncated)
+	return encode(res)
+}
+
+// truncate marks the result partial with a reason. Later reasons win:
+// the last bound hit is the one that actually stopped the scan.
+func (s *searchResult) truncate(note string) {
+	s.Truncated, s.Note = true, note
+}
+
+// searchTargets resolves the channel set to scan. An explicit channel
+// goes through the same allowlist check as any read; otherwise the scan
+// covers exactly the channels slack_list_channels would disclose.
+func (r *Relay) searchTargets(ctx context.Context, sessionKey, channel string) ([]channelInfo, error) {
+	if channel != "" {
+		if err := r.allowed(ToolSearch, sessionKey, channel); err != nil {
+			return nil, err
+		}
+		return []channelInfo{{ID: channel}}, nil
+	}
+	return r.permittedChannels(ctx, ToolSearch, sessionKey)
+}
+
+// searchThreads pulls replies for the threaded messages in a scanned
+// page, so a match buried in a thread is findable. Each fetch is a read
+// token and counts against a per-call cap; hitting either returns what
+// was gathered plus the note explaining the shortfall.
+func (r *Relay) searchThreads(ctx context.Context, sessionKey, channel string, msgs []slack.Message, fetches *int) ([]slack.Message, string, error) {
+	var out []slack.Message
+	for _, m := range msgs {
+		if m.ReplyCount <= 0 {
+			continue
+		}
+		if *fetches >= maxSearchThreadFetches {
+			return out, noteThreads, nil
+		}
+		if !r.reads.Allow() {
+			return out, noteBudget, nil
+		}
+		*fetches++
+		replies, _, _, err := r.cfg.API.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+			ChannelID: channel,
+			Timestamp: m.Timestamp,
+			Limit:     maxReadLimit,
+			Inclusive: true,
+		})
+		if err != nil {
+			return nil, "", r.fail(ToolSearch, sessionKey, channel, fmt.Errorf("conversations.replies: %w", err))
+		}
+		out = append(out, replies...)
+	}
+	return out, "", nil
+}
+
+// matches filters a scanned pool down to the substring hits and renders
+// them. Deduplicated by ts because conversations.replies repeats the
+// thread parent that conversations.history already returned.
+func (r *Relay) matches(ctx context.Context, msgs []slack.Message, needle string) []message {
+	seen := make(map[string]struct{}, len(msgs))
+	hits := make([]slack.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if _, dup := seen[m.Timestamp]; dup {
+			continue
+		}
+		seen[m.Timestamp] = struct{}{}
+		if !strings.Contains(strings.ToLower(m.Text), needle) {
+			continue
+		}
+		hits = append(hits, m)
+	}
+	return r.render(ctx, hits)
+}
+
+// now is the relay's clock, injected in tests.
+func (r *Relay) now() time.Time {
+	if r.cfg.Now != nil {
+		return r.cfg.Now()
+	}
+	return time.Now()
 }
 
 // Post posts a message as the bot, after four checks: the channel
@@ -360,6 +581,30 @@ func clampLimit(n int) int {
 	}
 	if n > maxReadLimit {
 		return maxReadLimit
+	}
+	return n
+}
+
+// clampSearchLimit and clampSearchDays bound the two agent-supplied
+// search knobs. Same reasoning as clampLimit: the argument arrives from
+// a process steered by attacker-controlled thread text, so the relay,
+// not the agent, decides how far a scan reaches.
+func clampSearchLimit(n int) int {
+	if n <= 0 {
+		return defaultSearchLimit
+	}
+	if n > maxSearchLimit {
+		return maxSearchLimit
+	}
+	return n
+}
+
+func clampSearchDays(n int) int {
+	if n <= 0 {
+		return defaultSearchDays
+	}
+	if n > maxSearchDays {
+		return maxSearchDays
 	}
 	return n
 }

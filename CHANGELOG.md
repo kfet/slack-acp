@@ -15,8 +15,19 @@ All notable changes to this project will be documented in this file.
   `read_write`, default `read`) plus `agent_posts_per_minute` (default 10).
   Transport is `acp-kit/mcphost`, the same machinery behind poe-acp's `poe`
   server; the relay re-execs itself as the stdio redirector via a new
-  `mcp-serve` subcommand. No search tool: `search.messages` requires a user
-  token. See [`docs/agent-slack-access.md`](docs/agent-slack-access.md).
+  `mcp-serve` subcommand. See
+  [`docs/agent-slack-access.md`](docs/agent-slack-access.md).
+- **`slack_search` MCP tool** — a *bounded local fanout*, not Slack search.
+  The relay pulls one `conversations.history` page from each channel the
+  session may read (exactly `allowed_channel_ids`, never wider), inside a
+  day window (default 7, max 30), and matches the substring itself; it calls
+  no `search.*` method and adds no scope. Optional `include_threads` also
+  scans thread replies. Every channel scanned and thread fetched spends one
+  token from the shared 60/min read budget, and every bound hit — match
+  limit, budget exhaustion, channel cap, thread cap — comes back as
+  `truncated` plus a `note`, never a silently short answer.
+- `BACKLOG.md`, recording the user-token (`xoxp-`) real-search variant and
+  the allowlist-on-results requirement that blocks it.
 - **`channels:read` and `groups:read` bot scopes** in the app manifest, needed
   by `slack_list_channels`. **Existing installs must reinstall the app** for
   the new scopes to take effect.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -22,6 +23,7 @@ type fakeCtrl struct {
 	limit      int
 	oldest     string
 	text       string
+	search     SearchParams
 	called     string
 
 	result string
@@ -40,6 +42,11 @@ func (f *fakeCtrl) ReadChannel(_ context.Context, sessionKey, channel string, li
 
 func (f *fakeCtrl) ListChannels(_ context.Context, sessionKey string) (string, error) {
 	f.called, f.sessionKey = ToolListChannels, sessionKey
+	return f.result, f.err
+}
+
+func (f *fakeCtrl) Search(_ context.Context, sessionKey string, p SearchParams) (string, error) {
+	f.called, f.sessionKey, f.search, f.channel = ToolSearch, sessionKey, p, p.Channel
 	return f.result, f.err
 }
 
@@ -223,7 +230,7 @@ func TestPostToolAbsentWithoutAllowPost(t *testing.T) {
 	for _, tl := range res["tools"].([]any) {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{ToolReadThread, ToolReadChannel, ToolListChannels} {
+	for _, want := range []string{ToolReadThread, ToolReadChannel, ToolListChannels, ToolSearch} {
 		if !names[want] {
 			t.Errorf("read mode is missing %q", want)
 		}
@@ -231,8 +238,8 @@ func TestPostToolAbsentWithoutAllowPost(t *testing.T) {
 	if names[ToolPost] {
 		t.Error("slack_post exposed in read mode")
 	}
-	if len(names) != 3 {
-		t.Errorf("read mode exposes %d tools, want exactly 3: %v", len(names), names)
+	if len(names) != 4 {
+		t.Errorf("read mode exposes %d tools, want exactly 4: %v", len(names), names)
 	}
 }
 
@@ -264,15 +271,74 @@ func TestPostToolValidation(t *testing.T) {
 	}
 }
 
-// There is no search tool, and there must not be one: Slack's
-// search.messages accepts only user tokens (xoxp-), which this process
-// must never hold. Pin it so nobody adds one without revisiting that.
-func TestNoSearchTool(t *testing.T) {
-	h, tok := liveHost(t, &fakeCtrl{}, true)
+// slack_search exists, but it must never become Slack search. The
+// invariant is about the API SURFACE, not the tool name: the relay's
+// Slack client interface carries no search method, so no code path in
+// this package can reach search.messages / search.all / search.files —
+// and the app therefore still needs no user token and no search:read
+// scope. Adding such a method is the thing that must trip this test.
+func TestSearchToolCallsNoSearchAPI(t *testing.T) {
+	h, tok := liveHost(t, &fakeCtrl{result: "{}"}, true)
 	res := rpc(t, h, tok, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	found := false
 	for _, tl := range res["tools"].([]any) {
-		if name := tl.(map[string]any)["name"].(string); strings.Contains(name, "search") {
-			t.Fatalf("search tool %q would require a user token", name)
+		if tl.(map[string]any)["name"].(string) == ToolSearch {
+			found = true
 		}
 	}
+	if !found {
+		t.Fatalf("%s is not registered", ToolSearch)
+	}
+	api := reflect.TypeOf((*API)(nil)).Elem()
+	for i := range api.NumMethod() {
+		if name := api.Method(i).Name; strings.Contains(name, "Search") {
+			t.Fatalf("API method %q would reach a search.* Slack method, which needs a user token", name)
+		}
+	}
+}
+
+func TestSearchTool(t *testing.T) {
+	ctrl := &fakeCtrl{result: "{}"}
+	h, tok := liveHost(t, ctrl, false)
+	res := callTool(t, h, tok, ToolSearch,
+		`{"query":"deploy","channel":"C9","limit":5,"days":3,"include_threads":true}`)
+	if isErr(res) || ctrl.called != ToolSearch {
+		t.Fatalf("res = %v ctrl = %+v", res, ctrl)
+	}
+	want := SearchParams{Query: "deploy", Channel: "C9", Limit: 5, Days: 3, IncludeThreads: true}
+	if ctrl.search != want {
+		t.Fatalf("params = %+v, want %+v", ctrl.search, want)
+	}
+}
+
+func TestSearchToolValidation(t *testing.T) {
+	h, tok := liveHost(t, &fakeCtrl{}, false)
+	if res := callTool(t, h, tok, ToolSearch, `{}`); !isErr(res) || text(res) != "query is required" {
+		t.Fatalf("res = %v", res)
+	}
+	if res := callTool(t, h, tok, ToolSearch, `{"query":[]}`); !isErr(res) || !strings.HasPrefix(text(res), "invalid params:") {
+		t.Fatalf("res = %v", res)
+	}
+}
+
+// The tool description has to be honest about being a bounded scan: an
+// agent that reads it as "workspace search" will report absence of
+// results as absence of the message.
+func TestSearchToolDescriptionIsHonest(t *testing.T) {
+	h, tok := liveHost(t, &fakeCtrl{}, false)
+	res := rpc(t, h, tok, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	for _, tl := range res["tools"].([]any) {
+		m := tl.(map[string]any)
+		if m["name"].(string) != ToolSearch {
+			continue
+		}
+		desc := m["description"].(string)
+		for _, want := range []string{"not", "index", "Absence of results is NOT evidence of absence"} {
+			if !strings.Contains(strings.ToLower(desc), strings.ToLower(want)) {
+				t.Errorf("description does not mention %q: %s", want, desc)
+			}
+		}
+		return
+	}
+	t.Fatalf("%s not listed", ToolSearch)
 }

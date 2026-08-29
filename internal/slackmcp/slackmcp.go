@@ -18,11 +18,15 @@
 // logs the outcome. See internal/config/agentenv.go and
 // docs/agent-slack-access.md.
 //
-// Deliberately absent: message search. Slack's search.messages (and
+// Search is deliberately NOT Slack search. Slack's search.messages (and
 // search.all / search.files) accept only USER tokens (xoxp-) via the
-// legacy search:read scope; a bot token cannot search a workspace. We do
-// not want a user token anywhere near this process, so there is no
-// search tool.
+// legacy search:read scope; a bot token cannot search a workspace, and
+// we do not want a user token anywhere near this process. slack_search
+// is therefore a bounded LOCAL fanout: conversations.history over the
+// channels this session may already read, filtered relay-side. It calls
+// no search.* method and adds no scope. See BACKLOG.md for the
+// user-token variant and the allowlist-on-results problem that blocks
+// it.
 package slackmcp
 
 import (
@@ -40,6 +44,7 @@ const (
 	ToolReadThread   = "slack_read_thread"
 	ToolReadChannel  = "slack_read_channel"
 	ToolListChannels = "slack_list_channels"
+	ToolSearch       = "slack_search"
 	ToolPost         = "slack_post"
 )
 
@@ -68,6 +73,24 @@ const (
 // inheriting a request context that does not exist.
 const CallTimeout = 30 * time.Second
 
+// SearchParams carries slack_search's arguments. A struct rather than
+// six positional parameters, because the tool is the one call with
+// enough knobs that positional order would be a bug waiting to happen.
+type SearchParams struct {
+	// Query is the case-insensitive substring to look for.
+	Query string
+	// Channel, when set, restricts the scan to that one channel; empty
+	// means every channel the session may read.
+	Channel string
+	// Limit caps returned matches (clamped relay-side).
+	Limit int
+	// Days bounds how far back the scan reaches (clamped relay-side).
+	Days int
+	// IncludeThreads additionally scans replies of threaded messages in
+	// the scanned window, at one extra Slack call per thread.
+	IncludeThreads bool
+}
+
 // Controller is the relay-side implementation the tools drive. Every
 // method receives the sessionKey resolved server-side from the
 // connection token (never client-supplied), so implementations can log
@@ -77,6 +100,7 @@ type Controller interface {
 	ReadThread(ctx context.Context, sessionKey, channel, threadTS string, limit int) (string, error)
 	ReadChannel(ctx context.Context, sessionKey, channel string, limit int, oldest string) (string, error)
 	ListChannels(ctx context.Context, sessionKey string) (string, error)
+	Search(ctx context.Context, sessionKey string, p SearchParams) (string, error)
 	Post(ctx context.Context, sessionKey, channel, threadTS, text string) (string, error)
 }
 
@@ -182,6 +206,53 @@ func Register(h *mcphost.Host, ctrl Controller, allowPost bool) {
 			ctx, cancel := context.WithTimeout(context.Background(), CallTimeout)
 			defer cancel()
 			return ctrl.ListChannels(ctx, sessionKey)
+		},
+	)
+
+	h.Tool(ToolSearch,
+		"Search Slack messages by substring. IMPORTANT — this is NOT Slack's workspace search "+
+			"and there is no index behind it: the relay fetches recent history from the channels this "+
+			"bot may read and matches the text locally. It sees only those channels, only the last "+
+			"`days` days, and only a bounded number of messages per channel, so a message you do not "+
+			"find here may still exist. Absence of results is NOT evidence of absence. Narrow with "+
+			"`channel` when you can; results may come back marked `truncated`.",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query":   map[string]any{"type": "string", "description": "Case-insensitive substring to match in message text."},
+				"channel": map[string]any{"type": "string", "description": "Optional channel ID (e.g. C0123ABCD) to restrict the scan to. Default: every channel the bot may read."},
+				"limit":   map[string]any{"type": "integer", "description": "Maximum matches to return (default 20, capped at 50)."},
+				"days":    map[string]any{"type": "integer", "description": "How many days back to scan (default 7, capped at 30)."},
+				"include_threads": map[string]any{
+					"type":        "boolean",
+					"description": "Also scan replies of threaded messages in the window. Costs one extra Slack call per thread and burns the shared read budget faster.",
+				},
+			},
+			"required": []string{"query"},
+		},
+		func(sessionKey string, args json.RawMessage) (string, error) {
+			var a struct {
+				Query          string `json:"query"`
+				Channel        string `json:"channel"`
+				Limit          int    `json:"limit"`
+				Days           int    `json:"days"`
+				IncludeThreads bool   `json:"include_threads"`
+			}
+			if err := decode(args, &a); err != nil {
+				return "", err
+			}
+			if a.Query == "" {
+				return "", errors.New("query is required")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), CallTimeout)
+			defer cancel()
+			return ctrl.Search(ctx, sessionKey, SearchParams{
+				Query:          a.Query,
+				Channel:        a.Channel,
+				Limit:          a.Limit,
+				Days:           a.Days,
+				IncludeThreads: a.IncludeThreads,
+			})
 		},
 	)
 
