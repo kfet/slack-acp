@@ -28,9 +28,16 @@ func renderText(options []slack.MsgOption) string {
 // so no test depends on the network or on timing.
 type fakeAPI struct {
 	replies     []slack.Message
+	repliesByTS map[string][]slack.Message
+	replyCalls  []string
 	repliesErr  error
-	history     []slack.Message
-	historyErr  error
+
+	history          []slack.Message
+	historyByChannel map[string][]slack.Message
+	historyCalls     []string
+	historyOldest    string
+	historyErr       error
+
 	channels    []slack.Channel
 	channelsErr error
 	users       map[string]*slack.User
@@ -45,13 +52,26 @@ type fakeAPI struct {
 	postCalls   int
 }
 
-func (f *fakeAPI) GetConversationRepliesContext(context.Context, *slack.GetConversationRepliesParameters) ([]slack.Message, bool, string, error) {
+func (f *fakeAPI) GetConversationRepliesContext(_ context.Context, p *slack.GetConversationRepliesParameters) ([]slack.Message, bool, string, error) {
+	if p != nil {
+		f.replyCalls = append(f.replyCalls, p.ChannelID+"@"+p.Timestamp)
+		if f.repliesByTS != nil {
+			return f.repliesByTS[p.Timestamp], false, "", f.repliesErr
+		}
+	}
 	return f.replies, false, "", f.repliesErr
 }
 
-func (f *fakeAPI) GetConversationHistoryContext(context.Context, *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
+func (f *fakeAPI) GetConversationHistoryContext(_ context.Context, p *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
 	if f.historyErr != nil {
 		return nil, f.historyErr
+	}
+	if p != nil {
+		f.historyCalls = append(f.historyCalls, p.ChannelID)
+		f.historyOldest = p.Oldest
+		if f.historyByChannel != nil {
+			return &slack.GetConversationHistoryResponse{Messages: f.historyByChannel[p.ChannelID]}, nil
+		}
 	}
 	return &slack.GetConversationHistoryResponse{Messages: f.history}, nil
 }
@@ -455,6 +475,7 @@ func TestReadRateCap(t *testing.T) {
 		ToolReadThread:   func(r *Relay) (string, error) { return r.ReadThread(ctx, "k", "C9", "1.0", 0) },
 		ToolReadChannel:  func(r *Relay) (string, error) { return r.ReadChannel(ctx, "k", "C9", 0, "") },
 		ToolListChannels: func(r *Relay) (string, error) { return r.ListChannels(ctx, "k") },
+		ToolSearch:       func(r *Relay) (string, error) { return r.Search(ctx, "k", SearchParams{Query: "x"}) },
 	} {
 		frozen := time.Unix(0, 0)
 		rr, _ := newRelay(t, &fakeAPI{}, RelayConfig{ReadsPerMinute: 1, Now: func() time.Time { return frozen }})
@@ -549,4 +570,366 @@ func TestEncodePanicsOnUnmarshalableShape(t *testing.T) {
 		}
 	}()
 	_, _ = encode(make(chan int))
+}
+
+// --- slack_search: a bounded local fanout, not Slack search ----------
+
+func searchOut(t *testing.T, s string) searchResult {
+	t.Helper()
+	var out searchResult
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		t.Fatalf("decode search result %q: %v", s, err)
+	}
+	return out
+}
+
+// The happy path: fan out over the bot's channels, match
+// case-insensitively, and say where each hit came from.
+func TestSearchFansOutOverPermittedChannels(t *testing.T) {
+	api := &fakeAPI{
+		channels: []slack.Channel{mkChan("C1", "ops", false), mkChan("C2", "random", false)},
+		historyByChannel: map[string][]slack.Message{
+			"C1": {mkMsg("1.0", "U1", "the DEPLOY is stuck"), mkMsg("1.1", "U1", "unrelated")},
+			"C2": {mkMsg("2.0", "U1", "deploy notes")},
+		},
+		users: map[string]*slack.User{"U1": {Name: "ada"}},
+	}
+	r, cap := newRelay(t, api, RelayConfig{})
+	out, err := r.Search(context.Background(), "C1/9.9", SearchParams{Query: "deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := searchOut(t, out)
+	if res.Truncated || res.ChannelsScanned != 2 || res.ChannelsInScope != 2 {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(res.Matches) != 2 {
+		t.Fatalf("matches = %+v", res.Matches)
+	}
+	if res.Matches[0].Channel != "C1" || res.Matches[0].ChannelName != "ops" || res.Matches[0].User != "ada" {
+		t.Fatalf("match[0] = %+v", res.Matches[0])
+	}
+	if res.Matches[1].Channel != "C2" || res.Matches[1].TS != "2.0" {
+		t.Fatalf("match[1] = %+v", res.Matches[1])
+	}
+	if !strings.Contains(cap.joined(), "tool="+ToolSearch) || !strings.Contains(cap.joined(), "outcome=ok") {
+		t.Fatalf("search not logged: %q", cap.joined())
+	}
+}
+
+// The allowlist is the search scope, exactly as for the read tools —
+// never wider. A channel outside it is neither scanned nor named.
+func TestSearchRespectsAllowlist(t *testing.T) {
+	api := &fakeAPI{
+		channels: []slack.Channel{mkChan("C1", "ops", false), mkChan("C2", "secret", false)},
+		historyByChannel: map[string][]slack.Message{
+			"C1": {mkMsg("1.0", "U1", "hit")},
+			"C2": {mkMsg("2.0", "U1", "hit")},
+		},
+	}
+	r, _ := newRelay(t, api, RelayConfig{AllowedChannelIDs: map[string]struct{}{"C1": {}}})
+	out, err := r.Search(context.Background(), "k", SearchParams{Query: "hit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := searchOut(t, out)
+	if len(res.Matches) != 1 || res.Matches[0].Channel != "C1" {
+		t.Fatalf("matches = %+v", res.Matches)
+	}
+	if len(api.historyCalls) != 1 || api.historyCalls[0] != "C1" {
+		t.Fatalf("history calls = %v, want only C1", api.historyCalls)
+	}
+
+	// An explicit disallowed channel is refused outright.
+	if _, err := r.Search(context.Background(), "k", SearchParams{Query: "hit", Channel: "C2"}); err == nil ||
+		!strings.Contains(err.Error(), "allowed_channel_ids") {
+		t.Fatalf("err = %v, want an allowlist refusal", err)
+	}
+}
+
+// An explicit channel skips the listing call entirely.
+func TestSearchSingleChannel(t *testing.T) {
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": {mkMsg("1.0", "U1", "needle")}}}
+	r, _ := newRelay(t, api, RelayConfig{})
+	out, err := r.Search(context.Background(), "k", SearchParams{Query: "needle", Channel: "C9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := searchOut(t, out)
+	if res.ChannelsInScope != 1 || len(res.Matches) != 1 || res.Matches[0].ChannelName != "" {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// Result hygiene must match the read tools: bot-authored messages are
+// flagged, and bodies are truncated.
+func TestSearchAppliesReadHygiene(t *testing.T) {
+	bot := slack.Message{}
+	bot.Timestamp, bot.Username, bot.BotID, bot.Text = "1.0", "operator", "B1", "needle from a webhook"
+	long := mkMsg("1.1", "U1", "needle "+strings.Repeat("x", maxTextRunes+50))
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": {bot, long}}}
+	r, _ := newRelay(t, api, RelayConfig{})
+	out, err := r.Search(context.Background(), "k", SearchParams{Query: "needle", Channel: "C9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := searchOut(t, out)
+	if len(res.Matches) != 2 {
+		t.Fatalf("matches = %+v", res.Matches)
+	}
+	if !res.Matches[0].IsBot || res.Matches[0].User != "operator" {
+		t.Fatalf("webhook message not flagged is_bot: %+v", res.Matches[0])
+	}
+	if res.Matches[1].IsBot {
+		t.Error("human message flagged is_bot")
+	}
+	if n := len([]rune(res.Matches[1].Text)); n != maxTextRunes+1 {
+		t.Fatalf("body not truncated: %d runes", n)
+	}
+}
+
+// A fanout costs one read token per channel, not one per call. When the
+// shared budget runs out mid-scan the caller gets what was found plus an
+// explicit truncation note — never a silently short answer.
+func TestSearchBudgetExhaustedMidFanout(t *testing.T) {
+	now := time.Unix(0, 0)
+	api := &fakeAPI{
+		channels: []slack.Channel{mkChan("C1", "a", false), mkChan("C2", "b", false), mkChan("C3", "c", false)},
+		historyByChannel: map[string][]slack.Message{
+			"C1": {mkMsg("1.0", "U1", "needle")},
+			"C2": {mkMsg("2.0", "U1", "needle")},
+			"C3": {mkMsg("3.0", "U1", "needle")},
+		},
+	}
+	// 3 tokens: listing + C1 + C2, leaving C3 unscanned.
+	r, cap := newRelay(t, api, RelayConfig{ReadsPerMinute: 3, Now: func() time.Time { return now }})
+	out, err := r.Search(context.Background(), "k", SearchParams{Query: "needle"})
+	if err != nil {
+		t.Fatalf("budget exhaustion must degrade, not fail: %v", err)
+	}
+	res := searchOut(t, out)
+	if !res.Truncated || res.Note != noteBudget {
+		t.Fatalf("res = %+v, want truncated with the budget note", res)
+	}
+	if res.ChannelsScanned != 2 || res.ChannelsInScope != 3 || len(res.Matches) != 2 {
+		t.Fatalf("res = %+v", res)
+	}
+	if !strings.Contains(cap.joined(), "outcome=denied") {
+		t.Fatalf("mid-fanout refusal not logged: %q", cap.joined())
+	}
+}
+
+func TestSearchLimitTruncation(t *testing.T) {
+	ctx := context.Background()
+
+	// Limit reached inside a channel's own hits.
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{
+		"C9": {mkMsg("1.0", "U1", "needle a"), mkMsg("1.1", "U1", "needle b")},
+	}}
+	r, _ := newRelay(t, api, RelayConfig{})
+	out, err := r.Search(ctx, "k", SearchParams{Query: "needle", Channel: "C9", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := searchOut(t, out); !res.Truncated || res.Note != noteLimit || len(res.Matches) != 1 {
+		t.Fatalf("res = %+v", res)
+	}
+
+	// Limit reached before the next channel is even scanned.
+	api2 := &fakeAPI{
+		channels: []slack.Channel{mkChan("C1", "a", false), mkChan("C2", "b", false)},
+		historyByChannel: map[string][]slack.Message{
+			"C1": {mkMsg("1.0", "U1", "needle")},
+			"C2": {mkMsg("2.0", "U1", "needle")},
+		},
+	}
+	r2, _ := newRelay(t, api2, RelayConfig{})
+	out2, err := r2.Search(ctx, "k", SearchParams{Query: "needle", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2 := searchOut(t, out2)
+	if !res2.Truncated || res2.Note != noteLimit || res2.ChannelsScanned != 1 {
+		t.Fatalf("res = %+v", res2)
+	}
+	if len(api2.historyCalls) != 1 {
+		t.Fatalf("scanned %v after the limit was reached", api2.historyCalls)
+	}
+}
+
+// More permitted channels than one call may scan: bounded independently
+// of how much rate budget happened to be left, and reported.
+func TestSearchFanoutCapped(t *testing.T) {
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{}}
+	for i := range maxSearchChannels + 5 {
+		id := fmt.Sprintf("C%03d", i)
+		api.channels = append(api.channels, mkChan(id, id, false))
+	}
+	r, _ := newRelay(t, api, RelayConfig{ReadsPerMinute: 1000})
+	out, err := r.Search(context.Background(), "k", SearchParams{Query: "needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := searchOut(t, out)
+	if !res.Truncated || res.Note != noteFanout || res.ChannelsScanned != maxSearchChannels {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// include_threads reaches replies, deduplicating the thread parent that
+// conversations.history already returned.
+func TestSearchIncludeThreads(t *testing.T) {
+	parent := mkMsg("1.0", "U1", "needle in parent")
+	parent.ReplyCount = 2
+	api := &fakeAPI{
+		historyByChannel: map[string][]slack.Message{"C9": {parent, mkMsg("1.9", "U1", "no thread here")}},
+		repliesByTS: map[string][]slack.Message{
+			"1.0": {parent, mkMsg("1.1", "U2", "needle in reply")},
+		},
+	}
+	r, _ := newRelay(t, api, RelayConfig{})
+	ctx := context.Background()
+
+	out, err := r.Search(ctx, "k", SearchParams{Query: "needle", Channel: "C9", IncludeThreads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := searchOut(t, out)
+	if len(res.Matches) != 2 || res.Matches[0].TS != "1.0" || res.Matches[1].TS != "1.1" {
+		t.Fatalf("matches = %+v", res.Matches)
+	}
+	if len(api.replyCalls) != 1 || api.replyCalls[0] != "C9@1.0" {
+		t.Fatalf("reply calls = %v", api.replyCalls)
+	}
+
+	// Off by default: no reply fetch, so the reply is not found.
+	api.replyCalls = nil
+	out, err = r.Search(ctx, "k", SearchParams{Query: "needle", Channel: "C9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := searchOut(t, out); len(res.Matches) != 1 || len(api.replyCalls) != 0 {
+		t.Fatalf("res = %+v calls = %v", res, api.replyCalls)
+	}
+}
+
+func TestSearchThreadCaps(t *testing.T) {
+	hist := make([]slack.Message, 0, maxSearchThreadFetches+2)
+	replies := map[string][]slack.Message{}
+	for i := range maxSearchThreadFetches + 2 {
+		m := mkMsg(fmt.Sprintf("1.%02d", i), "U1", "parent")
+		m.ReplyCount = 1
+		hist = append(hist, m)
+		replies[m.Timestamp] = []slack.Message{mkMsg(m.Timestamp+"1", "U2", "needle")}
+	}
+	ctx := context.Background()
+
+	// Per-call thread cap.
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": hist}, repliesByTS: replies}
+	r, _ := newRelay(t, api, RelayConfig{ReadsPerMinute: 1000})
+	out, err := r.Search(ctx, "k", SearchParams{Query: "needle", Channel: "C9", Limit: maxSearchLimit, IncludeThreads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := searchOut(t, out); !res.Truncated || res.Note != noteThreads || len(res.Matches) != maxSearchThreadFetches {
+		t.Fatalf("res = %+v", res)
+	}
+
+	// Read budget exhausted inside the thread walk: same partial-plus-note
+	// contract as the channel fanout.
+	frozen := time.Unix(0, 0)
+	api2 := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": hist}, repliesByTS: replies}
+	r2, _ := newRelay(t, api2, RelayConfig{ReadsPerMinute: 3, Now: func() time.Time { return frozen }})
+	out2, err := r2.Search(ctx, "k", SearchParams{Query: "needle", Channel: "C9", IncludeThreads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := searchOut(t, out2); !res.Truncated || res.Note != noteBudget || len(res.Matches) != 2 {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+func TestSearchAPIErrors(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("boom")
+
+	if _, err := mustRelay(t, &fakeAPI{channelsErr: boom}).Search(ctx, "k", SearchParams{Query: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "users.conversations") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := mustRelay(t, &fakeAPI{historyErr: boom}).Search(ctx, "k", SearchParams{Query: "x", Channel: "C9"}); err == nil ||
+		!strings.Contains(err.Error(), "conversations.history") {
+		t.Fatalf("err = %v", err)
+	}
+	threaded := mkMsg("1.0", "U1", "p")
+	threaded.ReplyCount = 1
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": {threaded}}, repliesErr: boom}
+	if _, err := mustRelay(t, api).Search(ctx, "k", SearchParams{Query: "x", Channel: "C9", IncludeThreads: true}); err == nil ||
+		!strings.Contains(err.Error(), "conversations.replies") {
+		t.Fatalf("err = %v", err)
+	}
+	// Empty query is rejected relay-side too, not only at the tool layer.
+	if _, err := mustRelay(t, &fakeAPI{}).Search(ctx, "k", SearchParams{Query: "  "}); err == nil ||
+		!strings.Contains(err.Error(), "query is required") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func mustRelay(t *testing.T, api API) *Relay {
+	t.Helper()
+	r, _ := newRelay(t, api, RelayConfig{})
+	return r
+}
+
+// The time bound is the relay's, not the agent's: `days` is clamped, and
+// an unbounded search cannot walk all history.
+func TestSearchClamps(t *testing.T) {
+	if got := clampSearchLimit(0); got != defaultSearchLimit {
+		t.Errorf("limit 0 → %d", got)
+	}
+	if got := clampSearchLimit(maxSearchLimit + 1); got != maxSearchLimit {
+		t.Errorf("limit over cap → %d", got)
+	}
+	if got := clampSearchLimit(7); got != 7 {
+		t.Errorf("limit 7 → %d", got)
+	}
+	if got := clampSearchDays(0); got != defaultSearchDays {
+		t.Errorf("days 0 → %d", got)
+	}
+	if got := clampSearchDays(maxSearchDays + 1); got != maxSearchDays {
+		t.Errorf("days over cap → %d", got)
+	}
+
+	now := time.Unix(1_000_000, 0)
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": nil}}
+	r, _ := newRelay(t, api, RelayConfig{Now: func() time.Time { return now }})
+	for _, tc := range []struct{ days, want int }{
+		{0, defaultSearchDays}, {3, 3}, {maxSearchDays + 100, maxSearchDays},
+	} {
+		if _, err := r.Search(context.Background(), "k", SearchParams{Query: "x", Channel: "C9", Days: tc.days}); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("%d.000000", now.Add(-time.Duration(tc.want)*24*time.Hour).Unix())
+		if api.historyOldest != want {
+			t.Fatalf("days %d → oldest %s, want %s", tc.days, api.historyOldest, want)
+		}
+	}
+}
+
+// The default clock is the wall clock; nothing else in the package
+// exercises the nil-Now branch of the search window.
+func TestSearchDefaultClock(t *testing.T) {
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": nil}}
+	r, _ := newRelay(t, api, RelayConfig{})
+	if _, err := r.Search(context.Background(), "k", SearchParams{Query: "x", Channel: "C9"}); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := time.Now().Add(-defaultSearchDays * 24 * time.Hour).Unix()
+	var got int64
+	if _, err := fmt.Sscanf(api.historyOldest, "%d.000000", &got); err != nil {
+		t.Fatalf("oldest %q: %v", api.historyOldest, err)
+	}
+	if d := cutoff - got; d < 0 || d > 5 {
+		t.Fatalf("oldest %d is %ds from the expected cutoff %d", got, d, cutoff)
+	}
 }

@@ -61,7 +61,8 @@ the default.
 | Read/post outside the operator's intent | `allowed_channel_ids` enforced on every call; denial names the channel and is logged |
 | Channel-listing as a targeting oracle | Listing is intersected with the allowlist, and reports only `id` + `name` — never `is_private` |
 | Context flooding / channel dump | `limit` clamped to 100 server-side; each message truncated to 2000 runes |
-| Slow-drip history enumeration across many calls | Shared read rate cap (60/min) across all three read tools |
+| Search as an unbounded history walk | `slack_search` scans allowed channels only, one 100-message page each, within a ≤30-day window, ≤50 channels per call — and labels every truncation |
+| Slow-drip history enumeration across many calls | Shared read rate cap (60/min) across all read tools; a `slack_search` fanout spends one token per channel scanned |
 | Impersonation via webhook `username` | Bot-authored messages are flagged `is_bot` in read output |
 | Post into a channel nobody invited the bot to | The app has **no** `chat:write.public` scope, so Slack itself rejects it |
 | `@channel` / `@here` / user-group mass pings | Stripped from posted text in every syntactic form Slack accepts, including the labelled `<!here\|@here>` and `<!subteam^…>` forms |
@@ -91,6 +92,7 @@ Served as MCP server `slack`, spawned by the agent over stdio.
 | `slack_read_thread(channel, thread_ts, limit?)` | `conversations.replies` | read |
 | `slack_read_channel(channel, limit?, oldest?)` | `conversations.history` | read |
 | `slack_list_channels()` | `users.conversations` | read |
+| `slack_search(query, channel?, limit?, days?, include_threads?)` | `conversations.history` (+ `conversations.replies`) fanout | read |
 | `slack_post(channel, thread_ts?, text)` | `chat.postMessage` | read_write |
 
 Read tools return JSON: `ts`, `user` (resolved to a display name
@@ -101,16 +103,51 @@ would double as a workspace enumeration primitive.
 `slack_list_channels` also serves as name→ID resolution, so there is no
 separate lookup tool for that either.
 
-### There is no search tool
+### Search is a bounded local scan, not workspace search
 
+`slack_search` exists, but it is **not** Slack's search. Slack's
 `search.messages` (and `search.all` / `search.files`) accept **user
-tokens only** — the `search:read` scope is user-token-only, and a bot
-token cannot search a workspace. Supporting search would mean adding an
-`xoxp-` user token to this process, which would be a strictly larger
-credential than the bot token we already go out of our way to withhold
-from the agent. **Search is therefore omitted, deliberately.** A
-manifest test pins that no `search:*` scope creeps into the app, and a
-package test pins that no tool with `search` in its name is registered.
+tokens only** — `search:read` cannot be granted to a bot token. Adding
+an `xoxp-` user token would mean holding a strictly larger credential
+than the bot token we already go out of our way to withhold from the
+agent, so that route was declined (see [BACKLOG.md](../BACKLOG.md) for
+what it would take).
+
+Instead the relay fans out `conversations.history` over the channels the
+session may already read and matches the substring itself. Consequences,
+all of them load-bearing:
+
+- **Scope is exactly `allowed_channel_ids`** — the same set
+  `slack_list_channels` discloses and the read tools enforce. Search
+  never widens it. With `channel` set, the ID goes through the ordinary
+  allowlist check first.
+- **No index.** Only the last `days` days (default 7, capped at 30), only
+  one `conversations.history` page (100 messages) per channel, at most 50
+  channels per call. Thread replies are scanned only with
+  `include_threads`, and then at most 20 threads per call.
+- **Rate-budgeted as a fanout.** Each channel scanned, and each thread
+  fetched, spends one token from the shared 60/min read budget — a search
+  costs N reads, not 1. It cannot bypass or silently blow the cap.
+- **Truncation is always explicit.** Every bound above, when hit, sets
+  `truncated: true` and a `note` naming the reason (match limit, read
+  budget exhausted, too many channels, thread cap). Running out of budget
+  mid-fanout returns the partial result plus the note rather than an
+  error — but never a quietly short answer.
+- **Same hygiene as the read tools.** Bot-authored messages are flagged
+  `is_bot` (an attacker-chosen webhook `username` must not read as
+  "operator"), bodies truncate at 2000 runes, user IDs resolve
+  relay-side, and thread parents repeated by `conversations.replies` are
+  deduplicated.
+
+The tool description says all of this to the agent in as many words,
+because the dangerous failure mode is an agent treating "no results" as
+"the message does not exist".
+
+A manifest test still pins that **no `search:*` scope** appears in the
+app — that invariant is unchanged and is the security-relevant one. A
+package test pins the other half: `slack_search` is registered *and* the
+relay's Slack client interface carries no search method, so no code path
+here can reach a `search.*` API.
 
 ## How it works
 
@@ -158,7 +195,7 @@ with `poe-acp`.
 - `agent_posts_per_minute` — global `slack_post` cap. Default 10.
   Only meaningful in `read_write`.
 
-The read cap (60/min, shared across the three read tools) is a constant,
+The read cap (60/min, shared across the read tools) is a constant,
 not a knob — it exists to bound enumeration, and an operator who wants
 more reach should widen `allowed_channel_ids` instead.
 

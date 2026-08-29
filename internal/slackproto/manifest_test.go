@@ -118,14 +118,18 @@ func TestManifestWithholdsChatWritePublic(t *testing.T) {
 	if contains(m.OAuthConfig.Scopes.Bot, "chat:write.public") {
 		t.Error("chat:write.public must stay OFF — bot-membership is what bounds agent-initiated posts")
 	}
-	// Same reasoning for search: search:read is user-token-only, and the
-	// BOT token — the only credential internal/slackmcp's Slack client
-	// ever holds — cannot carry it. (`slack-acp verify` does use an
-	// xoxp- user token, but it is read straight from the environment by
-	// the verify subcommand and is never handed to the relay's client,
-	// nor to the agent: see internal/config/agentenv.go, which scrubs
-	// SLACK_USER_TOKEN from the agent's environment by name and by
-	// value.)
+	// Same reasoning for search, and this pin OUTLIVED the "there is no
+	// search tool" rule: slack_search exists now, but it is a local
+	// fanout over conversations.history and calls no search.* method.
+	// The moment a search:* scope appears here, the BOT token would have
+	// to be swapped for a user token (xoxp-) carrying the OPERATOR's
+	// identity and full visibility — DMs and private channels the bot
+	// was never invited to — and allowed_channel_ids stops bounding what
+	// search can reach. (`slack-acp verify` does use an xoxp- token, but
+	// it is read straight from the environment by the verify subcommand,
+	// never handed to the relay's Slack client nor to the agent: see
+	// internal/config/agentenv.go, which scrubs SLACK_USER_TOKEN by name
+	// and by value.) See BACKLOG.md before ever relaxing this.
 	for _, s := range m.OAuthConfig.Scopes.Bot {
 		if strings.HasPrefix(s, "search:") {
 			t.Errorf("search scope %q requires a user token (xoxp-); the bot token must not carry one", s)
