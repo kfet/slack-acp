@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-31
+
+### Changed
+
+- Release: the Homebrew tap is now pushed over ssh with a write deploy key
+  unique to slack-acp, instead of the shared `HOMEBREW_TAP_TOKEN` PAT. Deploy keys
+  are repo-scoped and never expire; fine-grained PATs are account-wide and
+  cap at a year, so they break silently mid-release. The tap push is now
+  skipped, not failed, when `HOMEBREW_TAP_SSH_KEY` is unset.
+
 ## [0.4.2] - 2026-08-07
 
 ### Added
