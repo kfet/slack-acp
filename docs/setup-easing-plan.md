@@ -22,7 +22,8 @@ the shared `kfet/homebrew-ai` tap.
 
 - [x] `.goreleaser.yaml` — 5 cross-builds, brews block.
 - [x] `.github/workflows/release.yml` — runs on `v*` tag (needs
-      `HOMEBREW_TAP_TOKEN` secret in repo settings before first cut).
+      `HOMEBREW_TAP_SSH_KEY` secret (ssh private key of a write deploy key on
+      kfet/homebrew-ai) in repo settings before first cut).
 - [x] `homebrew/slack-acp.rb.template` — reference copy.
 - [x] `internal/skills/bundle/release/SKILL.md` — drives the new pipeline.
 - [x] README + CHANGELOG.
