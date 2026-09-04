@@ -239,6 +239,47 @@ See `update` skill (`internal/skills/bundle/update/SKILL.md`). Quick reference:
 - [ ] Channel `@mention` smoke test round-trips.
 - [ ] Threaded follow-up reuses the same session (check `state_dir`).
 
+## Finish on the FLEET, not on one host
+
+**A deploy is done when the fleet is converged, not when a host is.** This relay
+is registered in the fleet registry (`poe-acp/bots/slack-two.json`) as a
+**tracked** instance: the registry knows its host, unit and wanted version and
+reports drift, but `converge.sh` will not deploy it — deploying is this repo's
+job, above. Close every release/deploy/update with the read-only sweep:
+
+```bash
+cd ~/src/poe-acp && ./scripts/converge.sh status      # or: ssh miki 'cd ~/src/poe-acp && ./scripts/converge.sh status'
+```
+
+It reports every relay instance on every host — poe-acp, slack-acp and
+zulip-acp — with wanted vs **running** version (read from the live process,
+never the on-disk binary) and drift. Do not say "released" or "deployed" until
+the `slack-two` row is `ok`. Paste the output into your reply.
+
+After a release, also bump this relay's wanted version so the sweep tells the
+truth: `poe-acp/dist.lock` → `.relays["slack-acp"]` (or run
+`poe-acp/scripts/converge.sh --tot`, which re-resolves it from the latest tag),
+and commit that.
+
+Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
+`~/.local/state/poe-acp/notes/fleet/docs/notes/relays.md`).
+
+### Two traps this sweep exists to catch
+
+- **Never infer presence from a binary or a glob.** Every fleet host runs zsh,
+  where `ls ~/.local/bin/*-acp` **aborts the whole command** when it matches
+  nothing — and the empty output reads as "not installed". That is how a live
+  `slack-acp` was declared absent. Ask the supervisor:
+  `systemctl --user list-units --type=service --all --no-legend --plain | awk '$1 ~ /acp/'`
+  or `launchctl list | awk '$3 ~ /acp/'`. Match the unit **name**, not the
+  Description.
+- **A repo can have two live clones and you will release from the stale one.**
+  `git fetch origin`, then `git status -sb` and read *ahead/behind*, before you
+  trust any clone. Release from the clone on the host that RUNS the relay —
+  `kopitwo`. (2026-09-04: a `zulip-acp` release cut from the stale mikiserver
+  clone produced two different v0.14.0s.)
+
+
 ## Multi-bot on one host
 
 Run several Slack apps from one host by giving each its own config dir,
