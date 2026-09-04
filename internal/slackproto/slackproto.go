@@ -798,6 +798,28 @@ func (s *PostStreamer) FirstChunk() {
 	s.lastSent = time.Time{}
 }
 
+// HasContent reports whether the turn has produced any user-visible
+// body text — i.e. whether anything has been Appended into the
+// streamed buffer.
+//
+// It deliberately asks about the BUFFER, not about what has reached
+// Slack. On this surface those differ: Append writes into s.full and
+// only flushes when the ~1s throttle allows, and the abstain path
+// buffers the whole answer inside the sink and flushes it in one go at
+// Finalize. So a complete answer can be sitting in s.full, entirely
+// unsent, at the moment the turn ends — and an answer that is about to
+// be written is an answer. Close flushes unconditionally, so anything
+// in the buffer WILL be posted.
+//
+// The status footer gates on this: a turn that produced nothing has
+// nothing to sign, and the streamer's "_thinking…_" fallback body is
+// not content.
+func (s *PostStreamer) HasContent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.full.Len() > 0
+}
+
 // Append adds text to the buffer and flushes if enough time has elapsed.
 func (s *PostStreamer) Append(ctx context.Context, chunk string) error {
 	if chunk == "" {
@@ -819,7 +841,20 @@ func (s *PostStreamer) Append(ctx context.Context, chunk string) error {
 	return nil
 }
 
-// Close flushes any pending text and optionally appends suffix (e.g. "_done_").
+// Close flushes any pending text and optionally appends suffix (e.g.
+// the "_(stopped: …)_" marker or the italic status footer).
+//
+// The suffix goes into s.full — the streamed buffer — and NOT out as a
+// separate chat.update. That matters on this surface: the relay
+// streams by EDITING one message, so every flush re-posts the whole of
+// s.full and any text that is not in the buffer is erased by the next
+// edit. A suffix written side-band would survive only until something
+// else flushed. Being in the buffer also means the suffix is
+// permanently LAST, which is exactly what an end-of-answer footer
+// needs.
+//
+// Idempotent: a second Close is a no-op, so a suffix can never be
+// appended twice.
 func (s *PostStreamer) Close(ctx context.Context, suffix string) error {
 	s.mu.Lock()
 	if s.closed {

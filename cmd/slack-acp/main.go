@@ -134,9 +134,10 @@ func main() {
 	defer agent.Close()
 	log.Printf("slack-acp %s: agent up (caps=%+v)", version, agent.Caps())
 
-	// Probe the agent for its current model so the status header can
-	// render a provider emoji from the first turn, before any session
-	// has been created to populate the model list as a side effect.
+	// Probe the agent for its current model so the status line can
+	// name the model — provider emoji and short display name — from the
+	// first turn, before any session has been created to populate the
+	// model list as a side effect.
 	//
 	// Two properties matter here, both learned the hard way:
 	//

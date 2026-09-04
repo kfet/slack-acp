@@ -20,9 +20,9 @@
 //
 // Models therefore retries with exponential backoff inside a larger
 // overall budget, so readiness is waited for rather than sampled once.
-// It stays best-effort: the model list only drives a provider emoji in
-// the status header, so exhausting the budget is logged and tolerated,
-// never fatal.
+// It stays best-effort: the model list only drives the model identity
+// segment of the status line, so exhausting the budget is logged and
+// tolerated, never fatal.
 //
 // Retrying is safe because ProbeModels is idempotent — acp-kit returns
 // early once the model list is cached, so a retry that races a

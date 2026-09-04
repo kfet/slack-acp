@@ -509,11 +509,15 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		return err
 	}
 
-	// Resolve provider emoji from the agent's current model. Empty
-	// for unknown providers or when the agent hasn't reported a
-	// model yet (segment is dropped by the renderer).
+	// Resolve the model identity — provider emoji + short display name
+	// — from the agent's current model. Both are empty for unknown
+	// providers or when the agent hasn't reported a model yet (the
+	// segment is then dropped by the renderer).
 	if _, currentID := h.cfg.Router.Agent().Models(); currentID != "" {
-		baseSink.SetProviderEmoji(statusline.ProviderEmojiForModel(currentID))
+		baseSink.SetModelInfo(
+			statusline.ProviderEmojiForModel(currentID),
+			statusline.ShortModelName(currentID),
+		)
 	}
 
 	sess.Mu.Lock()
@@ -567,6 +571,24 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	if stop != "" && stop != acp.StopReasonEndTurn {
 		suffix = fmt.Sprintf("\n_(stopped: %s)_", stop)
 	}
+	// Sign the answer with the status footer, as the very last thing in
+	// the body. This is the ONLY place it is added, and only on the
+	// success path:
+	//
+	//   - error turns are excluded structurally — every error return
+	//     above Closes the stream with an "_error: …_" suffix and never
+	//     reaches here;
+	//   - an abstained turn returned earlier without Closing at all, so
+	//     a suppressed post stays suppressed;
+	//   - a contentless turn is filtered inside maybeAppendFooter,
+	//     which returns "" when nothing was ever buffered.
+	//
+	// It rides in Close's suffix rather than going out as its own
+	// chat.update because on this surface every update re-posts the
+	// whole buffer: an unbuffered footer would be erased by the next
+	// edit, and a mid-turn buffered one would be stranded above later
+	// chunks. Close is idempotent, so it also cannot double-post.
+	suffix += baseSink.maybeAppendFooter()
 	return stream.Close(context.Background(), suffix)
 }
 
@@ -591,7 +613,8 @@ func watchdogWithTick(ctx context.Context, s *slackproto.PostStreamer, tick time
 }
 
 // spinner animates the "Thinking…" placeholder dots and re-renders the
-// status header (mood/plan) as the agent emits _meta updates. Stops
+// live status line (model identity + mood/plan) as the agent emits
+// _meta updates. Stops
 // the moment the placeholder window closes (the sink's first
 // user-visible write calls FirstChunk on the streamer) or ctx is
 // cancelled. 1.5s is comfortably above Slack's ~1s/channel
