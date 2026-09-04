@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-04
+
 ### Changed
 
 - **The status line is now an italic footer under the answer, not a header
