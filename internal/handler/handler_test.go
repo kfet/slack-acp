@@ -281,10 +281,12 @@ func TestHandleDeliversPrompt(t *testing.T) {
 	}
 }
 
-// TestHandleResolvesProviderEmoji verifies that when the agent reports
-// a current model id, the handler resolves the provider emoji and
-// pushes it into the sink so the placeholder/header carries it.
-func TestHandleResolvesProviderEmoji(t *testing.T) {
+// TestHandleResolvesModelIdentity verifies that when the agent reports
+// a current model id, the handler resolves BOTH halves of the model
+// identity — provider emoji and short display name — and pushes them
+// into the sink, so the live spinner and the final footer both name
+// the model.
+func TestHandleResolvesModelIdentity(t *testing.T) {
 	fa := newFakeAgent()
 	fa.currentModel = "anthropic/claude-sonnet-4"
 	r := newTestRouter(t, fa)
@@ -305,10 +307,171 @@ func TestHandleResolvesProviderEmoji(t *testing.T) {
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
 	<-done
 	waitForIdle(t, h)
-	body := strings.Join(fs.bodies, "")
-	if !strings.Contains(body, "🏛️") {
-		t.Fatalf("expected provider emoji in body; got %q", body)
+	// The vendor echo is dropped ("claude-" is what the 🏛️ already
+	// says), so the short name is "sonnet-4", not "claude-sonnet-4".
+	final := lastBody(t, fs)
+	if !strings.HasSuffix(final, "\n\n_🏛️ sonnet-4_") {
+		t.Fatalf("expected model identity footer; got %q", final)
 	}
+}
+
+// TestHandleAppendsStatusFooter drives a whole turn through the
+// handler and pins the rendered shape: the answer, then a blank line,
+// then the status line in Slack italics — with mood/plan that arrived
+// AFTER the first chunk, which is the reason the line is a footer.
+func TestHandleAppendsStatusFooter(t *testing.T) {
+	fa := newFakeAgent()
+	fa.currentModel = "anthropic/claude-opus-4-5-20251001"
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "the answer"}}}},
+		})
+		// Mood/plan land only once the agent is under way — after the
+		// first chunk. A prepended header could never have shown these.
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Meta: map[string]any{
+				statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "2/5"},
+			},
+		})
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
+	waitForIdle(t, h)
+
+	final := lastBody(t, fs)
+	if final != "the answer\n\n_🏛️ opus-4.5 • steady • 2/5_" {
+		t.Fatalf("rendered shape wrong; got %q", final)
+	}
+	if n := strings.Count(final, "opus-4.5"); n != 1 {
+		t.Fatalf("footer must appear exactly once in the posted message; got %d", n)
+	}
+}
+
+// TestHandleNoStatusFooterOnErrorTurn: an error turn is not signed.
+// The handler's error paths Close the stream with an "_error: …_"
+// suffix and never reach the footer, which is what keeps this
+// structural rather than a flag someone can forget to set.
+func TestHandleNoStatusFooterOnErrorTurn(t *testing.T) {
+	fa := newFakeAgent()
+	fa.currentModel = "anthropic/claude-opus-4-5-20251001"
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		// The turn DID produce user-visible content and a full status
+		// before failing — so the content gate cannot be what
+		// suppresses the footer here. Only the error path can.
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "partial answer"}}}},
+		})
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Meta: map[string]any{
+				statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "2/5"},
+			},
+		})
+		return "", errors.New("boom")
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
+	waitForIdle(t, h)
+
+	final := lastBody(t, fs)
+	if !strings.Contains(final, "_error:") {
+		t.Fatalf("expected the error post; got %q", final)
+	}
+	if !strings.Contains(final, "partial answer") {
+		t.Fatalf("partial content must survive the error post; got %q", final)
+	}
+	if strings.Contains(final, "opus-4.5") || strings.Contains(final, "steady") {
+		t.Fatalf("error turn must not carry a status footer; got %q", final)
+	}
+}
+
+// TestHandleStatusFooterFollowsStopSuffix: when a turn stops for a
+// non-end-turn reason the "_(stopped: …)_" marker is part of the
+// answer, and the status footer is appended BELOW it — the footer is
+// always the last thing in the message.
+func TestHandleStatusFooterFollowsStopSuffix(t *testing.T) {
+	fa := newFakeAgent()
+	fa.currentModel = "openai/gpt-5-codex"
+	fa.promptStop = acp.StopReasonMaxTokens
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "partial"}}}},
+		})
+		return acp.StopReasonMaxTokens, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
+	waitForIdle(t, h)
+
+	final := lastBody(t, fs)
+	if final != "partial\n_(stopped: max_tokens)_\n\n_🌐 gpt-5-codex_" {
+		t.Fatalf("footer must come last, below the stop marker; got %q", final)
+	}
+}
+
+// TestHandleNoStatusFooterOnContentlessTurn: the agent produced no
+// user-visible output, so the message is just the "_thinking…_"
+// fallback body — there is no answer to sign.
+func TestHandleNoStatusFooterOnContentlessTurn(t *testing.T) {
+	fa := newFakeAgent()
+	fa.currentModel = "anthropic/claude-opus-4-5-20251001"
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		// Status but no content at all.
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Meta: map[string]any{
+				statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "2/5"},
+			},
+		})
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
+	waitForIdle(t, h)
+
+	if final := lastBody(t, fs); strings.Contains(final, "opus-4.5") {
+		t.Fatalf("contentless turn must not be signed; got %q", final)
+	}
+}
+
+// lastBody returns the text of the most recent Slack write — the one
+// the user is actually left looking at. Asserting on the JOIN of all
+// bodies is not good enough on this surface: the relay EDITS one
+// message, so intermediate bodies are superseded, and spinner frames
+// carry the same model identity as the footer.
+func lastBody(t *testing.T, fs *fakeSlack) string {
+	t.Helper()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.bodies) == 0 {
+		t.Fatal("no Slack writes at all")
+	}
+	return fs.bodies[len(fs.bodies)-1]
 }
 
 func TestHandleAgentError(t *testing.T) {
@@ -353,7 +516,7 @@ func TestHandleRouterCreateError(t *testing.T) {
 	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "..", ThreadTS: "1.0", TS: "1.0", Text: "x"})
 	waitForIdle(t, h)
-	// We expect a Slack error post (the streamer's Close prepends
+	// We expect a Slack error post (the streamer's Close appends
 	// "_error: ..."). However the post may not have been triggered if
 	// PostStreamer isn't usable; the important thing is no panic and
 	// goroutine returns. Just assert the in-flight map drained.
@@ -912,6 +1075,62 @@ func TestAbstainSuppressesPostOnSentinel(t *testing.T) {
 	fs.mu.Unlock()
 	if posts != 0 || updates != 0 {
 		t.Fatalf("abstain must post nothing; got posts=%d updates=%d", posts, updates)
+	}
+}
+
+// TestAbstainDivergedTurnStillSigned is the abstain half of the
+// buffered-answer hazard. On the abstain path NOTHING is written to
+// the streamer while the turn runs — the sink holds every chunk back
+// in case the whole answer turns out to be the silent sentinel — and
+// releases the lot in one go at Finalize, which is just before the
+// turn ends. A footer gated on "has anything reached Slack yet?"
+// would therefore be dropped on every abstain-eligible turn that
+// actually answered. It gates on the streamer's BUFFER instead, which
+// Finalize has filled by then.
+func TestAbstainDivergedTurnStillSigned(t *testing.T) {
+	fa := newFakeAgent()
+	fa.currentModel = "anthropic/claude-opus-4-5-20251001"
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		// A strict prefix of the sentinel — buffered, not forwarded —
+		// followed by divergence. Nothing can be flushed until the
+		// second chunk proves this is a real answer.
+		for _, c := range []string{"<<SIL", "actually, here you go"} {
+			fa.emit(sid, acp.SessionNotification{
+				SessionId: sid,
+				Update:    acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: c}}}},
+			})
+		}
+		fa.emit(sid, acp.SessionNotification{
+			SessionId: sid,
+			Meta: map[string]any{
+				statusline.ExtensionID: map[string]any{"mood": "engaged", "plan": "4/7"},
+			},
+		})
+		return acp.StopReasonEndTurn, nil
+	}
+
+	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second, Ambient: true, SilentSentinel: "<<SILENT>>"})
+	// Summon first so the thread is known, then send the ambient reply
+	// that actually exercises the abstain sink.
+	h.Handle(context.Background(), slackproto.Event{UserID: "U1", BotUserID: "BBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "<@BBOT> hi"})
+	waitForIdle(t, h)
+	fs.mu.Lock()
+	fs.bodies = nil
+	fs.mu.Unlock()
+
+	h.Handle(context.Background(), slackproto.Event{UserID: "U2", BotUserID: "BBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "2.0", Text: "chatter"})
+	waitForIdle(t, h)
+
+	final := lastBody(t, fs)
+	if !strings.Contains(final, "actually, here you go") {
+		t.Fatalf("diverged answer must be posted; got %q", final)
+	}
+	if !strings.HasSuffix(final, "\n\n_🏛️ opus-4.5 • engaged • 4/7_") {
+		t.Fatalf("a released-at-Finalize answer must still be signed; got %q", final)
 	}
 }
 

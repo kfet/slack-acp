@@ -65,8 +65,8 @@ type Agent interface {
 	RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 	// Models returns a snapshot of the agent's last-seen available
 	// models and the current model id ("provider/model"). Empty until
-	// a session has been created. Used by the relay to resolve a
-	// provider emoji for the status header.
+	// a session has been created. Used by the relay to resolve the
+	// provider emoji and short model name for the status line.
 	Models() (models []client.ModelInfo, currentID string)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -111,24 +112,28 @@ func TestSinkToolCallUpdateSuppressed(t *testing.T) {
 
 func TestSinkStatusGetter(t *testing.T) {
 	sink, _ := newSinkAndCapture(t)
-	if got := sink.Status(); got.Mood != "" || got.Plan != "" || got.ProviderEmoji != "" {
+	if got := sink.Status(); got.Mood != "" || got.Plan != "" || got.ProviderEmoji != "" || got.Model != "" {
 		t.Fatalf("expected zero status before any input; got %+v", got)
 	}
-	sink.SetProviderEmoji("🏛️")
+	sink.SetModelInfo("🏛️", "opus-4.5")
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Meta: map[string]any{
 			statusline.ExtensionID: map[string]any{"mood": "curious", "plan": "1/2"},
 		},
 	})
 	got := sink.Status()
-	if got.ProviderEmoji != "🏛️" || got.Mood != "curious" || got.Plan != "1/2" {
-		t.Fatalf("Status() did not reflect parsed meta + emoji; got %+v", got)
+	if got.ProviderEmoji != "🏛️" || got.Model != "opus-4.5" || got.Mood != "curious" || got.Plan != "1/2" {
+		t.Fatalf("Status() did not reflect parsed meta + model info; got %+v", got)
 	}
 }
 
-func TestSinkStatusHeaderPrepended(t *testing.T) {
+// TestSinkStatusFooterAppendedOnce: the status line is APPENDED at the
+// end of the answer, in italics after a blank line — never in front of
+// the body — and Close is the only thing that emits it.
+func TestSinkStatusFooterAppendedOnce(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
-	// Mood/plan arrive before the first text chunk.
+	sink.stream.SetMinInterval(0)
+	sink.SetModelInfo("🏛️", "opus-4.5")
 	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Meta: map[string]any{
 			statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "3/8"},
@@ -136,38 +141,77 @@ func TestSinkStatusHeaderPrepended(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{
-			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
-				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "hello"}},
+	for _, c := range []string{"hello", " world"} {
+		if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+					Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: c}},
+				},
 			},
-		},
-	}); err != nil {
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Mid-turn: no footer anywhere yet.
+	if mid := strings.Join(fs.bodies, ""); strings.Contains(mid, "opus-4.5") {
+		t.Fatalf("footer must not appear before the turn ends; bodies=%q", mid)
+	}
+	if err := sink.stream.Close(context.Background(), sink.maybeAppendFooter()); err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Join(fs.bodies, "")
-	if !strings.Contains(body, "> _steady • 3/8_") {
-		t.Fatalf("expected status header; body=%q", body)
+
+	const want = "\n\n_🏛️ opus-4.5 • steady • 3/8_"
+	final := fs.bodies[len(fs.bodies)-1]
+	if !strings.HasSuffix(final, want) {
+		t.Fatalf("final body must END with the footer; got %q", final)
 	}
-	if !strings.Contains(body, "hello") {
-		t.Fatalf("expected message body; body=%q", body)
+	if n := strings.Count(final, "opus-4.5"); n != 1 {
+		t.Fatalf("footer must appear exactly once in the final body; got %d in %q", n, final)
 	}
-	// Second chunk must NOT prepend the header again.
-	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
-		Update: acp.SessionUpdate{
-			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
-				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: " world"}},
-			},
-		},
-	}); err != nil {
-		t.Fatal(err)
+	if !strings.HasPrefix(final, "hello world") {
+		t.Fatalf("answer body must come first, unadorned; got %q", final)
 	}
-	if n := strings.Count(strings.Join(fs.bodies, ""), "> _steady"); n != 1 {
-		t.Fatalf("header must appear exactly once across all bodies; got %d", n)
+	// A second consideration must yield nothing — idempotent.
+	if again := sink.maybeAppendFooter(); again != "" {
+		t.Fatalf("maybeAppendFooter must be idempotent; second call = %q", again)
 	}
 }
-func TestSinkStatusHeaderEmptyNoOp(t *testing.T) {
+
+// TestSinkStatusFooterUsesLatestSnapshot is the whole point of moving
+// the line to the bottom: mood and plan that arrive AFTER the first
+// chunk still make it into the rendered line. Under the old prepend
+// they could not.
+func TestSinkStatusFooterUsesLatestSnapshot(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
+	sink.stream.SetMinInterval(0)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	// Answer first, status only once the agent is under way.
+	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "answer"}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"mood": "engaged", "plan": "4/7"},
+		},
+	})
+	_ = sink.stream.Close(context.Background(), sink.maybeAppendFooter())
+	final := fs.bodies[len(fs.bodies)-1]
+	if !strings.HasSuffix(final, "\n\n_🏛️ opus-4.5 • engaged • 4/7_") {
+		t.Fatalf("footer must carry the LATEST status; got %q", final)
+	}
+}
+
+// TestSinkStatusFooterEmptyNoOp: no model info and no agent _meta →
+// nothing is appended, not even a stray blank line or empty italics.
+func TestSinkStatusFooterEmptyNoOp(t *testing.T) {
+	sink, fs := newSinkAndCapture(t)
+	sink.stream.SetMinInterval(0)
 	if err := sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
 			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
@@ -177,16 +221,39 @@ func TestSinkStatusHeaderEmptyNoOp(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Join(fs.bodies, "")
-	if strings.Contains(body, "> _") {
-		t.Fatalf("no status → no header; body=%q", body)
+	if got := sink.maybeAppendFooter(); got != "" {
+		t.Fatalf("no status → no footer; got %q", got)
+	}
+	_ = sink.stream.Close(context.Background(), "")
+	final := fs.bodies[len(fs.bodies)-1]
+	if final != "hi" {
+		t.Fatalf("body must be untouched; got %q", final)
 	}
 }
 
-func TestSinkStatusHeaderOnThoughtChunk(t *testing.T) {
-	// First user-visible write is a thought, not a message — header
-	// should still prepend exactly once.
+// TestSinkStatusFooterNotOnContentlessTurn: a turn that produced no
+// user-visible output has nothing to sign. The streamer's "_thinking…_"
+// fallback body is not an answer.
+func TestSinkStatusFooterNotOnContentlessTurn(t *testing.T) {
+	sink, _ := newSinkAndCapture(t)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "2/5"},
+		},
+	})
+	if got := sink.maybeAppendFooter(); got != "" {
+		t.Fatalf("contentless turn must not be signed; got %q", got)
+	}
+}
+
+// TestSinkStatusFooterAfterThoughtOnly: a thought one-liner is
+// user-visible content, so a thought-only turn still gets signed — and
+// the footer lands after it.
+func TestSinkStatusFooterAfterThoughtOnly(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
+	sink.stream.SetMinInterval(0)
+	sink.SetModelInfo("🏛️", "opus-4.5")
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Meta: map[string]any{
 			statusline.ExtensionID: map[string]any{"mood": "curious"},
@@ -199,39 +266,124 @@ func TestSinkStatusHeaderOnThoughtChunk(t *testing.T) {
 			},
 		},
 	})
-	body := strings.Join(fs.bodies, "")
-	if !strings.Contains(body, "> _curious_") {
-		t.Fatalf("expected header on first thought; body=%q", body)
+	_ = sink.stream.Close(context.Background(), sink.maybeAppendFooter())
+	final := fs.bodies[len(fs.bodies)-1]
+	if !strings.HasSuffix(final, "\n\n_🏛️ opus-4.5 • curious_") {
+		t.Fatalf("expected footer after the thought; got %q", final)
+	}
+	if strings.Index(final, "hmm") > strings.Index(final, "opus-4.5") {
+		t.Fatalf("footer must follow the body; got %q", final)
 	}
 }
 
-func TestSinkStatusHeaderOnMessageFirst(t *testing.T) {
+// TestSinkStatusFooterModelOnly is the backwards-compat case: the
+// agent emits no _meta at all, so only the model identity segment
+// survives. The footer is still appended.
+func TestSinkStatusFooterModelOnly(t *testing.T) {
 	sink, fs := newSinkAndCapture(t)
-	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
-		Meta: map[string]any{
-			statusline.ExtensionID: map[string]any{"plan": "1/2"},
-		},
-	})
-	// A Plan update produces no visible chunk (suppressed), so the
-	// status header must land on the first real message chunk instead.
+	sink.stream.SetMinInterval(0)
+	sink.SetModelInfo("🌐", "gpt-5-codex")
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
-			Plan: &acp.SessionUpdatePlan{Entries: []acp.PlanEntry{{Content: "do thing"}}},
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "payload"}},
+			},
+		},
+	})
+	_ = sink.stream.Close(context.Background(), sink.maybeAppendFooter())
+	final := fs.bodies[len(fs.bodies)-1]
+	if !strings.HasSuffix(final, "\n\n_🌐 gpt-5-codex_") {
+		t.Fatalf("model-only footer missing; got %q", final)
+	}
+	// No mood/plan dividers should be present.
+	if strings.Contains(final, "gpt-5-codex • ") {
+		t.Fatalf("unexpected mood/plan segment; got %q", final)
+	}
+}
+
+// TestSinkStatusFooterSurvivesLaterEdits pins THE surface-specific
+// hazard. Slack has no incremental stream: the relay owns one message
+// and every chat.update re-posts the WHOLE accumulated buffer. So a
+// footer written side-band (its own chat.update, or a placeholder
+// frame) would be silently erased by the next edit, and a footer
+// appended mid-turn would be stranded above later chunks.
+//
+// Riding in Close's suffix defeats both: it goes INTO the buffer, so
+// every subsequent re-post replays it, and it is by construction the
+// last thing in that buffer. Close also seals the stream, so the
+// watchdog flush and the spinner's placeholder update can no longer
+// touch the message at all.
+func TestSinkStatusFooterSurvivesLaterEdits(t *testing.T) {
+	sink, fs := newSinkAndCapture(t)
+	sink.stream.SetMinInterval(0)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Meta: map[string]any{
+			statusline.ExtensionID: map[string]any{"mood": "steady", "plan": "2/5"},
 		},
 	})
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
 			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
-				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "answer"}},
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "body text"}},
 			},
 		},
 	})
-	body := strings.Join(fs.bodies, "")
-	if !strings.Contains(body, "> _1/2_") {
-		t.Fatalf("expected header on first message write; body=%q", body)
+	_ = sink.stream.Close(context.Background(), sink.maybeAppendFooter())
+	sealed := fs.bodies[len(fs.bodies)-1]
+	const want = "\n\n_🏛️ opus-4.5 • steady • 2/5_"
+	if !strings.HasSuffix(sealed, want) {
+		t.Fatalf("footer missing from the sealed body; got %q", sealed)
 	}
-	if strings.Contains(body, "do thing") {
-		t.Fatalf("plan entry should be suppressed; body=%q", body)
+
+	// Everything that could still write after the turn ends must now be
+	// inert: a late spinner frame, a watchdog flush, a duplicate Close.
+	alive, err := sink.stream.UpdatePlaceholder(context.Background(),
+		statusline.Spinner(sink.Status(), "..."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alive {
+		t.Fatal("placeholder window must be shut after Close")
+	}
+	if err := sink.stream.FlushIfPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.stream.Close(context.Background(), "\n\n_second footer_"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fs.bodies[len(fs.bodies)-1]; got != sealed {
+		t.Fatalf("post-Close writes must not touch the message; last body %q != sealed %q", got, sealed)
+	}
+	if n := strings.Count(strings.Join(fs.bodies, ""), want); n != 1 {
+		t.Fatalf("footer must have been written exactly once across all bodies; got %d", n)
+	}
+}
+
+// TestSinkStatusFooterCountsBufferedContent: on this surface a whole
+// answer can still be sitting unsent in the streamer's buffer when the
+// turn ends — the throttle skipped every flush, or the abstain sink
+// released it all at once at Finalize. An answer that is about to be
+// written is an answer, so it must still be signed.
+func TestSinkStatusFooterCountsBufferedContent(t *testing.T) {
+	sink, fs := newSinkAndCapture(t)
+	// Throttle wide open: nothing reaches Slack during the turn.
+	sink.stream.SetMinInterval(time.Hour)
+	sink.SetModelInfo("🏛️", "opus-4.5")
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "buffered answer"}},
+			},
+		},
+	})
+	_ = sink.stream.Close(context.Background(), sink.maybeAppendFooter())
+	final := fs.bodies[len(fs.bodies)-1]
+	if !strings.Contains(final, "buffered answer") {
+		t.Fatalf("buffered answer must be flushed by Close; got %q", final)
+	}
+	if !strings.HasSuffix(final, "\n\n_🏛️ opus-4.5_") {
+		t.Fatalf("a buffered-but-unsent answer must still be signed; got %q", final)
 	}
 }
 
@@ -465,9 +617,10 @@ func TestAbstainIgnoresEmptyRender(t *testing.T) {
 // Delegation methods pass through to the wrapped sink.
 func TestAbstainDelegation(t *testing.T) {
 	a, _ := newAbstain(t, "<<SILENT>>")
-	a.SetProviderEmoji("🏛️")
-	if got := a.Status().ProviderEmoji; got != "🏛️" {
-		t.Fatalf("SetProviderEmoji/Status delegation failed; got %q", got)
+	a.SetModelInfo("🏛️", "opus-4.5")
+	st := a.Status()
+	if st.ProviderEmoji != "🏛️" || st.Model != "opus-4.5" {
+		t.Fatalf("SetModelInfo/Status delegation failed; got %+v", st)
 	}
 }
 

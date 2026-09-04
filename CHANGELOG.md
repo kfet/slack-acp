@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The status line is now an italic footer under the answer, not a header
+  above it, and it names the model.** Previously the
+  `dev.acp-kit.status-line/v1` line (`> _mood • plan_`) was prepended to the
+  first user-visible chunk. Mood and plan are agent-supplied and normally
+  arrive *mid-turn*, so a line rendered at the first chunk showed whatever was
+  known before the agent had started thinking — usually nothing. Rendered at
+  the end of the turn it carries the latest snapshot:
+
+      …the agent's reply ends here…
+
+      _🏛️ opus-4.5 • steady • 2/5_
+
+  The model identity is new: the provider emoji and a short display name
+  derived from the effective model id (`anthropic/claude-opus-4-5-20251001` →
+  `opus-4.5`) render as one space-joined segment. The live "Thinking…"
+  indicator keeps its blockquote form and now shows the model too.
+
+  The footer is emitted exactly once, as the last thing in the message body,
+  and only on turns that produced user-visible content. Error turns are not
+  signed. On this surface that placement is load-bearing: the relay streams by
+  *editing* one Slack message, re-posting the whole accumulated buffer on every
+  `chat.update`, so the footer rides in `PostStreamer.Close`'s suffix — text
+  outside that buffer is erased by the next edit, and text appended mid-turn
+  would be stranded above later chunks.
+
+- `acp-kit` bumped v0.4.0 → v0.10.0 for `statusline.Status.Model` and
+  `statusline.ShortModelName`. The intervening releases were additive; the one
+  behavioural change is `statusline.Segments` folding the provider emoji and
+  model name into a single segment.
+
+- The sink's `SetProviderEmoji(emoji)` widened to `SetModelInfo(emoji, model)`
+  rather than gaining a second one-way setter, so the two halves of the model
+  identity can never be set out of step. `maybePrependHeader` is gone, split
+  into an honest `noteFirstChunk` (the load-bearing spinner hand-off it also
+  performed) and `maybeAppendFooter`.
+
 ## [0.4.3] - 2026-08-31
 
 ### Changed

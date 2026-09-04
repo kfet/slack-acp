@@ -537,6 +537,44 @@ func (fs *fakeSlackSrv) client() *slack.Client {
 	return slack.New("xoxb-x", slack.OptionAPIURL(fs.srv.URL+"/"))
 }
 
+// TestPostStreamerHasContent pins the predicate the status footer
+// gates on. It asks about the BUFFER, not about what has reached
+// Slack: on this surface a whole answer can sit in s.full, unsent,
+// because the throttle skipped every flush — and Close will post it
+// regardless. The "_thinking…_" fallback body is not content.
+func TestPostStreamerHasContent(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if s.HasContent() {
+		t.Fatal("a fresh streamer has no content")
+	}
+	// A posted placeholder is chrome, not an answer — Start does not
+	// touch the streamed buffer.
+	if err := s.Start(context.Background(), "> _Thinking…_"); err != nil {
+		t.Fatal(err)
+	}
+	if s.HasContent() {
+		t.Fatal("the placeholder must not count as content")
+	}
+	// An empty Append is a no-op and must not flip the predicate.
+	if err := s.Append(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if s.HasContent() {
+		t.Fatal("an empty append is not content")
+	}
+	// Throttle wide open: this Append is buffered and never sent, but
+	// it is still an answer.
+	s.SetMinInterval(time.Hour)
+	if err := s.Append(context.Background(), "real answer"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasContent() {
+		t.Fatal("buffered-but-unsent text is still content")
+	}
+}
+
 func TestPostStreamerInitialPost(t *testing.T) {
 	fs := newFakeSlackSrv()
 	defer fs.close()

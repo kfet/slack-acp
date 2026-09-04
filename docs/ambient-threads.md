@@ -134,7 +134,7 @@ persona, cost, and reach — not reply rules.** Resist building a rules engine.
 - `model_probe_budget_seconds` (int, default `300`) — how long the startup
   model probe may keep retrying a not-yet-ready agent. The probe opens one
   throwaway ACP session to learn the model list, which only drives the
-  provider emoji in the status header. Agents that block on external
+  model identity (provider emoji + short model name) in the status line. Agents that block on external
   readiness — `fir --mode acp --wait-mcp` waits for every MCP server — can
   take minutes to answer, so the probe retries with exponential backoff
   inside this budget rather than sampling once. It runs in the background:
