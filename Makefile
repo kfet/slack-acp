@@ -93,8 +93,13 @@ _all_parallel: vet test-race coverage build-all check-licenses check-installsh
 # `check-installsh` fails the build when the checked-in script has drifted
 # from the template (a hand edit, or a distkit bump that changed it), so a
 # stale installer can never be published.
+#
+# go.mod is a prerequisite because the template lives in distkit, not here:
+# with only install.sh.json listed, a distkit bump that rewrites the template
+# leaves `make install.sh` reporting "up to date" and regenerating nothing,
+# and the drift is caught later by check-installsh rather than fixed now.
 # ---------------------------------------------------------------------------
-install.sh: install.sh.json
+install.sh: install.sh.json go.mod
 	$(call RUN,generate install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -o $@)
 
 check-installsh:

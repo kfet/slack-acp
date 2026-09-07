@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **`install.sh` no longer accepts a `VERSION` that walks out of the repo.**
+  Bumped [distkit](https://github.com/kfet/distkit) to v0.1.10 and regenerated
+  `install.sh`. The release tag was pasted into two URL paths with no
+  validation, so `VERSION=../../other/repo/releases/download/v1` fetched and
+  installed **another project's binary** — and because `checksums.txt` came
+  from that same traversed location, it verified against itself and printed
+  `checksum ok`. `VERSION` is now checked against a release-tag charset before
+  anything is downloaded, and rejected with a clear message. The tag must
+  also start with an alphanumeric, so a bare `..` — no slash, but still "up
+  one" to any URL normaliser — cannot turn the API's `/releases/tags/<tag>`
+  into the releases *list* endpoint and resolve a release nobody asked for.
+  Relatedly, the anonymous `latest` redirect now captures everything after
+  `/releases/tag/` instead of the last path segment, so a slashed tag stays
+  whole and is rejected rather than being silently truncated to a *different*
+  real tag.
+
+### Fixed
+
+- **`slack-acp update` no longer spends GitHub API quota when anonymous.**
+  v0.6.1 fixed only the shell half; the Go update path still hit the REST API,
+  so on a NAT'd fleet (60 requests/hour *per IP*) it failed with a 403 that
+  reads like a permissions error on a public repo. A pinned tag now needs no
+  lookup, `latest` comes from the `releases/latest` redirect, and assets are
+  named under `/releases/download/<tag>/`. Checksums are still verified and
+  the private-repo token path is unchanged.
+- **`slack-acp update` no longer overwrites a hand-built or hand-deployed
+  binary.** `make deploy` stamps `<version>-dev+<sha>[.dirty]`, which slipped
+  past distkit's dev-build guard because the `-dev` was mid-string — so
+  `update` would rename a release binary over a working-tree build, exactly
+  what the guard exists to prevent. Fixed upstream in distkit v0.1.9 (build
+  metadata is stripped before the check). The rollback path off a deployed
+  build is now explicit rather than accidental: `slack-acp update -version
+  vX.Y.Z` names one release and gets past the guard, and the refusal message
+  says so. Prerelease tags (`-rc1`, `-beta.2`) are real releases and still
+  update.
+
 ## [0.6.1] - 2026-09-07
 
 ### Fixed
