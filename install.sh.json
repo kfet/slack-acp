@@ -1,0 +1,11 @@
+{
+  "repo": "kfet/slack-acp",
+  "binary": "slack-acp",
+  "brew_formula": "kfet/ai/slack-acp",
+  "version_flag": "-version",
+  "example_tag": "v0.5.0",
+  "next_steps": [
+    "slack-acp init             # tokens + config.json + env file",
+    "slack-acp install-service  # systemd-user unit / launchd agent"
+  ]
+}

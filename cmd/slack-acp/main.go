@@ -18,7 +18,9 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/distkit"
 	"github.com/kfet/slack-acp/internal/config"
+	"github.com/kfet/slack-acp/internal/dist"
 	"github.com/kfet/slack-acp/internal/handler"
 	"github.com/kfet/slack-acp/internal/initcmd"
 	"github.com/kfet/slack-acp/internal/installsvc"
@@ -47,6 +49,13 @@ func main() {
 				log.Fatalf("install-service: %v", err)
 			}
 			return
+		case "update":
+			// Self-update: download the latest (or pinned) release,
+			// verify its sha256, and atomically swap the running
+			// binary (ETXTBSY-safe rename). A Homebrew install is
+			// upgraded via brew instead. distkit owns the whole
+			// subcommand, including -check/-version/-repo/-restart-cmd.
+			os.Exit(distkit.Main(dist.Config(version)))
 		case "verify":
 			if err := runVerify(os.Args[2:]); err != nil {
 				log.Fatalf("verify: %v", err)

@@ -412,3 +412,51 @@ func TestXMLEscape(t *testing.T) {
 		t.Errorf("xmlEscape: %q", got)
 	}
 }
+
+func TestDefaultUser(t *testing.T) {
+	t.Setenv("USER", "alice")
+	if got := DefaultUser("/home/ignored"); got != "alice" {
+		t.Errorf("DefaultUser = %q, want alice", got)
+	}
+	// launchd and cron start processes with no $USER; the home tail is the
+	// only thing left that names the operator.
+	t.Setenv("USER", "")
+	if got := DefaultUser("/home/bob"); got != "bob" {
+		t.Errorf("DefaultUser(home) = %q, want bob", got)
+	}
+	// Neither available: a placeholder, never an empty label like "dev..slack-acp".
+	if got := DefaultUser(""); got != "user" {
+		t.Errorf("DefaultUser(\"\") = %q, want user", got)
+	}
+}
+
+func TestDefaultLabel(t *testing.T) {
+	if got := DefaultLabel("bob"); got != "dev.bob.slack-acp" {
+		t.Errorf("DefaultLabel = %q", got)
+	}
+}
+
+// TestRestartHint pins the recycle command per platform. It must name the
+// unit/label the generators above actually write, and must never become a
+// reload: there is no ExecReload and no SIGHUP handler.
+func TestRestartHint(t *testing.T) {
+	linux := RestartHint("linux", "bob")
+	if linux != "systemctl --user restart slack-acp" {
+		t.Errorf("linux hint = %q", linux)
+	}
+	if !strings.Contains(DefaultUnitPath("linux", "/home/bob", ""), "/"+UnitName+".service") {
+		t.Errorf("hint names %q but the unit file does not", UnitName)
+	}
+	darwin := RestartHint("darwin", "bob")
+	if darwin != "launchctl kickstart -k gui/$UID/dev.bob.slack-acp" {
+		t.Errorf("darwin hint = %q", darwin)
+	}
+	if !strings.Contains(DefaultUnitPath("darwin", "/home/bob", DefaultLabel("bob")), "dev.bob.slack-acp.plist") {
+		t.Error("darwin hint label does not match the plist name")
+	}
+	// An unknown GOOS falls back to the Linux form rather than an empty
+	// string: a wrong-but-visible hint beats printing nothing.
+	if RestartHint("freebsd", "bob") != linux {
+		t.Errorf("unknown GOOS hint = %q", RestartHint("freebsd", "bob"))
+	}
+}
