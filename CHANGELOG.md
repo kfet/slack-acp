@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`curl -fsSL … /install.sh | sh` no longer fails on a shared IP address.**
+  Bumped [distkit](https://github.com/kfet/distkit) to v0.1.4 and regenerated
+  `install.sh`. Resolving `latest` went through the GitHub REST API even with
+  no token, and the unauthenticated limit is 60 requests/hour *per IP*, so a
+  NAT'd fleet, a CI runner or a shared office link exhausts it between hosts
+  and every later install aborts with curl's bare `error: 22`. Anonymous
+  installs now resolve `latest` through the `releases/latest` redirect, which
+  costs no API quota; the API remains the fallback when the redirect yields no
+  tag, and the token path for private repos is unchanged. Also picked up: a
+  spent rate limit is no longer misreported as a permissions failure, HTTP
+  failures explain themselves instead of exiting with `error: 22`, and
+  `installsh.Write` chmods `+x` when overwriting a non-executable file.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added
