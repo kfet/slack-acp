@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-07
+
 ### Fixed
 
 - **`curl -fsSL … /install.sh | sh` no longer fails on a shared IP address.**
