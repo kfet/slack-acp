@@ -141,11 +141,46 @@ func Render(opts Options) (string, error) {
 func DefaultUnitPath(goos, home, label string) string {
 	switch goos {
 	case "linux":
-		return filepath.Join(home, ".config", "systemd", "user", "slack-acp.service")
+		return filepath.Join(home, ".config", "systemd", "user", UnitName+".service")
 	case "darwin":
 		return filepath.Join(home, "Library", "LaunchAgents", label+".plist")
 	}
 	return ""
+}
+
+// UnitName is the systemd-user unit name this package writes, and the
+// name an operator passes to systemctl.
+const UnitName = "slack-acp"
+
+// DefaultLabel is the launchd Label (and plist basename) for user.
+func DefaultLabel(user string) string { return "dev." + user + ".slack-acp" }
+
+// DefaultUser resolves the operator's login name the way the unit
+// generators need it: $USER, falling back to the tail of home.
+func DefaultUser(home string) string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if home == "" {
+		return "user"
+	}
+	return filepath.Base(home)
+}
+
+// RestartHint is the command that recycles the installed service on
+// goos — i.e. how an operator makes a freshly swapped binary actually
+// run (see `slack-acp update`, internal/dist).
+//
+// It is a *restart*, not a reload, on both platforms and deliberately
+// so: the systemd unit renderSystemd writes has no ExecReload, and the
+// process installs no SIGHUP handler, so there is nothing to reload.
+// In-flight prompts are dropped; the per-thread cwds under the state
+// dir survive, so threads resume.
+func RestartHint(goos, user string) string {
+	if goos == "darwin" {
+		return "launchctl kickstart -k gui/$UID/" + DefaultLabel(user)
+	}
+	return "systemctl --user restart " + UnitName
 }
 
 // osExecutable is overridable for tests; in production it always
@@ -167,14 +202,10 @@ func fillDefaults(opts *Options) error {
 		opts.Home = h
 	}
 	if opts.User == "" {
-		opts.User = os.Getenv("USER")
-		if opts.User == "" {
-			// Last-resort fallback: derive from $HOME tail.
-			opts.User = filepath.Base(opts.Home)
-		}
+		opts.User = DefaultUser(opts.Home)
 	}
 	if opts.Label == "" {
-		opts.Label = "dev." + opts.User + ".slack-acp"
+		opts.Label = DefaultLabel(opts.User)
 	}
 	if opts.BinaryPath == "" {
 		exe, _ := osExecutable()
@@ -280,7 +311,7 @@ func enableHints(opts Options) []string {
 	case "linux":
 		return []string{
 			"systemctl --user daemon-reload",
-			"systemctl --user enable --now slack-acp",
+			"systemctl --user enable --now " + UnitName,
 			"loginctl enable-linger " + opts.User + "    # keep the unit alive across logouts/reboots",
 		}
 	case "darwin":

@@ -4,7 +4,7 @@
 
 .PHONY: all build build-all install test test-race coverage open-coverage \
         vet fmt clean tidy check-licenses notices publish deploy \
-        _all_parallel
+        check-installsh _all_parallel
 
 # ---------------------------------------------------------------------------
 # Paths and version metadata
@@ -84,7 +84,21 @@ build-all: $(CROSS_PHONY) build
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _all_parallel TIDY_DONE=1
 
-_all_parallel: vet test-race coverage build-all check-licenses
+_all_parallel: vet test-race coverage build-all check-licenses check-installsh
+
+# ---------------------------------------------------------------------------
+# install.sh — generated from install.sh.json by the canonical distkit
+# template (github.com/kfet/distkit/installsh); never hand-edited. Both
+# targets are DEV-ONLY: they run here and in CI, never on a user's machine.
+# `check-installsh` fails the build when the checked-in script has drifted
+# from the template (a hand edit, or a distkit bump that changed it), so a
+# stale installer can never be published.
+# ---------------------------------------------------------------------------
+install.sh: install.sh.json
+	$(call RUN,generate install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -o $@)
+
+check-installsh:
+	$(call RUN,check install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -check)
 
 fmt:
 	@gofmt -s -w .

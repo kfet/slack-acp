@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`slack-acp update` — self-update, backed by
+  [distkit](https://github.com/kfet/distkit).** Downloads the latest (or a
+  pinned) release from GitHub, verifies its sha256 against `checksums.txt`,
+  and swaps the running binary with an ETXTBSY-safe atomic rename. A Homebrew
+  install is upgraded through `brew upgrade kfet/ai/slack-acp` instead of
+  being overwritten (a keg swap would be reverted by the next `brew upgrade`),
+  and an install this process does not own — a package-manager prefix, or a
+  directory owned by another user — is refused up front with the command to
+  use instead. Flags: `-check` (report only; exit 3 when an update exists, so
+  a timer can act on it), `-version <tag>`, `-repo <owner/name>`,
+  `-restart-cmd <sh>`. Without `-restart-cmd` it prints the recycle hint
+  (`systemctl --user restart slack-acp`) — a swapped binary is inert until the
+  service re-execs. The hint is platform-aware and comes from
+  `internal/installsvc`, which owns the unit it has to match: on macOS it is
+  `launchctl kickstart -k gui/$UID/dev.<user>.slack-acp`. It is a restart, not
+  a reload, on both — the unit has no `ExecReload` and the process has no
+  SIGHUP handler.
+
+### Changed
+
+- **`install.sh` is now generated from the canonical distkit template**
+  (`install.sh.json` + `make install.sh`), replacing the hand-written script.
+  Everything the old one did is preserved; it additionally supports
+  `GITHUB_TOKEN` (private repos and API rate limits), the `PREFIX` alias for
+  `BIN_DIR`, `REPO`/`GITHUB_API`/`GITHUB_HOST` overrides, `wget` with headers,
+  the `armv8l` 32-bit ARM spelling, and installs via a sibling temp file +
+  `mv -f` inside `BIN_DIR` so replacing a running copy is atomic and never
+  crosses a filesystem. `make check-installsh` (dev-only, part of `make all`
+  and CI) fails the build when the checked-in copy drifts from the template.
+
 ## [0.5.0] - 2026-09-04
 
 ### Changed
@@ -195,7 +227,6 @@ All notable changes to this project will be documented in this file.
   the config *declares* the right secrets rather than that the `Env` slice was
   pre-filtered. No behaviour change — the agent gets exactly the same
   environment, minus the two Slack tokens and nothing else.
-
 
 ## [0.3.0] - 2026-07-30
 

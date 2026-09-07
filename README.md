@@ -67,6 +67,25 @@ curl -fsSL https://raw.githubusercontent.com/kfet/slack-acp/main/install.sh \
 
 Or build from source: `go install github.com/kfet/slack-acp/cmd/slack-acp@latest`.
 
+### Updating
+
+```bash
+slack-acp update           # fetch the latest release, verify sha256, swap the binary
+slack-acp update -check    # report only; exit 3 when a newer release exists
+```
+
+A Homebrew install is upgraded via `brew` instead of being overwritten. The
+swap is an atomic rename, so the running process keeps the old binary mapped
+until it re-execs — recycle the service afterwards:
+
+```bash
+systemctl --user restart slack-acp      # macOS: launchctl kickstart -k gui/$UID/dev.<user>.slack-acp
+```
+
+Pin a release with `-version v0.5.0`. `install.sh` is generated from the
+[distkit](https://github.com/kfet/distkit) template (`make install.sh`); edit
+`install.sh.json`, never the script.
+
 ### Slack app
 
 The fastest path is the bundled app manifest:
@@ -228,6 +247,7 @@ one-command diagnosis with no debug mode and no re-provoking.
 ```
 cmd/slack-acp/        entry point: flags + wiring
 internal/config/      JSON config loader (DisallowUnknownFields)
+internal/dist/        release repo, asset naming, restart hint (distkit + install.sh)
 internal/handler/     Slack event → ACP prompt + streaming sink
 internal/initcmd/     `slack-acp init` first-run wizard
 internal/installsvc/  systemd / launchd supervisor unit generator

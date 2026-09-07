@@ -17,6 +17,7 @@ See [docs/design.md](docs/design.md) for the full design, goals, non-goals, and 
 ```
 cmd/slack-acp/        entry point: flags + wiring
 internal/config/      JSON config loader (DisallowUnknownFields)
+internal/dist/        release repo, asset naming, restart hint (distkit + install.sh)
 internal/handler/     Slack event → ACP prompt + streaming sink
 internal/initcmd/     `slack-acp init` first-run wizard
 internal/installsvc/  systemd / launchd supervisor unit generator
@@ -46,6 +47,15 @@ For every non-trivial change, first ask the cross-repo question: **does this bel
 - When fixing a bug, check whether the same bug exists in sibling code paths — both within this repo *and* in `poe-acp` / `acp-kit`. Fix it at the root, not per-site.
 
 ## Build and test
+
+`install.sh` is **generated** — never hand-edit it. It comes from
+`install.sh.json` via the canonical [distkit](https://github.com/kfet/distkit)
+template (`make install.sh`); `make check-installsh` runs inside `make all`
+and fails the build if the checked-in copy has drifted. Self-update
+(`slack-acp update`) is `distkit.Main` over the config in `internal/dist`,
+which is also what the install.sh spec is checked against — asset naming has
+one definition. A behaviour gap in either belongs upstream in distkit, not
+forked into this repo.
 
 Run `make test` to verify your changes. Always finish every task with `make all` to confirm the full build and test suite passes (vet, test-race, 5 cross-builds, native build, check-licenses).
 
