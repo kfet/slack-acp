@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-07
+
 ### Security
 
 - **`install.sh` no longer accepts a `VERSION` that walks out of the repo.**
