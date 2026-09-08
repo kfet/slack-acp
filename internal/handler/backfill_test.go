@@ -114,7 +114,7 @@ func TestBackfillFeedsMissedMessages(t *testing.T) {
 	}
 
 	h := New(Config{
-		Router: r, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	summon(t, h) // creates dir + checkpoint at ts=1.0
@@ -173,7 +173,7 @@ func TestBackfillNoGapNoInjection(t *testing.T) {
 	}
 
 	h := New(Config{
-		Router: r, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	summon(t, h)
@@ -213,7 +213,7 @@ func TestBackfillRepliesErrorNonFatal(t *testing.T) {
 	}
 
 	h := New(Config{
-		Router: r, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	summon(t, h)
@@ -243,7 +243,7 @@ func TestBackfillDedupDropsOldTS(t *testing.T) {
 
 	done := make(chan struct{})
 	h := New(Config{
-		Router: r, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	summon(t, h) // checkpoint now at 1.0
@@ -310,7 +310,7 @@ func TestBackfillNoCheckpointNoop(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 	h := New(Config{
-		Router: r, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	h.Handle(context.Background(), slackproto.Event{
@@ -345,7 +345,7 @@ func TestBackfillFilterBoundaries(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 	h := New(Config{
-		Router: r, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	summon(t, h) // checkpoint at 1.0
@@ -427,7 +427,7 @@ func TestBackfillPromptError(t *testing.T) {
 	r := newTestRouter(t, fa)
 	rs := newRichSlack(t)
 	h := New(Config{
-		Router: r, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	summon(t, h) // checkpoint at 1.0
@@ -473,7 +473,7 @@ func TestAbstainFinalizeErrorLoggedInRun(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 	h := New(Config{
-		Router: r, API: fs.client(), PromptTimeout: 5 * time.Second,
+		Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, SilentSentinel: "<<SILENT>>",
 	})
 	h.Handle(context.Background(), slackproto.Event{
@@ -558,7 +558,7 @@ func TestBackfillGetOrCreateError(t *testing.T) {
 	// GetOrCreate-error branch executed. Use a Prompt hook that never
 	// runs (NewSession fails first) and assert the turn completes.
 	h := New(Config{
-		Router: rB, API: rs.client(), PromptTimeout: 5 * time.Second,
+		Router: rB, API: rs.client(), NoProgressTimeout: 5 * time.Second,
 		Ambient: true, Backfill: true, BackfillMaxMessages: 50,
 	})
 	h.Handle(context.Background(), slackproto.Event{

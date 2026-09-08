@@ -194,7 +194,7 @@ func TestAllowed(t *testing.T) {
 	h := &Handler{cfg: Config{
 		AllowedUserIDs:    map[string]struct{}{"U1": {}},
 		AllowedChannelIDs: map[string]struct{}{"C1": {}},
-		PromptTimeout:     time.Second,
+		NoProgressTimeout: time.Second,
 	}}
 	if !h.allowed(slackproto.Event{UserID: "U1", ChannelID: "C1"}) {
 		t.Fatal("expected allowed")
@@ -216,8 +216,12 @@ var _ slackproto.Handler = (*Handler)(nil)
 
 func TestNewDefaultsTimeout(t *testing.T) {
 	h := New(Config{})
-	if h.cfg.PromptTimeout == 0 {
-		t.Fatal("default timeout not set")
+	if h.cfg.NoProgressTimeout == 0 {
+		t.Fatal("default no-progress window not set")
+	}
+	// The absolute ceiling is opt-in: it must stay off unless asked for.
+	if h.cfg.TurnCeiling != 0 {
+		t.Fatalf("turn ceiling = %s, want none by default", h.cfg.TurnCeiling)
 	}
 }
 
@@ -266,7 +270,7 @@ func TestHandleDeliversPrompt(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
 
 	select {
@@ -303,7 +307,7 @@ func TestHandleResolvesModelIdentity(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
 	<-done
 	waitForIdle(t, h)
@@ -342,7 +346,7 @@ func TestHandleAppendsStatusFooter(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
 	waitForIdle(t, h)
 
@@ -383,7 +387,7 @@ func TestHandleNoStatusFooterOnErrorTurn(t *testing.T) {
 		return "", errors.New("boom")
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
 	waitForIdle(t, h)
 
@@ -419,7 +423,7 @@ func TestHandleStatusFooterFollowsStopSuffix(t *testing.T) {
 		return acp.StopReasonMaxTokens, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
 	waitForIdle(t, h)
 
@@ -450,7 +454,7 @@ func TestHandleNoStatusFooterOnContentlessTurn(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
 	waitForIdle(t, h)
 
@@ -481,7 +485,7 @@ func TestHandleAgentError(t *testing.T) {
 	fs := newFakeSlack()
 	defer fs.close()
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
 	waitForIdle(t, h)
 	// Should have surfaced an error message.
@@ -497,7 +501,7 @@ func TestHandleNonEndTurnSuffix(t *testing.T) {
 	fs := newFakeSlack()
 	defer fs.close()
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "x"})
 	waitForIdle(t, h)
 	if !anyContains(fs.bodies, "(stopped:") {
@@ -513,7 +517,7 @@ func TestHandleRouterCreateError(t *testing.T) {
 	fs := newFakeSlack()
 	defer fs.close()
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "..", ThreadTS: "1.0", TS: "1.0", Text: "x"})
 	waitForIdle(t, h)
 	// We expect a Slack error post (the streamer's Close appends
@@ -548,7 +552,7 @@ func TestHandleCancelsOnFollowup(t *testing.T) {
 		}
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	ev := slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "first"}
 	h.Handle(context.Background(), ev)
 	<-startedCh
@@ -791,7 +795,7 @@ func TestHandleStartPlaceholderError(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
 	<-done
 	waitForIdle(t, h)
@@ -815,7 +819,7 @@ func TestHandlePostsThinkingPlaceholder(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
 
 	// Once the agent's Prompt has been entered, Start must already
@@ -878,7 +882,7 @@ func TestHandleInlinesSystemPromptOnFirstPrompt(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
 
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hello"})
 	<-gotCh
@@ -951,10 +955,10 @@ func TestHandleMentionFlagSummonsUnknownThread(t *testing.T) {
 	}
 
 	h := New(Config{
-		Router:        r,
-		API:           fs.client(),
-		Ambient:       true,
-		PromptTimeout: 5 * time.Second,
+		Router:            r,
+		API:               fs.client(),
+		Ambient:           true,
+		NoProgressTimeout: 5 * time.Second,
 	})
 
 	// A top-level @-mention in a channel: thread is NOT known, and Text
@@ -1057,7 +1061,7 @@ func TestAbstainSuppressesPostOnSentinel(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second, Ambient: true, SilentSentinel: "<<SILENT>>"})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second, Ambient: true, SilentSentinel: "<<SILENT>>"})
 	// Ambient reply in a known thread: first summon, then follow-up.
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", BotUserID: "BBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "<@BBOT> hi"})
 	waitForIdle(t, h)
@@ -1113,7 +1117,7 @@ func TestAbstainDivergedTurnStillSigned(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	}
 
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second, Ambient: true, SilentSentinel: "<<SILENT>>"})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second, Ambient: true, SilentSentinel: "<<SILENT>>"})
 	// Summon first so the thread is known, then send the ambient reply
 	// that actually exercises the abstain sink.
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", BotUserID: "BBOT", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "<@BBOT> hi"})
@@ -1159,11 +1163,11 @@ func TestAbstainOffForAddressedMention(t *testing.T) {
 	}
 
 	h := New(Config{
-		Router:         r,
-		API:            fs.client(),
-		PromptTimeout:  5 * time.Second,
-		Ambient:        true,
-		SilentSentinel: "<<SILENT>>",
+		Router:            r,
+		API:               fs.client(),
+		NoProgressTimeout: 5 * time.Second,
+		Ambient:           true,
+		SilentSentinel:    "<<SILENT>>",
 	})
 
 	h.Handle(context.Background(), slackproto.Event{
@@ -1208,7 +1212,7 @@ func TestAbstainOffWhenNotAmbient(t *testing.T) {
 
 	// Ambient=false but SilentSentinel is still set (as main.go does):
 	// abstain must NOT engage.
-	h := New(Config{Router: r, API: fs.client(), PromptTimeout: 5 * time.Second, Ambient: false, SilentSentinel: "<<SILENT>>"})
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second, Ambient: false, SilentSentinel: "<<SILENT>>"})
 	h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "hi"})
 	<-done
 	waitForIdle(t, h)

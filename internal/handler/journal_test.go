@@ -50,7 +50,7 @@ func TestHandlerJournalDecisions(t *testing.T) {
 		t.Cleanup(fs.close)
 		cfg.Router = newTestRouter(t, fa)
 		cfg.API = fs.client()
-		cfg.PromptTimeout = 5 * time.Second
+		cfg.NoProgressTimeout = 5 * time.Second
 		return New(cfg), fs
 	}
 
@@ -185,7 +185,7 @@ func TestSelfAuthoredIsRefusedEvenWithTheAllowlistPopulated(t *testing.T) {
 			t.Cleanup(fs.close)
 			h := New(Config{
 				Router: newTestRouter(t, fa), API: fs.client(),
-				PromptTimeout: 5 * time.Second, Ambient: true,
+				NoProgressTimeout: 5 * time.Second, Ambient: true,
 				AllowedUserIDs: allowed,
 			})
 			records := captureJournal(t)
@@ -216,7 +216,7 @@ func TestSelfDriveIsStillAdmittedByTheSelfAuthorshipBackstop(t *testing.T) {
 	t.Cleanup(fs.close)
 	h := New(Config{
 		Router: newTestRouter(t, fa), API: fs.client(),
-		PromptTimeout: 5 * time.Second, Ambient: true,
+		NoProgressTimeout: 5 * time.Second, Ambient: true,
 		SelfDrive: slackproto.NewSelfDrive("!!drive!!"), SelfDrivePerMinute: 4,
 	})
 	records := captureJournal(t)

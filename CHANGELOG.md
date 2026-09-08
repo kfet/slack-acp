@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **A turn is now bounded by PROGRESS, not wall-clock.** The per-turn
+  bound was a fixed 10-minute `context.WithTimeout` that nothing reset,
+  so it punished exactly the turns working hardest: the sibling relay
+  killed a turn at 10m00s while its agent was mid-tool-call, and the
+  tool went on running for another minute afterwards. The bound is now
+  acp-kit's `client.TurnLiveness`: a **no-progress window** reset by
+  agent output and by every `tool_call` / `tool_call_update`, so a
+  legitimately long-running tool is never cut, while a genuinely wedged
+  agent still is.
+
+- A cut turn now says which cut it was — "no output and no tool activity
+  from the agent for 2m0s — it looks wedged", a named ceiling, or
+  "superseded by your next message" — instead of a bare `_error: …_`.
+  Whatever the agent had already streamed is preserved.
+
+### Added
+
+- `no_progress_timeout_seconds` (default 120): the no-progress window.
+- `prompt_timeout_seconds` (default off): an OPT-IN absolute ceiling on
+  one turn, enforced regardless of progress. Unset means no ceiling —
+  while the agent makes progress the turn runs as long as it needs.
+  Setting it logs a one-line startup note naming both bounds in effect.
+  Neither key existed before; the old 10-minute cap was not configurable.
+
 ## [0.6.2] - 2026-09-07
 
 ### Security

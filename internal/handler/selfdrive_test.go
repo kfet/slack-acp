@@ -167,7 +167,7 @@ func selfDriveHandler(t *testing.T, perMinute int, now func() time.Time) (*Handl
 	h := New(Config{
 		Router:             newTestRouter(t, fa),
 		API:                fs.client(),
-		PromptTimeout:      5 * time.Second,
+		NoProgressTimeout:  5 * time.Second,
 		SelfDrive:          slackproto.NewSelfDrive("drive-me-9f3a"),
 		SelfDrivePerMinute: perMinute,
 		Now:                now,
@@ -240,9 +240,9 @@ func TestHandleSelfDriveDroppedWhenHatchOff(t *testing.T) {
 	fs := newFakeSlack()
 	defer fs.close()
 	h := New(Config{
-		Router:        newTestRouter(t, fa),
-		API:           fs.client(),
-		PromptTimeout: time.Second,
+		Router:            newTestRouter(t, fa),
+		API:               fs.client(),
+		NoProgressTimeout: time.Second,
 	})
 	ctx := context.Background()
 	h.Handle(ctx, slackproto.Event{
