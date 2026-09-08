@@ -119,6 +119,32 @@ func TestSessionIdleTimeout(t *testing.T) {
 	}
 }
 
+// TestTurnBounds: the no-progress window falls back to the handler's
+// default, the absolute ceiling is OPT-IN and off unless asked for, and
+// both reject negatives.
+func TestTurnBounds(t *testing.T) {
+	empty := &Config{}
+	if got := empty.NoProgressTimeout(); got != 0 {
+		t.Fatalf("unset no-progress window = %v, want the handler default", got)
+	}
+	if got := empty.TurnCeiling(); got != 0 {
+		t.Fatalf("unset ceiling = %v, want none", got)
+	}
+	c := &Config{NoProgressTimeoutSeconds: 7, PromptTimeoutSeconds: 9}
+	if got := c.NoProgressTimeout(); got != 7*time.Second {
+		t.Fatalf("no-progress window = %v", got)
+	}
+	if got := c.TurnCeiling(); got != 9*time.Second {
+		t.Fatalf("ceiling = %v", got)
+	}
+	if err := (&Config{NoProgressTimeoutSeconds: -1}).Validate(); err == nil {
+		t.Fatal("negative no_progress_timeout_seconds should fail validation")
+	}
+	if err := (&Config{PromptTimeoutSeconds: -1}).Validate(); err == nil {
+		t.Fatal("negative prompt_timeout_seconds should fail validation")
+	}
+}
+
 func TestSelfDriveSentinelRejectsSlackEscapedChars(t *testing.T) {
 	// Slack HTML-escapes <, > and & in inbound message text, so a
 	// sentinel containing any of them arrives escaped

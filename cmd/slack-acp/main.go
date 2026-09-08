@@ -204,7 +204,14 @@ func main() {
 	// rate cap — the two facts that bound what this actually permits.
 	humanAuthors := toSet(cfg.HumanAuthorUserIDs)
 
+	if cfg.PromptTimeoutSeconds > 0 {
+		log.Printf("config: prompt_timeout_seconds is an ABSOLUTE CEILING, not the working bound — "+
+			"this turn ceiling is %s, and the guard that normally fires is no_progress_timeout_seconds",
+			cfg.TurnCeiling())
+	}
 	h := handler.New(handler.Config{
+		NoProgressTimeout:   cfg.NoProgressTimeout(),
+		TurnCeiling:         cfg.TurnCeiling(),
 		Router:              r,
 		AllowedUserIDs:      allowedUsers,
 		AllowedChannelIDs:   allowedChannels,

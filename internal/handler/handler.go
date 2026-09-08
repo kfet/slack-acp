@@ -5,6 +5,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,8 +29,16 @@ type Config struct {
 	API               *slack.Client
 	AllowedUserIDs    map[string]struct{}
 	AllowedChannelIDs map[string]struct{}
-	// PromptTimeout caps the wall-clock for a single prompt. Default 10m.
-	PromptTimeout time.Duration
+	// NoProgressTimeout cuts a turn that has stopped making progress:
+	// no agent output and no tool-call activity for this long. It is a
+	// WEDGE guard, not a working bound — a legitimately long tool call
+	// keeps resetting it, so a turn that is working is never cut.
+	// Default 2m.
+	NoProgressTimeout time.Duration
+	// TurnCeiling is an OPT-IN absolute cap on one turn, enforced
+	// regardless of progress. 0 (the default) means no ceiling: a turn
+	// that keeps making progress runs as long as it needs.
+	TurnCeiling time.Duration
 	// Ambient enables forwarding of non-DM thread replies to threads
 	// the bot is already part of. When false, only @-mentions and DMs
 	// trigger responses.
@@ -84,8 +93,8 @@ type Handler struct {
 
 // New constructs a handler.
 func New(cfg Config) *Handler {
-	if cfg.PromptTimeout == 0 {
-		cfg.PromptTimeout = 10 * time.Minute
+	if cfg.NoProgressTimeout <= 0 {
+		cfg.NoProgressTimeout = 2 * time.Minute
 	}
 	h := &Handler{cfg: cfg, inflight: make(map[router.ConvKey]*inflightEntry)}
 	h.inflightCond = sync.NewCond(&h.inflightMu)
@@ -224,7 +233,11 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 
 	// Cancel any in-flight prompt for this thread, then start a new one.
 	h.cancelInflight(ctx, key)
-	pctx, cancel := context.WithTimeout(context.Background(), h.cfg.PromptTimeout)
+	// Cancellable only. The turn's real bound is the progress-resetting
+	// liveness clock, armed inside run once the agent is about to be
+	// prompted — so a turn that queued behind another is not charged
+	// for the wait.
+	pctx, cancel := context.WithCancel(context.Background())
 	entry := &inflightEntry{cancel: cancel}
 	h.setInflight(key, entry)
 	go func() {
@@ -503,7 +516,18 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		go spinner(wctx, stream, baseSink)
 	}
 
-	sess, err := h.cfg.Router.GetOrCreate(ctx, key, sink)
+	// The turn's bound. Armed HERE, not at intake: a turn that queued
+	// behind another must not be charged for the wait. The sink is
+	// wrapped OUTERMOST so a buffering decorator below (the abstain
+	// sink) cannot make a streaming agent look silent.
+	live, lctx, stopLive := client.StartTurnLiveness(ctx, client.TurnLivenessConfig{
+		NoProgressTimeout: h.cfg.NoProgressTimeout,
+		MaxTurnDuration:   h.cfg.TurnCeiling,
+	})
+	defer stopLive()
+	sink = live.Wrap(sink)
+
+	sess, err := h.cfg.Router.GetOrCreate(lctx, key, sink)
 	if err != nil {
 		_ = stream.Close(ctx, fmt.Sprintf("\n_error: %v_", err))
 		return err
@@ -535,12 +559,12 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		promptText = prefix + "\n\n" + promptText
 	}
 
-	stop, err := h.cfg.Router.Agent().Prompt(ctx, sess.SessionID, []acp.ContentBlock{
+	stop, err := h.cfg.Router.Agent().Prompt(lctx, sess.SessionID, []acp.ContentBlock{
 		{Text: &acp.ContentBlockText{Text: promptText}},
 	})
 	wcancel()
 	if err != nil {
-		_ = stream.Close(context.Background(), fmt.Sprintf("\n_error: %v_", err))
+		_ = stream.Close(context.Background(), h.failSuffix(lctx, err))
 		return err
 	}
 
@@ -590,6 +614,28 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// chunks. Close is idempotent, so it also cannot double-post.
 	suffix += baseSink.maybeAppendFooter()
 	return stream.Close(context.Background(), suffix)
+}
+
+// failSuffix names why a turn ended, for the note appended to whatever
+// the agent had already streamed.
+//
+// The reason is read from the TURN CONTEXT's cause, not from err. An
+// agent cancelled mid-prompt reports it back as an ordinary JSON-RPC
+// error — "context deadline exceeded", carrying no Go sentinel — so
+// classifying on err alone is how a wedged turn came to surface as a
+// bare, meaningless "_error: context deadline exceeded_".
+func (h *Handler) failSuffix(ctx context.Context, err error) string {
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, client.ErrNoProgress):
+		return fmt.Sprintf("\n_(stopped: no output and no tool activity from the agent for %s — it looks wedged)_",
+			h.cfg.NoProgressTimeout)
+	case errors.Is(cause, client.ErrTurnCeiling):
+		return fmt.Sprintf("\n_(stopped: this turn hit the %s ceiling set by `prompt_timeout_seconds`)_",
+			h.cfg.TurnCeiling)
+	case errors.Is(cause, context.Canceled):
+		return "\n_(superseded by your next message)_"
+	}
+	return fmt.Sprintf("\n_error: %v_", err)
 }
 
 func watchdog(ctx context.Context, s *slackproto.PostStreamer) {

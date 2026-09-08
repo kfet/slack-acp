@@ -35,6 +35,20 @@ type Config struct {
 	// SessionIdleTimeoutSeconds: GC sessions idle this long. 0 = default 30m.
 	SessionIdleTimeoutSeconds int `json:"session_idle_timeout_seconds,omitempty"`
 
+	// NoProgressTimeoutSeconds cuts a turn that has gone silent: no
+	// agent output and no tool activity for this long. Tool calls count
+	// as progress, so a legitimately long tool is never cut. 0 = 2
+	// minutes.
+	NoProgressTimeoutSeconds int `json:"no_progress_timeout_seconds,omitempty"`
+	// PromptTimeoutSeconds is an OPT-IN absolute ceiling on one agent
+	// turn, enforced regardless of progress. 0 = NO ceiling.
+	//
+	// The turn bound used to be a fixed, unconfigurable 10-minute
+	// wall-clock cap, which punished exactly the turns working hardest.
+	// The guard that fires now is NoProgressTimeoutSeconds; this key
+	// exists for operators who deliberately want a hard upper bound.
+	PromptTimeoutSeconds int `json:"prompt_timeout_seconds,omitempty"`
+
 	// SystemPrompt, if non-empty, is appended to the built-in Slack-
 	// formatting instructions and injected into every ACP session as a
 	// durable system prompt. Use for operator-specific guidance ("you
@@ -145,6 +159,12 @@ func (c *Config) Validate() error {
 	if c.SessionIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("session_idle_timeout_seconds must be >= 0")
 	}
+	if c.NoProgressTimeoutSeconds < 0 {
+		return fmt.Errorf("no_progress_timeout_seconds must be >= 0")
+	}
+	if c.PromptTimeoutSeconds < 0 {
+		return fmt.Errorf("prompt_timeout_seconds must be >= 0")
+	}
 	if c.BackfillMaxMessages < 0 {
 		return fmt.Errorf("backfill_max_messages must be >= 0")
 	}
@@ -225,6 +245,23 @@ func (c *Config) IdleTimeout() time.Duration {
 		return 0
 	}
 	return time.Duration(c.SessionIdleTimeoutSeconds) * time.Second
+}
+
+// NoProgressTimeout returns the per-turn no-progress window. Zero means
+// use handler.New's default.
+func (c *Config) NoProgressTimeout() time.Duration {
+	if c.NoProgressTimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(c.NoProgressTimeoutSeconds) * time.Second
+}
+
+// TurnCeiling returns the OPT-IN absolute per-turn cap. 0 means none.
+func (c *Config) TurnCeiling() time.Duration {
+	if c.PromptTimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(c.PromptTimeoutSeconds) * time.Second
 }
 
 // ModelProbeBudget returns the configured startup model-probe budget.
