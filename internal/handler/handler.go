@@ -235,8 +235,7 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	h.cancelInflight(ctx, key)
 	// Cancellable only. The turn's real bound is the progress-resetting
 	// liveness clock, armed inside run once the agent is about to be
-	// prompted — so a turn that queued behind another is not charged
-	// for the wait.
+	// prompted.
 	pctx, cancel := context.WithCancel(context.Background())
 	entry := &inflightEntry{cancel: cancel}
 	h.setInflight(key, entry)
@@ -516,10 +515,10 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		go spinner(wctx, stream, baseSink)
 	}
 
-	// The turn's bound. Armed HERE, not at intake: a turn that queued
-	// behind another must not be charged for the wait. The sink is
-	// wrapped OUTERMOST so a buffering decorator below (the abstain
-	// sink) cannot make a streaming agent look silent.
+	// The turn's bound. Armed HERE rather than at intake so it measures
+	// the agent, not the relay's own setup. The sink is wrapped
+	// OUTERMOST so a buffering decorator below (the abstain sink)
+	// cannot make a streaming agent look silent.
 	live, lctx, stopLive := client.StartTurnLiveness(ctx, client.TurnLivenessConfig{
 		NoProgressTimeout: h.cfg.NoProgressTimeout,
 		MaxTurnDuration:   h.cfg.TurnCeiling,
@@ -567,6 +566,9 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		_ = stream.Close(context.Background(), h.failSuffix(lctx, err))
 		return err
 	}
+	// The bound covers the prompt and nothing after it. It must come
+	// AFTER failSuffix, which reads the cause.
+	stopLive()
 
 	// Ambient checkpoint: record this message's ts for dedup + gap
 	// detection on the next message. Addressed/DM path never touches
