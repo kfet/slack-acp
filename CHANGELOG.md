@@ -21,6 +21,12 @@ All notable changes to this project will be documented in this file.
   "superseded by your next message" — instead of a bare `_error: …_`.
   Whatever the agent had already streamed is preserved.
 
+- **Cancelling a turn now actually reaches the agent.** Via acp-kit
+  v0.16.2: abandoning the `session/prompt` request only stopped the
+  relay waiting, so on every timeout path the agent ran on. A
+  `session/cancel` is now sent whenever the prompt context is cancelled,
+  not only on a superseding message.
+
 ### Added
 
 - `no_progress_timeout_seconds` (default 120): the no-progress window.

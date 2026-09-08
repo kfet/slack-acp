@@ -210,11 +210,11 @@ func main() {
 			cfg.TurnCeiling())
 	}
 	h := handler.New(handler.Config{
-		NoProgressTimeout:   cfg.NoProgressTimeout(),
-		TurnCeiling:         cfg.TurnCeiling(),
 		Router:              r,
 		AllowedUserIDs:      allowedUsers,
 		AllowedChannelIDs:   allowedChannels,
+		NoProgressTimeout:   cfg.NoProgressTimeout(),
+		TurnCeiling:         cfg.TurnCeiling(),
 		Ambient:             cfg.Ambient,
 		Backfill:            cfg.Backfill,
 		BackfillMaxMessages: cfg.GetBackfillMaxMessages(),

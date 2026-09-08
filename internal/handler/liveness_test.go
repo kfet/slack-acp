@@ -59,6 +59,9 @@ func TestWedgedTurnIsCutAndSaysSo(t *testing.T) {
 	if strings.Contains(final, "deadline exceeded") {
 		t.Fatalf("the bare deadline error is back: %q", final)
 	}
+	// The other half of the incident — telling the agent to stop, so
+	// its tool does not run on — lives in acp-kit's AgentProc.Prompt
+	// and is tested there; this fake bypasses that layer entirely.
 }
 
 // TestToolActivityKeepsATurnAlive is the other half of the contract: a
