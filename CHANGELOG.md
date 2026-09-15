@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-15
+
+### Added
+
+- **The bundled deploy, release and update skills now end at the
+  converged fleet, not at one host.** Each gains a "Finish on the
+  FLEET" step pointing at `poe-acp/scripts/converge.sh status`, the
+  read-only sweep that reports every relay instance's running version,
+  so a deploy is not considered done because a single box was updated.
+  Both traps that produced false "all clear" readings are written down:
+  a zsh glob over `~/.local/bin/*-acp` aborts when nothing matches, so
+  empty output reads as "not installed" rather than an error; and a repo
+  can have two live clones, so `git fetch origin` and an ahead/behind
+  check must precede any release. This instance is registered as a
+  TRACKED entry in poe-acp's `bots/`, meaning its drift is reported by
+  that sweep while its deploys stay here. After releasing, bump
+  `poe-acp/dist.lock` `.relays["slack-acp"]`.
+
 ## [0.7.0] - 2026-09-09
 
 ### Changed
