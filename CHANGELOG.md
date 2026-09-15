@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-15
+
+### Changed
+
+- **The fleet sweep moved out of poe-acp; the skills follow it.** Closing
+  a deploy is now `~/sync/shared/fleet/fleet.sh status`, which runs from
+  any host and belongs to no single relay repo — instead of a path into a
+  sibling clone that had to exist beside this one. The "bump
+  `poe-acp/dist.lock .relays[slack-acp]` after releasing" step is gone: the
+  sweep takes this relay's wanted version from its latest git tag, so
+  cutting the tag IS the declaration.
+
 ## [0.8.0] - 2026-09-15
 
 ### Added
