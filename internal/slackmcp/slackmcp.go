@@ -21,7 +21,10 @@
 // Search is deliberately NOT Slack search. Slack's search.messages (and
 // search.all / search.files) accept only USER tokens (xoxp-) via the
 // legacy search:read scope; a bot token cannot search a workspace, and
-// we do not want a user token anywhere near this process. slack_search
+// the relay's Slack client must never be one. (`slack-acp verify` does
+// read an xoxp- token from the environment, but it never reaches this
+// package's client, and internal/config/agentenv.go scrubs it from the
+// agent by name and by value.) slack_search
 // is therefore a bounded LOCAL fanout: conversations.history over the
 // channels this session may already read, filtered relay-side. It calls
 // no search.* method and adds no scope. See BACKLOG.md for the

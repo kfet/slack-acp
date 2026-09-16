@@ -31,6 +31,7 @@ All notable changes to this project will be documented in this file.
 - **`channels:read` and `groups:read` bot scopes** in the app manifest, needed
   by `slack_list_channels`. **Existing installs must reinstall the app** for
   the new scopes to take effect.
+
 ## [0.8.2] - 2026-09-18
 
 ### Changed
@@ -71,6 +72,30 @@ All notable changes to this project will be documented in this file.
   TRACKED entry in poe-acp's `bots/`, meaning its drift is reported by
   that sweep while its deploys stay here. After releasing, bump
   `poe-acp/dist.lock` `.relays["slack-acp"]`.
+
+### Fixed
+
+- `slack_list_channels` and `slack_search` no longer reach **direct
+  messages** when no `allowed_channel_ids` is configured. The bot holds a
+  1:1 DM with everyone who has ever messaged it, so "wherever the bot
+  already is" let one person's prompt surface another person's private
+  conversation with the bot. `D…` ids are now refused unless an operator
+  names one explicitly.
+- The startup model probe now runs **after** the MCP listener is open.
+  `ProbeModels` creates a real ACP session, and every `session/new`
+  carries the MCP server config — so the agent spawned `slack-acp
+  mcp-serve` against a socket that did not exist yet, and an agent that
+  waits for its MCP servers (`fir --mode acp --wait-mcp`) blocked on one
+  that was a statement away from existing.
+- A channel listing longer than one `users.conversations` page is now
+  reported as `truncated` instead of silently shortening both
+  `slack_list_channels` and the `slack_search` fanout.
+- A thread whose replies cannot be read (archived, deleted, permissions)
+  no longer aborts the whole `slack_search` and discards every match
+  already found; it is skipped and reported like any other bound.
+- `slack_post` refuses a body that strips to nothing (text that was
+  entirely `@channel` / `@here` pings) *before* charging the rate cap,
+  rather than spending a post on a call Slack would reject as `no_text`.
 
 ## [0.7.0] - 2026-09-09
 

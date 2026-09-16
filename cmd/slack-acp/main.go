@@ -182,35 +182,6 @@ func main() {
 	defer agent.Close()
 	log.Printf("slack-acp %s: agent up (caps=%+v)", version, agent.Caps())
 
-	// Probe the agent for its current model so the status line can
-	// name the model — provider emoji and short display name — from the
-	// first turn, before any session has been created to populate the
-	// model list as a side effect.
-	//
-	// Two properties matter here, both learned the hard way:
-	//
-	//   - It retries. An agent that blocks on external readiness
-	//     (`fir --mode acp --wait-mcp` waits for every MCP server) is
-	//     slow, not broken, and a one-shot 30s probe failed ~3 startups
-	//     in 7 with "context deadline exceeded" / "peer disconnected
-	//     before response".
-	//   - It does not gate Slack. The probe only decides whether an
-	//     emoji appears, so making the bot's whole connection wait on a
-	//     slow agent would trade a cosmetic degradation for an outage.
-	//     It runs in the background and reports when it lands.
-	go func() {
-		if err := probe.Models(ctx, probe.Config{
-			Prober: agent,
-			Budget: cfg.ModelProbeBudget(),
-			Logf:   log.Printf,
-		}); err != nil {
-			log.Printf("probe models failed (continuing without provider emoji): %v", err)
-			return
-		}
-		_, current := agent.Models()
-		log.Printf("probed agent current model: %q", current)
-	}()
-
 	r, err := router.New(router.Config{
 		Agent:        agent,
 		StateDir:     cfg.StateDir,
@@ -292,6 +263,44 @@ func main() {
 	} else {
 		log.Printf("slack-acp: agent Slack access disabled (agent_slack_access=off)")
 	}
+
+	// Probe the agent for its current model so the status line can
+	// name the model — provider emoji and short display name — from the
+	// first turn, before any session has been created to populate the
+	// model list as a side effect.
+	//
+	// ORDERING: this MUST come after mcpHost.Listen() above. ProbeModels
+	// opens a real ACP session (acp-kit client.AgentProc.ProbeModels →
+	// NewSession on a temp cwd), and every session/new carries the MCP
+	// server config, so the agent immediately spawns `slack-acp
+	// mcp-serve` and dials the socket. Probing first raced the listener:
+	// the redirector found no socket, and an agent that waits for its
+	// MCP servers (`fir --mode acp --wait-mcp`) blocked the probe on a
+	// server that was still one statement away from existing.
+	//
+	// Two other properties matter here, both learned the hard way:
+	//
+	//   - It retries. An agent that blocks on external readiness
+	//     (`fir --mode acp --wait-mcp` waits for every MCP server) is
+	//     slow, not broken, and a one-shot 30s probe failed ~3 startups
+	//     in 7 with "context deadline exceeded" / "peer disconnected
+	//     before response".
+	//   - It does not gate Slack. The probe only decides whether an
+	//     emoji appears, so making the bot's whole connection wait on a
+	//     slow agent would trade a cosmetic degradation for an outage.
+	//     It runs in the background and reports when it lands.
+	go func() {
+		if err := probe.Models(ctx, probe.Config{
+			Prober: agent,
+			Budget: cfg.ModelProbeBudget(),
+			Logf:   log.Printf,
+		}); err != nil {
+			log.Printf("probe models failed (continuing without provider emoji): %v", err)
+			return
+		}
+		_, current := agent.Models()
+		log.Printf("probed agent current model: %q", current)
+	}()
 
 	log.Printf("slack-acp: connecting to Slack…")
 	if err := sc.Run(ctx); err != nil && ctx.Err() == nil {

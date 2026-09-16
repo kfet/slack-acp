@@ -38,11 +38,12 @@ type fakeAPI struct {
 	historyOldest    string
 	historyErr       error
 
-	channels    []slack.Channel
-	channelsErr error
-	users       map[string]*slack.User
-	userErr     error
-	userCalls   int
+	channels      []slack.Channel
+	channelsErr   error
+	channelCursor string
+	users         map[string]*slack.User
+	userErr       error
+	userCalls     int
 
 	postErr     error
 	postTS      string
@@ -77,7 +78,7 @@ func (f *fakeAPI) GetConversationHistoryContext(_ context.Context, p *slack.GetC
 }
 
 func (f *fakeAPI) GetConversationsForUserContext(context.Context, *slack.GetConversationsForUserParameters) ([]slack.Channel, string, error) {
-	return f.channels, "", f.channelsErr
+	return f.channels, f.channelCursor, f.channelsErr
 }
 
 func (f *fakeAPI) PostMessageContext(_ context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
@@ -127,7 +128,12 @@ func msgs(t *testing.T, s string) []message {
 
 func chans(t *testing.T, s string) []channelInfo {
 	t.Helper()
-	var out []channelInfo
+	return channelListOut(t, s).Channels
+}
+
+func channelListOut(t *testing.T, s string) channelList {
+	t.Helper()
+	var out channelList
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
 		t.Fatalf("decode result %q: %v", s, err)
 	}
@@ -861,13 +867,6 @@ func TestSearchAPIErrors(t *testing.T) {
 		!strings.Contains(err.Error(), "conversations.history") {
 		t.Fatalf("err = %v", err)
 	}
-	threaded := mkMsg("1.0", "U1", "p")
-	threaded.ReplyCount = 1
-	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"C9": {threaded}}, repliesErr: boom}
-	if _, err := mustRelay(t, api).Search(ctx, "k", SearchParams{Query: "x", Channel: "C9", IncludeThreads: true}); err == nil ||
-		!strings.Contains(err.Error(), "conversations.replies") {
-		t.Fatalf("err = %v", err)
-	}
 	// Empty query is rejected relay-side too, not only at the tool layer.
 	if _, err := mustRelay(t, &fakeAPI{}).Search(ctx, "k", SearchParams{Query: "  "}); err == nil ||
 		!strings.Contains(err.Error(), "query is required") {
@@ -931,5 +930,141 @@ func TestSearchDefaultClock(t *testing.T) {
 	}
 	if d := cutoff - got; d < 0 || d > 5 {
 		t.Fatalf("oldest %d is %ds from the expected cutoff %d", got, d, cutoff)
+	}
+}
+
+// ---- regression tests for the five holes the post-rebase review found ----
+
+// With no allowlist configured, "wherever the bot already is" must NOT
+// include DMs. The bot holds a 1:1 DM with everyone who ever messaged
+// it, and these tools are driven by an agent steered by ambient thread
+// text written by someone else — so reaching a D… conversation lets one
+// person's prompt surface another person's private conversation.
+func TestReadToolsRefuseDMsWithoutAnExplicitAllowlist(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeAPI{
+		historyByChannel: map[string][]slack.Message{"D9": {mkMsg("1.0", "U1", "private")}},
+		repliesByTS:      map[string][]slack.Message{"1.0": {mkMsg("1.0", "U1", "private")}},
+	}
+	r, cap := newRelay(t, api, RelayConfig{})
+
+	for _, tc := range []struct {
+		name string
+		call func() (string, error)
+	}{
+		{"read_channel", func() (string, error) { return r.ReadChannel(ctx, "k", "D9", 0, "") }},
+		{"read_thread", func() (string, error) { return r.ReadThread(ctx, "k", "D9", "1.0", 0) }},
+		{"search", func() (string, error) { return r.Search(ctx, "k", SearchParams{Query: "private", Channel: "D9"}) }},
+		{"post", func() (string, error) { return r.Post(ctx, "k", "D9", "", "hi") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.call()
+			if err == nil || !strings.Contains(err.Error(), "direct message") {
+				t.Fatalf("err = %v — a DM must be refused when no allowlist names it", err)
+			}
+		})
+	}
+	if len(api.historyCalls) != 0 || api.postCalls != 0 {
+		t.Fatalf("a refused DM still reached Slack: history=%v post=%d", api.historyCalls, api.postCalls)
+	}
+	if !strings.Contains(cap.joined(), "outcome=denied") {
+		t.Fatalf("refusals must be logged: %q", cap.joined())
+	}
+}
+
+// An operator who explicitly names a DM in allowed_channel_ids meant it;
+// the allowlist is the exhaustive answer and overrides the DM rule.
+func TestExplicitAllowlistMayNameADM(t *testing.T) {
+	api := &fakeAPI{historyByChannel: map[string][]slack.Message{"D9": {mkMsg("1.0", "U1", "hi")}}}
+	r, _ := newRelay(t, api, RelayConfig{AllowedChannelIDs: map[string]struct{}{"D9": {}}})
+	out, err := r.ReadChannel(context.Background(), "k", "D9", 0, "")
+	if err != nil {
+		t.Fatalf("explicitly allowlisted DM refused: %v", err)
+	}
+	if got := msgs(t, out); len(got) != 1 {
+		t.Fatalf("rendered = %+v", got)
+	}
+}
+
+// users.conversations is one page, not a walk. A bot in more channels
+// than that page holds gets a SHORT answer — and a short answer must say
+// so, on both tools that share the listing.
+func TestChannelListingTruncationIsReported(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeAPI{
+		channels:      []slack.Channel{mkChan("C1", "general", false)},
+		channelCursor: "more-pages",
+		historyByChannel: map[string][]slack.Message{
+			"C1": {mkMsg("1.0", "U1", "needle")},
+		},
+	}
+	r, _ := newRelay(t, api, RelayConfig{})
+
+	list, err := r.ListChannels(ctx, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := channelListOut(t, list); !res.Truncated || res.Note != noteChannelList {
+		t.Fatalf("slack_list_channels hid a short listing: %+v", res)
+	}
+
+	out, err := r.Search(ctx, "k", SearchParams{Query: "needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := searchOut(t, out)
+	if !res.Truncated || len(res.Matches) != 1 {
+		t.Fatalf("search over a short listing must stay truncated: %+v", res)
+	}
+}
+
+// A single unreadable thread (archived, deleted, permissions) must not
+// discard every match already found. It is a shortfall, reported like
+// any other bound, not a fatal error.
+func TestSearchSurvivesAnUnreadableThread(t *testing.T) {
+	threaded := mkMsg("2.0", "U1", "needle in a parent")
+	threaded.ReplyCount = 1
+	api := &fakeAPI{
+		historyByChannel: map[string][]slack.Message{"C9": {threaded}},
+		repliesErr:       errors.New("thread_not_found"),
+	}
+	r, cap := newRelay(t, api, RelayConfig{})
+	out, err := r.Search(context.Background(), "k", SearchParams{Query: "needle", Channel: "C9", IncludeThreads: true})
+	if err != nil {
+		t.Fatalf("one bad thread aborted the whole search: %v", err)
+	}
+	res := searchOut(t, out)
+	if len(res.Matches) != 1 {
+		t.Fatalf("matches found before the bad thread were discarded: %+v", res)
+	}
+	if !res.Truncated || res.Note != noteThreadFetchFailed {
+		t.Fatalf("the skipped thread was not reported: %+v", res)
+	}
+	if !strings.Contains(cap.joined(), "thread_not_found") {
+		t.Fatalf("the underlying failure must still be logged: %q", cap.joined())
+	}
+}
+
+// A body that is nothing but broadcast pings strips to empty. Slack
+// rejects an empty text, so posting it would spend one of the ten posts
+// per minute on a call that could never land, and hand the agent a
+// mysterious no_text instead of the refusal it actually is.
+func TestPostRefusesABodyThatStripsToNothingWithoutSpendingTheCap(t *testing.T) {
+	api := &fakeAPI{postTS: "9.9"}
+	r, cap := newRelay(t, api, RelayConfig{PostsPerMinute: 1})
+
+	if _, err := r.Post(context.Background(), "k", "C9", "", "<!here|@here> <!channel>"); err == nil ||
+		!strings.Contains(err.Error(), "empty message") {
+		t.Fatalf("err = %v", err)
+	}
+	if api.postCalls != 0 {
+		t.Fatal("an unpostable message still reached chat.postMessage")
+	}
+	// The cap was not charged: a real post still goes through.
+	if _, err := r.Post(context.Background(), "k", "C9", "", "a real message"); err != nil {
+		t.Fatalf("the refused post spent the rate cap: %v", err)
+	}
+	if !strings.Contains(cap.joined(), "outcome=denied") {
+		t.Fatalf("log = %q", cap.joined())
 	}
 }
