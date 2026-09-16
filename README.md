@@ -194,15 +194,21 @@ against `allowed_channel_ids`, rate-capped, and logged.
 | Value | Effect |
 | --- | --- |
 | `off` | No MCP server registered; the agent gets no Slack tools. |
-| `read` *(default)* | `slack_read_thread`, `slack_read_channel`, `slack_list_channels`, `slack_search`. Exposes nothing the bot cannot already see. |
+| `read` *(default)* | `slack_read_thread`, `slack_read_channel`, `slack_list_channels`, `slack_search`. Exposes nothing the bot cannot already see — but see the DM rule below. |
 | `read_write` | Adds `slack_post`. Opt-in: ambient thread text can steer the agent into posting elsewhere. |
 
 `slack_search` is a *bounded local scan*, not Slack search: the relay
 fans out `conversations.history` over the allowed channels and matches
 locally, within a day window, a per-channel page cap, and the shared read
 budget — flagging every truncation. Slack's real `search.messages`
-requires a *user* token (`xoxp-`), which this process must never hold;
-see [`BACKLOG.md`](BACKLOG.md).
+requires a *user* token (`xoxp-`), which the relay's Slack client must
+never hold; see [`BACKLOG.md`](BACKLOG.md).
+
+With no `allowed_channel_ids` configured the reach is "the channels the
+bot is already in", **excluding DMs**: the bot holds a 1:1 DM with
+everyone who has ever messaged it, and one person's prompt must not be
+able to surface another person's private conversation. An operator who
+names a DM in `allowed_channel_ids` explicitly overrides that.
 
 **This adds two bot scopes** (`channels:read`, `groups:read`), so
 existing installs must reinstall the app before `slack_list_channels`

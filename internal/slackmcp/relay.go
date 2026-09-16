@@ -58,6 +58,10 @@ const (
 	noteBudget  = "the shared Slack read budget ran out mid-scan; results are partial"
 	noteFanout  = "too many channels to scan in one call; narrow with `channel`"
 	noteThreads = "thread-reply scan hit its per-call cap; some replies were not scanned"
+	// noteThreadFetchFailed covers a thread whose replies could not be
+	// read at all (archived, deleted, permissions). The scan continues;
+	// the shortfall is reported rather than swallowed.
+	noteThreadFetchFailed = "one or more threads could not be read and were skipped"
 )
 
 // defaultPostsPerMinute is the slack_post rate cap when unset. Mirrors
@@ -225,33 +229,63 @@ func (r *Relay) ReadChannel(ctx context.Context, sessionKey, channel string, lim
 	return encode(out)
 }
 
+// channelListLimit is one users.conversations page. Deliberately not
+// paged: paging turns "list my channels" into an unbounded enumeration
+// walk. A bot in more channels than this gets a SHORT list — which is
+// reported rather than silently returned, see permittedChannels.
+const channelListLimit = 200
+
+// noteChannelList is the truncation reason for a bot in more channels
+// than one users.conversations page holds.
+const noteChannelList = "the bot is in more channels than one listing page holds; some were not scanned — narrow with `channel`"
+
+// channelList is slack_list_channels' envelope. It is an object rather
+// than a bare array purely so truncation can be reported: the read
+// tools' contract is that a short answer always says it is short.
+type channelList struct {
+	Truncated bool          `json:"truncated"`
+	Note      string        `json:"note,omitempty"`
+	Channels  []channelInfo `json:"channels"`
+}
+
 // ListChannels returns the channels the bot is a member of, intersected
 // with the allowlist when one is configured — the agent must not even
 // learn the IDs of channels it may not read.
 func (r *Relay) ListChannels(ctx context.Context, sessionKey string) (string, error) {
-	out, err := r.permittedChannels(ctx, ToolListChannels, sessionKey)
+	out, more, err := r.permittedChannels(ctx, ToolListChannels, sessionKey)
 	if err != nil {
 		return "", err
 	}
-	r.cfg.Logf("slack-mcp: tool=%s session=%s outcome=ok channels=%d", ToolListChannels, sessionKey, len(out))
-	return encode(out)
+	res := channelList{Truncated: more, Channels: out}
+	if more {
+		res.Note = noteChannelList
+	}
+	r.cfg.Logf("slack-mcp: tool=%s session=%s outcome=ok channels=%d truncated=%v",
+		ToolListChannels, sessionKey, len(out), more)
+	return encode(res)
 }
 
 // permittedChannels lists the bot's channels intersected with the
 // allowlist, spending one read token. Shared by slack_list_channels and
 // by slack_search's fanout so the two can never disagree about what the
 // session may see.
-func (r *Relay) permittedChannels(ctx context.Context, tool, sessionKey string) ([]channelInfo, error) {
+//
+// The second return reports that Slack had MORE channels than the one
+// page we ask for. Both callers surface it: an unreported short list is
+// exactly the silent truncation the rest of this package refuses to do,
+// and it is worse here than anywhere else because it makes the search
+// fanout quietly narrower than the operator's allowlist.
+func (r *Relay) permittedChannels(ctx context.Context, tool, sessionKey string) ([]channelInfo, bool, error) {
 	if err := r.admitRead(tool, sessionKey, ""); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	chans, _, err := r.cfg.API.GetConversationsForUserContext(ctx, &slack.GetConversationsForUserParameters{
+	chans, cursor, err := r.cfg.API.GetConversationsForUserContext(ctx, &slack.GetConversationsForUserParameters{
 		Types:           []string{"public_channel", "private_channel"},
 		ExcludeArchived: true,
-		Limit:           200,
+		Limit:           channelListLimit,
 	})
 	if err != nil {
-		return nil, r.fail(tool, sessionKey, "", fmt.Errorf("users.conversations: %w", err))
+		return nil, false, r.fail(tool, sessionKey, "", fmt.Errorf("users.conversations: %w", err))
 	}
 	out := make([]channelInfo, 0, len(chans))
 	for _, c := range chans {
@@ -260,7 +294,7 @@ func (r *Relay) permittedChannels(ctx context.Context, tool, sessionKey string) 
 		}
 		out = append(out, channelInfo{ID: c.ID, Name: c.Name})
 	}
-	return out, nil
+	return out, cursor != "", nil
 }
 
 // searchMatch is one hit: the rendered message plus where it was found.
@@ -303,7 +337,7 @@ func (r *Relay) Search(ctx context.Context, sessionKey string, p SearchParams) (
 	if query == "" {
 		return "", r.fail(ToolSearch, sessionKey, p.Channel, errors.New("query is required"))
 	}
-	targets, err := r.searchTargets(ctx, sessionKey, p.Channel)
+	targets, moreChannels, err := r.searchTargets(ctx, sessionKey, p.Channel)
 	if err != nil {
 		return "", err
 	}
@@ -311,6 +345,9 @@ func (r *Relay) Search(ctx context.Context, sessionKey string, p SearchParams) (
 	oldest := fmt.Sprintf("%d.000000", r.now().Add(-time.Duration(clampSearchDays(p.Days))*24*time.Hour).Unix())
 
 	res := searchResult{Query: query, ChannelsInScope: len(targets), Oldest: oldest, Matches: []searchMatch{}}
+	if moreChannels {
+		res.truncate(noteChannelList)
+	}
 	if len(targets) > maxSearchChannels {
 		targets = targets[:maxSearchChannels]
 		res.truncate(noteFanout)
@@ -341,10 +378,7 @@ func (r *Relay) Search(ctx context.Context, sessionKey string, p SearchParams) (
 		res.ChannelsScanned++
 		pool := resp.Messages
 		if p.IncludeThreads {
-			replies, note, err := r.searchThreads(ctx, sessionKey, t.ID, resp.Messages, &threadFetches)
-			if err != nil {
-				return "", err
-			}
+			replies, note := r.searchThreads(ctx, sessionKey, t.ID, resp.Messages, &threadFetches)
 			pool = append(pool, replies...)
 			if note != "" {
 				res.truncate(note)
@@ -373,12 +407,12 @@ func (s *searchResult) truncate(note string) {
 // searchTargets resolves the channel set to scan. An explicit channel
 // goes through the same allowlist check as any read; otherwise the scan
 // covers exactly the channels slack_list_channels would disclose.
-func (r *Relay) searchTargets(ctx context.Context, sessionKey, channel string) ([]channelInfo, error) {
+func (r *Relay) searchTargets(ctx context.Context, sessionKey, channel string) ([]channelInfo, bool, error) {
 	if channel != "" {
 		if err := r.allowed(ToolSearch, sessionKey, channel); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return []channelInfo{{ID: channel}}, nil
+		return []channelInfo{{ID: channel}}, false, nil
 	}
 	return r.permittedChannels(ctx, ToolSearch, sessionKey)
 }
@@ -387,17 +421,25 @@ func (r *Relay) searchTargets(ctx context.Context, sessionKey, channel string) (
 // page, so a match buried in a thread is findable. Each fetch is a read
 // token and counts against a per-call cap; hitting either returns what
 // was gathered plus the note explaining the shortfall.
-func (r *Relay) searchThreads(ctx context.Context, sessionKey, channel string, msgs []slack.Message, fetches *int) ([]slack.Message, string, error) {
+//
+// A FAILED fetch is a shortfall too, not a fatal error. An earlier
+// version propagated it and aborted the whole search, throwing away
+// every match already found in every other channel — one archived or
+// deleted thread turned a good search into nothing. A thread that
+// cannot be read is skipped, the result is marked truncated, and the
+// failure is logged like any other refusal.
+func (r *Relay) searchThreads(ctx context.Context, sessionKey, channel string, msgs []slack.Message, fetches *int) ([]slack.Message, string) {
 	var out []slack.Message
+	note := ""
 	for _, m := range msgs {
 		if m.ReplyCount <= 0 {
 			continue
 		}
 		if *fetches >= maxSearchThreadFetches {
-			return out, noteThreads, nil
+			return out, noteThreads
 		}
 		if !r.reads.Allow() {
-			return out, noteBudget, nil
+			return out, noteBudget
 		}
 		*fetches++
 		replies, _, _, err := r.cfg.API.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
@@ -407,11 +449,13 @@ func (r *Relay) searchThreads(ctx context.Context, sessionKey, channel string, m
 			Inclusive: true,
 		})
 		if err != nil {
-			return nil, "", r.fail(ToolSearch, sessionKey, channel, fmt.Errorf("conversations.replies: %w", err))
+			r.fail(ToolSearch, sessionKey, channel, fmt.Errorf("conversations.replies ts=%s: %w", m.Timestamp, err))
+			note = noteThreadFetchFailed
+			continue
 		}
 		out = append(out, replies...)
 	}
-	return out, "", nil
+	return out, note
 }
 
 // matches filters a scanned pool down to the substring hits and renders
@@ -441,11 +485,12 @@ func (r *Relay) now() time.Time {
 	return time.Now()
 }
 
-// Post posts a message as the bot, after four checks: the channel
-// allowlist, the self-drive sentinel, the mass-ping strip, and the rate
-// cap. Slack itself enforces the last one we rely on but do not
-// implement — the app has no chat:write.public scope, so a post into a
-// channel the bot has not been invited to simply fails.
+// Post posts a message as the bot, after five checks: the channel
+// allowlist, the self-drive sentinel, the mass-ping strip, the
+// resulting-body emptiness check, and the rate cap. Slack itself
+// enforces the last one we rely on but do not implement — the app has
+// no chat:write.public scope, so a post into a channel the bot has not
+// been invited to simply fails.
 func (r *Relay) Post(ctx context.Context, sessionKey, channel, threadTS, text string) (string, error) {
 	if err := r.allowed(ToolPost, sessionKey, channel); err != nil {
 		return "", err
@@ -454,14 +499,25 @@ func (r *Relay) Post(ctx context.Context, sessionKey, channel, threadTS, text st
 		return "", r.fail(ToolPost, sessionKey, channel,
 			errors.New("refusing to post a message beginning with the operator's self-drive sentinel"))
 	}
-	if !r.posts.Allow() {
-		return "", r.fail(ToolPost, sessionKey, channel,
-			fmt.Errorf("slack_post rate cap exceeded; try again shortly"))
-	}
 	// Scrub is the structural belt to the prefix refusal above: if the
 	// relay can never emit the sentinel at all, an agent-authored drive
 	// message is impossible even in the forms the prefix check misses.
+	//
+	// Both rewrites happen BEFORE the rate cap is charged. A post whose
+	// entire body was a broadcast ping (`@channel`) strips to nothing,
+	// and chat.postMessage rejects an empty text — so charging first
+	// would spend one of ten posts per minute on a call that was never
+	// going to land, and the agent would read the resulting `no_text` as
+	// a mysterious Slack failure instead of the refusal it is.
 	clean := stripBroadcastPings(r.cfg.SelfDrive.Scrub(text))
+	if clean == "" {
+		return "", r.fail(ToolPost, sessionKey, channel,
+			errors.New("refusing to post an empty message; the text was nothing but channel-wide pings, which this bot strips"))
+	}
+	if !r.posts.Allow() {
+		return "", r.fail(ToolPost, sessionKey, channel,
+			errors.New("slack_post rate cap exceeded; try again shortly"))
+	}
 	// thread_ts is appended only when set: slack-go's MsgOptionTS writes
 	// the parameter unconditionally, and an empty thread_ts is rejected
 	// by Slack rather than treated as "top level".
@@ -488,20 +544,42 @@ func (r *Relay) allowed(tool, sessionKey, channel string) error {
 	if r.channelPermitted(channel) {
 		return nil
 	}
+	if len(r.cfg.AllowedChannelIDs) == 0 && isDM(channel) {
+		return r.fail(tool, sessionKey, channel,
+			fmt.Errorf("channel %s is a direct message; these tools do not reach DMs unless the operator names one in allowed_channel_ids", channel))
+	}
 	return r.fail(tool, sessionKey, channel,
 		fmt.Errorf("channel %s is not in this bot's allowed_channel_ids; the operator must permit it", channel))
 }
 
-// channelPermitted reports whether channel is within the allowlist. An
-// empty allowlist means "wherever the bot already is" — the same policy
-// the message handler uses.
+// channelPermitted reports whether channel is within the allowlist.
+//
+// An explicit allowlist is the operator's exhaustive answer and decides
+// on its own — if they name a DM conversation, they meant it.
+//
+// An EMPTY allowlist means "wherever the bot already is", the same
+// policy the message handler uses, with one subtraction: DM
+// conversations (D…) are refused. That subtraction is not cosmetic. The
+// bot holds a 1:1 DM with every person who has ever messaged it, and
+// these tools are driven by an agent steered by ambient thread text
+// written by someone else entirely — so without it, anyone who can
+// prompt the bot in a channel could have it read a *different* person's
+// private conversation with the bot and paste it back. "Nothing the bot
+// cannot already see" is true of the DM; it is the AUDIENCE that
+// widens. Group DMs are unreachable for the same purpose by a different
+// route: the app has no mpim:history scope.
 func (r *Relay) channelPermitted(channel string) bool {
 	if len(r.cfg.AllowedChannelIDs) == 0 {
-		return true
+		return !isDM(channel)
 	}
 	_, ok := r.cfg.AllowedChannelIDs[channel]
 	return ok
 }
+
+// isDM reports whether a Slack conversation id names a 1:1 DM. Slack's
+// id prefixes are stable and documented: C public channel, G private
+// channel, D im.
+func isDM(channel string) bool { return strings.HasPrefix(channel, "D") }
 
 // admitRead applies the read rate cap. Denials are logged like any other
 // refusal so an operator can see an enumeration walk being cut off.
