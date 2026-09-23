@@ -8,13 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/slack-go/slack"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/convo"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/slack-acp/internal/journal"
 	"github.com/kfet/slack-acp/internal/ratelimit"
@@ -67,25 +67,17 @@ type Config struct {
 	Now func() time.Time
 }
 
-// inflightEntry wraps a per-call cancel func with a unique identity so
-// clearInflight can tell its own entry from one a follow-up has since
-// installed. Comparing the cancel funcs themselves via fmt.Sprintf("%p",
-// ...) is not safe: two closures produced from the same source line
-// share an underlying code pointer.
-type inflightEntry struct {
-	cancel context.CancelFunc
-}
-
 // Handler implements slackproto.Handler.
 type Handler struct {
 	cfg Config
 
-	// inflight maps ConvKey → entry of the goroutine processing it,
-	// so a follow-up message in the same thread can cancel the prior run.
-	inflightMu    sync.Mutex
-	inflightCond  *sync.Cond // broadcast when inflight is mutated
-	inflight      map[router.ConvKey]*inflightEntry
-	waitIdleWaits int // # goroutines parked in WaitIdle's Cond.Wait (test sync)
+	// convo is acp-kit's shared conversation core. It owns the chat
+	// commands (`!model`, `!new`, `!stop`, `!status`, … — answered by the
+	// relay, never sent to the agent, so they work even when the model
+	// is broken), the sticky per-thread model override, the in-flight
+	// turn registry (a follow-up in the same thread supersedes the
+	// running turn) and the turn liveness bound.
+	convo *convo.Manager
 
 	// selfDrive rate-caps hatch events. Nil when the hatch is off.
 	selfDrive *ratelimit.Bucket
@@ -96,8 +88,8 @@ func New(cfg Config) *Handler {
 	if cfg.NoProgressTimeout <= 0 {
 		cfg.NoProgressTimeout = 2 * time.Minute
 	}
-	h := &Handler{cfg: cfg, inflight: make(map[router.ConvKey]*inflightEntry)}
-	h.inflightCond = sync.NewCond(&h.inflightMu)
+	h := &Handler{cfg: cfg}
+	h.convo = mustConvo(h.newConvo())
 	if cfg.SelfDrive.Enabled() {
 		if cfg.SelfDrivePerMinute <= 0 {
 			h.cfg.SelfDrivePerMinute = defaultSelfDrivePerMinute
@@ -111,34 +103,7 @@ func New(cfg Config) *Handler {
 // is done. Used by tests to synchronise on the inflight-empty
 // transition without wall-clock polling; also useful for graceful
 // shutdown paths.
-//
-// Implementation note: sync.Cond.Wait can't accept a context, so a
-// helper goroutine bridges ctx → Broadcast. The helper exits as soon
-// as WaitIdle returns (either because the map drained or ctx fired)
-// — see the deferred close(stop) below — so there's no goroutine leak
-// even on long-lived ctx.
-func (h *Handler) WaitIdle(ctx context.Context) error {
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-stop:
-			return
-		}
-		h.inflightMu.Lock()
-		h.inflightCond.Broadcast()
-		h.inflightMu.Unlock()
-	}()
-	h.inflightMu.Lock()
-	defer h.inflightMu.Unlock()
-	for len(h.inflight) > 0 && ctx.Err() == nil {
-		h.waitIdleWaits++
-		h.inflightCond.Wait()
-		h.waitIdleWaits--
-	}
-	return ctx.Err()
-}
+func (h *Handler) WaitIdle(ctx context.Context) error { return h.convo.Active().WaitIdle(ctx) }
 
 // SetAPI installs the Slack API client (used for posting/updating messages).
 // Called by main after the slackproto.Client has been constructed.
@@ -231,21 +196,12 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
 	journal.Log(rec)
 
-	// Cancel any in-flight prompt for this thread, then start a new one.
-	h.cancelInflight(ctx, key)
-	// Cancellable only. The turn's real bound is the progress-resetting
-	// liveness clock, armed inside run once the agent is about to be
-	// prompted.
-	pctx, cancel := context.WithCancel(context.Background())
-	entry := &inflightEntry{cancel: cancel}
-	h.setInflight(key, entry)
-	go func() {
-		defer h.clearInflight(key, entry)
-		defer cancel()
-		if err := h.run(pctx, ev, key, text); err != nil {
-			kitlog.Debugf("handler: prompt error: %v", err)
-		}
-	}()
+	// Relay commands are answered here and never reach the agent;
+	// anything else starts a turn, superseding the thread's running one
+	// (convo Supersede mode). The turn's real bound is the
+	// progress-resetting liveness clock, armed inside run once the agent
+	// is about to be prompted.
+	h.convo.Dispatch(ctx, convo.In{Conv: key.String(), Text: text, Meta: ev})
 }
 
 // journalPath classifies an already-normalised event back onto the
@@ -282,36 +238,6 @@ func (h *Handler) allowed(ev slackproto.Event) bool {
 		}
 	}
 	return true
-}
-
-func (h *Handler) cancelInflight(ctx context.Context, key router.ConvKey) {
-	h.inflightMu.Lock()
-	e, ok := h.inflight[key]
-	if ok {
-		delete(h.inflight, key)
-		h.inflightCond.Broadcast()
-	}
-	h.inflightMu.Unlock()
-	if ok {
-		e.cancel()
-		// Also tell the agent to stop generating.
-		h.cfg.Router.Cancel(ctx, key)
-	}
-}
-
-func (h *Handler) setInflight(key router.ConvKey, e *inflightEntry) {
-	h.inflightMu.Lock()
-	h.inflight[key] = e
-	h.inflightMu.Unlock()
-}
-
-func (h *Handler) clearInflight(key router.ConvKey, e *inflightEntry) {
-	h.inflightMu.Lock()
-	if cur, ok := h.inflight[key]; ok && cur == e {
-		delete(h.inflight, key)
-		h.inflightCond.Broadcast()
-	}
-	h.inflightMu.Unlock()
 }
 
 // backfillIfNeeded detects a gap in thread history and feeds the missed
@@ -519,10 +445,7 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// the agent, not the relay's own setup. The sink is wrapped
 	// OUTERMOST so a buffering decorator below (the abstain sink)
 	// cannot make a streaming agent look silent.
-	live, lctx, stopLive := client.StartTurnLiveness(ctx, client.TurnLivenessConfig{
-		NoProgressTimeout: h.cfg.NoProgressTimeout,
-		MaxTurnDuration:   h.cfg.TurnCeiling,
-	})
+	live, lctx, stopLive := h.convo.Arm(ctx)
 	defer stopLive()
 	sink = live.Wrap(sink)
 
@@ -533,10 +456,11 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	}
 
 	// Resolve the model identity — provider emoji + short display name
-	// — from the agent's current model. Both are empty for unknown
-	// providers or when the agent hasn't reported a model yet (the
-	// segment is then dropped by the renderer).
-	if _, currentID := h.cfg.Router.Agent().Models(); currentID != "" {
+	// — from the thread's sticky `!model` choice, else the agent's
+	// current model. Both are empty for unknown providers or when the
+	// agent hasn't reported a model yet (the segment is then dropped by
+	// the renderer).
+	if currentID := h.convo.EffectiveModel(key.String()); currentID != "" {
 		baseSink.SetModelInfo(
 			statusline.ProviderEmojiForModel(currentID),
 			statusline.ShortModelName(currentID),
@@ -546,6 +470,9 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	sess.Mu.Lock()
 	defer sess.Mu.Unlock()
 	h.cfg.Router.Touch(sess)
+	// A sticky `!model` choice is pushed to the session here, lazily and
+	// at most once per session, so a reset or GC'd session gets it too.
+	h.convo.ApplyModel(ctx, key.String(), sess.SessionID)
 
 	promptText := text
 	// In ambient mode, prefix messages with the sender's name so the
