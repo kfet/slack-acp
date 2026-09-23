@@ -68,6 +68,12 @@ type Agent interface {
 	// a session has been created. Used by the relay to resolve the
 	// provider emoji and short model name for the status line.
 	Models() (models []client.ModelInfo, currentID string)
+	// AvailableCommands is the agent's advertised command catalog; it
+	// gates the `!command` passthrough allowlist.
+	AvailableCommands() []client.CommandInfo
+	// SetModel selects the model for one session. It backs `!model
+	// <id>`, applied lazily at the start of the next turn.
+	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
 }
 
 // Router owns the conv→session map and creates sessions on demand.
@@ -80,6 +86,7 @@ type Router struct {
 
 	mu    sync.Mutex
 	byKey map[ConvKey]*Session
+	fresh map[ConvKey]bool // keys Reset since their last session: skip resume once
 }
 
 // Config configures a Router.
@@ -122,6 +129,7 @@ func New(cfg Config) (*Router, error) {
 		idleTimeout:  cfg.IdleTimeout,
 		systemPrompt: cfg.SystemPrompt,
 		byKey:        make(map[ConvKey]*Session),
+		fresh:        make(map[ConvKey]bool),
 	}, nil
 }
 
@@ -302,6 +310,7 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.Sessi
 		r.agent.RebindSink(s.SessionID, sink)
 		return s, nil
 	}
+	fresh := r.fresh[key]
 	r.mu.Unlock()
 
 	cwd, err := r.cwdFor(key)
@@ -313,8 +322,13 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.Sessi
 	// The cwd is stable across restarts, so on a cold start the agent
 	// likely has a previous session indexed under it (e.g. fir's
 	// .fir/sessions/). Best-effort: any failure falls through to a
-	// fresh session below.
-	sid, resumed := r.tryResume(ctx, cwd, sink)
+	// fresh session below. Skipped once after Reset (`!new`), which
+	// would otherwise just reload the session it discarded.
+	var sid acp.SessionId
+	resumed := false
+	if !fresh {
+		sid, resumed = r.tryResume(ctx, cwd, sink)
+	}
 	caps := r.agent.Caps()
 	pendingInline := false
 	if !resumed {
@@ -348,10 +362,12 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.Sessi
 		r.agent.DropSession(sid)
 		// cwd is shared/stable across attempts — do not remove it.
 		other.lastUsed = time.Now()
+		delete(r.fresh, key)
 		r.agent.RebindSink(other.SessionID, sink)
 		return other, nil
 	}
 	r.byKey[key] = s
+	delete(r.fresh, key)
 	if resumed {
 		kitlog.Debugf("router: resumed session %s for %s in %s", sid, key, cwd)
 	} else {
@@ -411,6 +427,31 @@ func (r *Router) Cancel(ctx context.Context, key ConvKey) {
 		return
 	}
 	_ = r.agent.Cancel(ctx, s.SessionID)
+}
+
+// Live reports key's live session id and last use without creating a
+// session, so `!status` never spawns one.
+func (r *Router) Live(key ConvKey) (acp.SessionId, time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.byKey[key]
+	if !ok {
+		return "", time.Time{}, false
+	}
+	return s.SessionID, s.lastUsed, true
+}
+
+// Reset drops key's live session so the next GetOrCreate starts a NEW
+// one — the resume tier is skipped once. The thread's cwd is kept.
+func (r *Router) Reset(key ConvKey) {
+	r.mu.Lock()
+	s, ok := r.byKey[key]
+	delete(r.byKey, key)
+	r.fresh[key] = true
+	r.mu.Unlock()
+	if ok {
+		r.agent.DropSession(s.SessionID)
+	}
 }
 
 // Run drives idle GC until ctx is cancelled.

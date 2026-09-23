@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Relay chat commands.** `!help`, `!status`, `!model [filter|id]`, `!new`,
+  `!stop`, `!login` and the passthrough agent commands (`!reload` → `/reload`,
+  …) are now answered by the relay itself through acp-kit v0.24.0's shared
+  `convo` core — the same code poe-acp and zulip-acp run. They used to reach
+  the agent as an ordinary prompt, so a broken model could not be switched
+  away from; now they work whatever state the model is in. `!model <id>` is
+  sticky per thread and applied at the start of the next turn; `!new` starts
+  a genuinely fresh session (it does not resume the one it discarded).
+
 ## [0.9.0] - 2026-09-19
 
 ### Added

@@ -145,6 +145,41 @@ func (f *fakeAgent) Models() (models []client.ModelInfo, currentID string) {
 	return nil, ""
 }
 
+func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return nil }
+
+func (f *fakeAgent) SetModel(context.Context, acp.SessionId, string) error { return nil }
+
+func TestLiveAndResetSkipsResumeOnce(t *testing.T) {
+	fa := newFakeAgent()
+	fa.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	fa.listResult = []client.SessionInfo{{SessionId: "old"}}
+	r := newRouter(t, fa)
+	key := ConvKey{ChannelID: "C1", ThreadTS: "1.1"}
+	if _, _, ok := r.Live(key); ok {
+		t.Fatal("live before any turn")
+	}
+	s, err := r.GetOrCreate(context.Background(), key, nil)
+	if err != nil || s.SessionID != "old" {
+		t.Fatalf("resume: %v %v", s, err)
+	}
+	if sid, last, ok := r.Live(key); !ok || sid != "old" || last.IsZero() {
+		t.Fatal("live")
+	}
+	r.Reset(key)
+	if fa.lastDropSID != "old" {
+		t.Fatal("reset did not drop")
+	}
+	s, _ = r.GetOrCreate(context.Background(), key, nil)
+	if s.SessionID == "old" {
+		t.Fatal("reset resumed the discarded session")
+	}
+	r.Reset(key)
+	r.Reset(key) // nothing live: no drop
+	if atomic.LoadInt32(&fa.dropCalls) != 2 {
+		t.Fatalf("drops = %d", fa.dropCalls)
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

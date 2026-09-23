@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +38,9 @@ type fakeAgent struct {
 	// exercise provider-emoji resolution. Empty by default → no
 	// emoji segment.
 	currentModel string
+	// models is the advertised catalogue; setModels records SetModel.
+	models    []client.ModelInfo
+	setModels []string
 }
 
 func newFakeAgent() *fakeAgent {
@@ -97,7 +99,16 @@ func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 func (f *fakeAgent) Models() (models []client.ModelInfo, currentID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return nil, f.currentModel
+	return f.models, f.currentModel
+}
+
+func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return nil }
+
+func (f *fakeAgent) SetModel(_ context.Context, sid acp.SessionId, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setModels = append(f.setModels, string(sid)+"="+id)
+	return nil
 }
 
 // emit synthesises a session/update from the agent side.
@@ -570,27 +581,6 @@ func TestHandleCancelsOnFollowup(t *testing.T) {
 	}
 }
 
-// ---- clearInflight idempotence: a stale cancel entry from a previous
-// run must not delete the current entry. ----
-
-func TestClearInflightIgnoresStale(t *testing.T) {
-	h := New(Config{})
-	key := router.ConvKey{ChannelID: "C", ThreadTS: "T"}
-	_, cOld := context.WithCancel(context.Background())
-	_, cCur := context.WithCancel(context.Background())
-	old := &inflightEntry{cancel: cOld}
-	cur := &inflightEntry{cancel: cCur}
-	h.setInflight(key, cur)
-	h.clearInflight(key, old)
-	if h.inflightCount() != 1 {
-		t.Fatalf("stale clear should not have removed entry; len=%d", h.inflightCount())
-	}
-	h.clearInflight(key, cur)
-	if h.inflightCount() != 0 {
-		t.Fatal("matching clear should remove entry")
-	}
-}
-
 // ---- watchdog: covers the FlushIfPending path + ctx exit ----
 
 func TestWatchdogExits(t *testing.T) {
@@ -636,11 +626,7 @@ func TestWatchdogTickFlushes(t *testing.T) {
 
 // ---- helpers used above ----
 
-func (h *Handler) inflightCount() int {
-	h.inflightMu.Lock()
-	defer h.inflightMu.Unlock()
-	return len(h.inflight)
-}
+func (h *Handler) inflightCount() int { return h.convo.Active().Len() }
 
 // ---- spinner ----
 
@@ -701,47 +687,6 @@ func TestSpinnerTicksAndSelfDisarms(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("spinner did not self-disarm after FirstChunk")
-	}
-}
-
-// TestWaitIdleCancel covers the ctx-cancellation branch: an inflight
-// entry is held; WaitIdle blocks; the caller cancels its ctx and the
-// helper goroutine broadcasts to unblock the Cond.Wait loop.
-func TestWaitIdleCancel(t *testing.T) {
-	h := New(Config{})
-	key := router.ConvKey{ChannelID: "C", ThreadTS: "T"}
-	_, c := context.WithCancel(context.Background())
-	h.setInflight(key, &inflightEntry{cancel: c})
-	defer func() {
-		h.inflightMu.Lock()
-		delete(h.inflight, key)
-		h.inflightCond.Broadcast()
-		h.inflightMu.Unlock()
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- h.WaitIdle(ctx) }()
-	// Wait until WaitIdle has parked in Cond.Wait, so cancel is guaranteed
-	// to wake it through the helper goroutine (no race where ctx is already
-	// cancelled when WaitIdle's loop first checks it).
-	for {
-		h.inflightMu.Lock()
-		w := h.waitIdleWaits
-		h.inflightMu.Unlock()
-		if w > 0 {
-			break
-		}
-		runtime.Gosched()
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("want ctx error from cancelled WaitIdle")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("WaitIdle did not return after cancel")
 	}
 }
 
