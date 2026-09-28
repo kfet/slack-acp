@@ -68,6 +68,10 @@ type Agent interface {
 	// a session has been created. Used by the relay to resolve the
 	// provider emoji and short model name for the status line.
 	Models() (models []client.ModelInfo, currentID string)
+	// CurrentModel is the model one session is running. The status
+	// line names it (via convo.EffectiveModel); Models' current is
+	// process-wide and names whichever session was opened last.
+	CurrentModel(sid acp.SessionId) (string, bool)
 	// AvailableCommands is the agent's advertised command catalog; it
 	// gates the `!command` passthrough allowlist.
 	AvailableCommands() []client.CommandInfo

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +42,17 @@ type fakeAgent struct {
 	// models is the advertised catalogue; setModels records SetModel.
 	models    []client.ModelInfo
 	setModels []string
+	// sessionModels, when set, gives each new session its own id and
+	// the next model in line, reported by CurrentModel.
+	sessionModels []string
+	perModel      map[acp.SessionId]string
+}
+
+func (f *fakeAgent) CurrentModel(sid acp.SessionId) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, ok := f.perModel[sid]
+	return m, ok
 }
 
 func newFakeAgent() *fakeAgent {
@@ -56,6 +68,13 @@ func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionU
 		return "", f.newSessErr
 	}
 	sid := acp.SessionId("sid")
+	if len(f.sessionModels) > 0 {
+		if f.perModel == nil {
+			f.perModel = map[acp.SessionId]string{}
+		}
+		sid = acp.SessionId(fmt.Sprintf("sid-%d", len(f.perModel)))
+		f.perModel[sid], f.sessionModels = f.sessionModels[0], f.sessionModels[1:]
+	}
 	f.sinks[sid] = sink
 	return sid, nil
 }
@@ -327,6 +346,31 @@ func TestHandleResolvesModelIdentity(t *testing.T) {
 	final := lastBody(t, fs)
 	if !strings.HasSuffix(final, "\n\n_🏛️ sonnet-4_") {
 		t.Fatalf("expected model identity footer; got %q", final)
+	}
+}
+
+// TestStatusFooterNamesEachSessionsModel: one agent serves every
+// thread, so Models' current is the model of whichever session was
+// opened last. Each thread's footer names its own session's model.
+func TestStatusFooterNamesEachSessionsModel(t *testing.T) {
+	fa := newFakeAgent()
+	fa.currentModel = "anthropic/claude-opus-5"
+	fa.sessionModels = []string{"anthropic/claude-opus-5-5", "anthropic/claude-sonnet-4"}
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+	fa.promptHook = func(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+		fa.emit(sid, acp.SessionNotification{SessionId: sid,
+			Update: acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "ok"}}}}})
+		return acp.StopReasonEndTurn, nil
+	}
+	h := New(Config{Router: r, API: fs.client(), NoProgressTimeout: 5 * time.Second})
+	for _, tc := range []struct{ thread, want string }{{"1.0", "opus-5.5"}, {"2.0", "sonnet-4"}, {"1.0", "opus-5.5"}} {
+		h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: tc.thread, TS: tc.thread + "1", Text: "hi"})
+		waitForIdle(t, h)
+		if final := lastBody(t, fs); !strings.HasSuffix(final, " "+tc.want+"_") {
+			t.Fatalf("thread %s footer = %q, want model %s", tc.thread, final, tc.want)
+		}
 	}
 }
 

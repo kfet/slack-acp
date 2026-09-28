@@ -148,6 +148,7 @@ func (f *fakeAgent) Models() (models []client.ModelInfo, currentID string) {
 func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return nil }
 
 func (f *fakeAgent) SetModel(context.Context, acp.SessionId, string) error { return nil }
+func (f *fakeAgent) CurrentModel(acp.SessionId) (string, bool)             { return "", false }
 
 func TestLiveAndResetSkipsResumeOnce(t *testing.T) {
 	fa := newFakeAgent()
