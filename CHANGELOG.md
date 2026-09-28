@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-28
+
 ### Fixed
 
 - The status footer and `!status` name the model of the thread's own session. A thread with no `!model` choice showed the agent's process-wide current model — the model of whichever thread's session was opened last. Uses acp-kit v0.27.0 (`convo.ModelReporter`, `AgentProc.CurrentModel`); falls back to the old value only when the session's model is unknown.
