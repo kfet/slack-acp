@@ -46,6 +46,10 @@ func (h *Handler) newConvo() (*convo.Manager, error) {
 // scrub and own-ts memory apply to it too.
 func (h *Handler) reply(ctx context.Context, in *convo.In, text string) error {
 	ev := in.Meta.(slackproto.Event)
+	// The first reply line carries the outcome — for a fuzzy `!model`
+	// query that is "`query` → `resolved/id`", so the log records both.
+	first, _, _ := strings.Cut(text, "\n")
+	kitlog.Debugf("handler: command %q in %s: %s", in.Text, in.Conv, first)
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
 	stream.SetSelfDrive(h.cfg.SelfDrive)
 	if err := stream.Append(ctx, toMrkdwn(text)); err != nil {

@@ -86,6 +86,45 @@ func TestCommandsWorkWithBrokenModel(t *testing.T) {
 	}
 }
 
+// `!m` is `!model`'s alias and resolves fuzzy queries: one clear best
+// match switches and echoes the full id; an ambiguous query lists; `!me`
+// is not a model command.
+func TestFuzzyModelAlias(t *testing.T) {
+	fa := newFakeAgent()
+	fa.models = []client.ModelInfo{
+		{ID: "anthropic/claude-opus-5-5"}, {ID: "anthropic/claude-sonnet-5"}, {ID: "openai/gpt-6"},
+	}
+	r := newTestRouter(t, fa)
+	fs := newFakeSlack()
+	defer fs.close()
+	h := New(Config{Router: r, API: fs.client()})
+	say := func(text string) string {
+		fs.mu.Lock()
+		n := len(fs.bodies)
+		fs.mu.Unlock()
+		h.Handle(context.Background(), slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "2.0", Text: text, IsDM: true})
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		return strings.Join(fs.bodies[n:], "\n")
+	}
+	if got := say("!m"); !strings.Contains(got, "openai/gpt-6") {
+		t.Fatalf("bare !m did not list: %q", got)
+	}
+	if got := say("!m anth/opus55"); !strings.Contains(got, "`anth/opus55` → `anthropic/claude-opus-5-5`") {
+		t.Fatalf("fuzzy !m did not echo the resolved id: %q", got)
+	}
+	if got := say("!m anthropic"); !strings.Contains(got, "claude-sonnet-5") || !strings.Contains(got, "claude-opus-5-5") || strings.Contains(got, "→") {
+		t.Fatalf("ambiguous query guessed: %q", got)
+	}
+	if h.convo.EffectiveModel("C1/1.0") != "anthropic/claude-opus-5-5" {
+		t.Fatalf("model = %q", h.convo.EffectiveModel("C1/1.0"))
+	}
+	if got := say("!me"); strings.Contains(got, "→") {
+		t.Fatalf("!me treated as a model command: %q", got)
+	}
+	waitForIdle(t, h)
+}
+
 func TestReplyPostFailureIsTolerated(t *testing.T) {
 	fs := newFakeSlack()
 	defer fs.close()
