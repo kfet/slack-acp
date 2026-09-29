@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-30
+
 ### Added
 
 - `!model` resolves fuzzy queries (acp-kit v0.28.0 `command.ResolveModel`): `!model anth/opus55` switches to `anthropic/claude-opus-5-5` and the reply echoes the full id; an ambiguous query lists the candidates instead of guessing. `!m` is an alias for `!model` (`!me`/`!msg` are not). Relay commands are debug-logged with their outcome line, so the query and resolved id are recorded.
