@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Bump `acp-kit` to v0.30.0 (v0.29.0: `!upgrade` alias, `!restart`; v0.30.0: no panics in production code, updater survives Homebrew deleting the agent dir, convo nil-outcome crash fixed).
+
 ## [0.11.0] - 2026-09-30
 
 ### Added
