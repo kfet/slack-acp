@@ -117,7 +117,7 @@ chmod +x "$R/.local/bin/systemctl"
 echo 100 >"$R/pid"; mkdir -p "$R/proc/100"; cp -p "$R/.local/bin/slack-acp" "$R/proc/old-image"
 ln -sf "$R/proc/old-image" "$R/proc/100/exe"
 mv "$R/proc/old-image" "$R/proc/slack-acp.running"; ln -sf "$R/proc/slack-acp.running" "$R/proc/100/exe"
-export FLEET_LOCK="$T/lock" SLACK_ACP_RELEASE_BASE="file://$REL"
+export FLEET_LOCK="$T/lock" SLACK_ACP_RELEASE_BASE="file://$REL" SETTLE_WAIT=0
 
 out=$("$CV" bot-a --target-root "$R" 2>&1)
 grep -q "slack-acp: 0.11.1 → 0.11.2" <<<"$out" && ok || bad "dry run: no binary change: $out"
@@ -139,6 +139,7 @@ ls "$R/.local/bin/slack-acp.bak-"* >/dev/null 2>&1 && ok || bad "no binary backu
 ls "$R/.local/bin/.slack-acp.new."* >/dev/null 2>&1 && bad "temp binary left behind" || ok
 eq "apply wrote config" "$(jq -c . "$R/.config/slack-acp/config.json")" "$(jq -c .config "$FIX/bot-a.json")"
 eq "apply wrote unit" "$(cat "$R/.config/systemd/user/slack-acp.service")" "$("$CV" render bot-a unit "$R")"
+eq "new config is 0600" "$(stat -c %a "$R/.config/slack-acp/config.json")" "600"
 grep -q "daemon-reload" "$R/systemctl.log" && ok || bad "unit change without daemon-reload"
 grep -q "restart slack-acp.service" "$R/systemctl.log" && ok || bad "no restart"
 grep -q "converged (" <<<"$out" && ok || bad "apply did not report converged: $out"

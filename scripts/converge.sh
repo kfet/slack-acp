@@ -509,13 +509,15 @@ rcat() {
   case "$rc" in 0|42) : ;; *) die "failed reading $1 (rc=$rc — ssh/transport error?)" ;; esac
 }
 
-# rwrite <abs-path> <local-content-file> — backup, then temp + rename
+# rwrite <abs-path> <local-content-file> <mode-if-new> — backup (last 3 kept),
+# then temp + rename. An existing file keeps its mode.
 rwrite() {
   rsh "set -e; p='$1'; mkdir -p \"\$(dirname \"\$p\")\"; \
        [ -f \"\$p\" ] && cp -p \"\$p\" \"\$p.bak-$STAMP\"; \
        t=\$(mktemp \"\$p.new.XXXXXX\"); cat > \"\$t\"; \
-       [ -f \"\$p\" ] && chmod --reference=\"\$p\" \"\$t\" 2>/dev/null || chmod 644 \"\$t\"; \
-       mv -f \"\$t\" \"\$p\"" <"$2"
+       m=\$(stat -c %a \"\$p\" 2>/dev/null || stat -f %Lp \"\$p\" 2>/dev/null || echo $3); \
+       chmod \"\$m\" \"\$t\"; mv -f \"\$t\" \"\$p\"; \
+       ls -t \"\$p\".bak-* 2>/dev/null | tail -n +4 | while read -r o; do rm -f \"\$o\"; done" <"$2"
 }
 
 # diff_text <label> <abs-path> <desired-file> — byte diff; 0 same, 1 differs.
@@ -547,18 +549,19 @@ diff_json() {
 # ---------------------------------------------------------------------------
 SA_EXE=slack-acp
 
-# probe_state — prints "<running>|<pid>|<version>"; version is that of the
-# image the pid EXECUTES ($PROC_ROOT/<pid>/exe), empty when unknowable
-# (macOS has no /proc).
+# probe_state — prints "<running>|<pid>|<version>|<bin_newer>"; version is
+# that of the image the pid EXECUTES ($PROC_ROOT/<pid>/exe), empty when
+# unknowable (macOS has no /proc); bin_newer=1 when, in that case, the binary
+# file is newer than the process.
 probe_state() {
   local sup unit label
   sup=$(jqs '.supervisor')
   if [ -n "$TARGET_ROOT" ] && [ ! -x "$TARGET_ROOT/.local/bin/systemctl" ] \
      && [ ! -x "$TARGET_ROOT/.local/bin/launchctl" ]; then
-    echo '0|0|'; return 0
+    echo '0|0||0'; return 0
   fi
   unit=$(jqs '.unit // "slack-acp"'); label=$(launchd_label)
-  rsh "sup='$sup'; u='$unit'; label='$label'; proc='$PROC_ROOT'; zaname='$SA_EXE'
+  rsh "sup='$sup'; u='$unit'; label='$label'; proc='$PROC_ROOT'; zaname='$SA_EXE'; bin='$(p_abs "$(jqs '.binary')")'
 $(cat <<'EOS'
 pid=0; run=0
 if [ "$sup" = systemd-user ]; then
@@ -576,7 +579,16 @@ if [ "$run" = 1 ]; then
   e=$(readlink "$proc/$pid/exe" 2>/dev/null || true); e=${e% (deleted)}; e=${e##*/}
   case "$e" in "$zaname"|"$zaname".*) ver=$("$proc/$pid/exe" --version 2>/dev/null | head -1 || true) ;; esac
 fi
-printf '%s|%s|%s\n' "$run" "$pid" "$ver"
+# No /proc (macOS): the running image is unreadable, but a binary file
+# modified after the process started means the process runs an older image.
+newer=0
+if [ "$run" = 1 ] && [ -z "$ver" ] && [ ! -e "$proc/$pid" ]; then
+  st=$(ps -o lstart= -p "$pid" 2>/dev/null || true)
+  st=$(date -j -f '%a %b %d %T %Y' "$st" +%s 2>/dev/null || date -d "$st" +%s 2>/dev/null || echo '')
+  mt=$(stat -f %m "$bin" 2>/dev/null || stat -c %Y "$bin" 2>/dev/null || echo '')
+  [ -n "$st" ] && [ -n "$mt" ] && [ "$mt" -gt "$st" ] && newer=1
+fi
+printf '%s|%s|%s|%s\n' "$run" "$pid" "$ver" "$newer"
 EOS
 )"
 }
@@ -615,6 +627,7 @@ got=$("$t" --version 2>/dev/null | head -1 || true)
 [ "$got" = "$want" ] || { echo "downloaded binary reports '$got', wanted $want" >&2; exit 5; }
 [ -f "$b" ] && cp -p "$b" "$b.bak-$stamp"
 mv -f "$t" "$b"
+ls -t "$b".bak-* 2>/dev/null | tail -n +4 | while read -r o; do rm -f "$o"; done
 EOS
 )" || die "binary install failed on $HOST"
 }
@@ -634,7 +647,12 @@ restart_service() { # <sup_changed>
       fi ;;
     launchd)
       if [ "$changed" = 1 ] || ! rsh "launchctl print gui/\$(id -u)/$label >/dev/null 2>&1"; then
-        rsh "launchctl bootout gui/\$(id -u)/$label 2>/dev/null; launchctl bootstrap gui/\$(id -u) \"\$HOME/Library/LaunchAgents/$label.plist\""
+        # bootout returns before the job is gone; an immediate bootstrap
+        # then fails with "Input/output error". Wait, and retry once.
+        rsh "d=gui/\$(id -u); launchctl bootout \$d/$label 2>/dev/null; \
+             for i in 1 2 3 4 5 6 7 8 9 10; do launchctl print \$d/$label >/dev/null 2>&1 || break; sleep 1; done; \
+             p=\"\$HOME/Library/LaunchAgents/$label.plist\"; \
+             launchctl bootstrap \$d \"\$p\" || { sleep 2; launchctl bootstrap \$d \"\$p\"; }"
       else
         rsh "launchctl kickstart -k gui/\$(id -u)/$label"
       fi ;;
@@ -642,6 +660,9 @@ restart_service() { # <sup_changed>
 }
 
 # wait_connected <since-epoch> — poll the log for Socket Mode's handshake.
+# "slack: connected" is info-level from 0.12.0; older releases log it only
+# under SLACK_ACP_DEBUG, so for them a miss is a warning, not a failure (the
+# caller has already checked that the process stayed up).
 wait_connected() {
   local since=$1 unit i
   unit=$(jqs '.unit // "slack-acp"')
@@ -722,7 +743,7 @@ converge() {
     note "config $cfg ✓"
   else
     changes=$((changes + 1))
-    if [ "$apply" = 1 ]; then rwrite "$cfg" "$want_file"; note "config written (backup: $cfg.bak-$STAMP)"; fi
+    if [ "$apply" = 1 ]; then rwrite "$cfg" "$want_file" 600; note "config written (backup: $cfg.bak-$STAMP)"; fi
   fi
 
   # -- 3. supervisor definition ---------------------------------------------
@@ -733,16 +754,23 @@ converge() {
     note "supervisor $sfile ✓"
   else
     changes=$((changes + 1)); sup_changed=1
-    if [ "$apply" = 1 ]; then rwrite "$sfile" "$want_file"; note "supervisor written (backup: $sfile.bak-$STAMP)"; fi
+    if [ "$apply" = 1 ]; then rwrite "$sfile" "$want_file" 644; note "supervisor written (backup: $sfile.bak-$STAMP)"; fi
   fi
 
   # -- 4. running image -----------------------------------------------------
-  local state run_before pid_before ver_before stale
+  local state run_before pid_before ver_before newer_before stale
   state=$(probe_state)
-  IFS='|' read -r run_before pid_before ver_before <<<"$state"
+  IFS='|' read -r run_before pid_before ver_before newer_before <<<"$state"
   stale=$(stale_decision "$run_before" "$want" "$ver_before")
+  if [ "$newer_before" = 1 ] && [ "${stale%%|*}" != stale ]; then
+    stale="stale|binary on disk is newer than the running process"
+  fi
   [ "${stale%%|*}" = stale ] && note "running: ${stale#*|} — restart needed despite matching files"
   [ "$run_before" = 1 ] || { note "service is not running"; changes=$((changes + 1)); }
+  if [ "$(jqs '.supervisor')" = systemd-user ] && { [ -z "$TARGET_ROOT" ] || [ -x "$TARGET_ROOT/.local/bin/systemctl" ]; } && \
+     ! rsh "systemctl --user is-enabled $(jqs '.unit // "slack-acp"').service >/dev/null 2>&1"; then
+    note "unit is not enabled (would not start at boot)"; changes=$((changes + 1)); sup_changed=1
+  fi
 
   if [ "$changes" = 0 ] && [ "${stale%%|*}" != stale ]; then
     echo "== $bot: already converged, nothing to do${ver_before:+ (running $ver_before)}"
@@ -757,12 +785,12 @@ converge() {
     return 0
   fi
 
-  local since run pid ver i up=0
-  since=$(date +%s)
+  local since run pid ver newer i up=0
+  since=$(rsh 'date +%s')
   note "restarting (slack-acp has no graceful reload; Socket Mode reconnects)"
   restart_service "$sup_changed"
   for i in $(seq 1 10); do
-    IFS='|' read -r run pid ver <<<"$(probe_state)"
+    IFS='|' read -r run pid ver newer <<<"$(probe_state)"
     [ "$run" = 1 ] && { up=1; break; }
     sleep 1
   done
@@ -773,9 +801,18 @@ converge() {
   if [ -n "$ver" ] && [ "$ver" != "$want" ]; then
     die "restarted service runs $ver, wanted $want"
   fi
+  # A crash loop under Restart=on-failure can look "active" for a moment:
+  # the pid must hold for a few seconds.
+  local pid1=$pid
+  sleep "${SETTLE_WAIT:-3}"
+  IFS='|' read -r run pid ver newer <<<"$(probe_state)"
+  { [ "$run" = 1 ] && [ "$pid" = "$pid1" ]; } || die "service is not stable after restart (pid $pid1 → ${pid:-none}) — crash loop? check the log"
   note "running pid ${pid_before} → ${pid}${ver:+, image $ver}"
   if [ -z "$TARGET_ROOT" ]; then
-    if wait_connected "$since"; then
+    if [ "$(ver_cmp "$want" 0.12.0)" -lt 0 ]; then
+      if wait_connected "$since"; then note "Slack Socket Mode connected ✓"
+      else note "WARN: $want logs 'slack: connected' only under SLACK_ACP_DEBUG; verified by the process staying up"; fi
+    elif wait_connected "$since"; then
       note "Slack Socket Mode connected ✓"
     else
       die "no 'slack: connected' in the log ${CONNECT_WAIT}s after restart — check tokens and the journal"
