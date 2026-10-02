@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-02
+
 ### Added
 
 - `scripts/converge.sh`: the fleet deploy path. Reads the private fleet registry (`$FLEET_BOTS_DIR`, entries with `"relay": "slack-acp"`), deep-merges `distro.json` <- the bot file, and converges the host to `dist.lock`: checksum-verified release download with an atomic temp+rename binary swap (no ETXTBSY, no stop-before-copy), `config.json`, and a systemd user unit or launchd plist rendered byte-for-byte as `install-service` writes it; then restarts and waits for Socket Mode to connect. `--tot` resolves the newest release that satisfies every bot's `require` into `dist.lock`.
