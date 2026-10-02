@@ -1,0 +1,23 @@
+{
+  "name": "bot-a",
+  "relay": "slack-acp",
+  "host": "host-a",
+  "platform": "linux/amd64",
+  "state": "active",
+  "config": {
+    "agent_cmd": [
+      "/home/user-a/.local/bin/fir",
+      "--mode",
+      "acp"
+    ],
+    "ambient": true,
+    "human_author_user_ids": [
+      "U0HUMAN01"
+    ]
+  },
+  "slack": {
+    "team_id": "T0TEAM001",
+    "app_id": "A0APPSLACK1",
+    "bot_user_id": "U0BOTUSER01"
+  }
+}

@@ -3,7 +3,7 @@
 .DEFAULT_GOAL := all
 
 .PHONY: all build build-all install test test-race coverage open-coverage \
-        vet fmt clean tidy check-licenses notices publish deploy \
+        vet fmt clean tidy check-licenses notices publish check-no-leak test-scripts \
         check-installsh _all_parallel
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,16 @@ build-all: $(CROSS_PHONY) build
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _all_parallel TIDY_DONE=1
 
-_all_parallel: vet test-race coverage build-all check-licenses check-installsh
+_all_parallel: check-no-leak vet test-race coverage test-scripts build-all check-licenses check-installsh
+
+# This repo is public: fail if any identifier from the private fleet
+# registry ($FLEET_BOTS_DIR) is tracked. Skipped where there is no registry.
+check-no-leak:
+	$(call RUN,check (no-leak),./scripts/check-no-leak.sh)
+
+# scripts/converge.sh — offline black-box tests on synthetic fixtures.
+test-scripts:
+	$(call RUN,test (scripts),./test/converge_render.sh)
 
 # ---------------------------------------------------------------------------
 # install.sh — generated from install.sh.json by the canonical distkit
@@ -209,21 +218,6 @@ publish: build notices
 	git push --atomic origin main $(RELEASE_TAG)
 	@echo "Pushed $(RELEASE_TAG)."
 
-# Deploy to a remote host via scp (auto-detects OS and arch).
-# Usage: make deploy HOST=myhost
-deploy: build-all
-	@if [ -z "$(HOST)" ]; then echo "Usage: make deploy HOST=<hostname>"; exit 1; fi
-	@INFO=$$(ssh -o ConnectTimeout=5 $(HOST) "uname -s -m") || { echo "Cannot reach $(HOST)"; exit 1; }; \
-	OS=$$(echo "$$INFO" | awk '{print $$1}'); \
-	ARCH=$$(echo "$$INFO" | awk '{print $$2}'); \
-	case "$$OS-$$ARCH" in \
-		Linux-aarch64|Linux-arm64)   BIN=$(BINARY)-linux-arm64 ;; \
-		Linux-armv6l|Linux-armv7l)   BIN=$(BINARY)-linux-armv6 ;; \
-		Linux-x86_64)                BIN=$(BINARY)-linux-amd64 ;; \
-		Darwin-arm64)                BIN=$(BINARY)-darwin-arm64 ;; \
-		Darwin-x86_64)               BIN=$(BINARY)-darwin-amd64 ;; \
-		*) echo "Unsupported platform: $$OS $$ARCH"; exit 1 ;; \
-	esac; \
-	echo "Deploying to $(HOST) ($$OS/$$ARCH → $$BIN)..."; \
-	scp -q $$BIN $(HOST):~/.local/bin/slack-acp && \
-	ssh $(HOST) "chmod +x ~/.local/bin/slack-acp && ~/.local/bin/slack-acp --version"
+# There is no `make deploy`: a fleet host is changed only by
+# `scripts/converge.sh <bot> --apply` (distro.json <- the bot's registry
+# entry, version from dist.lock). See README "Deploying a fleet bot".

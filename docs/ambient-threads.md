@@ -7,8 +7,8 @@
 > seriously: `@`-mention is a strong prior, not a gate; the abstain path must be
 > cheap (short max-tokens, no eager placeholder, optionally a fast/cheap model).
 >
-> Provenance: distilled from the original design conversation on the bot-e bot
-> (host host-e), Poe conversation c-…xxxxxxxxxxxxxxxxxxxxxx, 2026-06-06 → 06-14.
+> Provenance: distilled from the original design conversation with a fir bot
+> on Poe, 2026-06-06 → 06-14.
 
 Let the agent **live in the thread**: forward every message in a thread it's
 part of into the ACP session; it replies, or stays silent. The `@`-mention

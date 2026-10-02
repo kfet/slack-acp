@@ -1,0 +1,15 @@
+[Unit]
+Description=slack-acp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/bin:/bin
+EnvironmentFile=/home/user-d/.config/slack-acp/bot-d/env
+ExecStart=/home/user-d/.local/bin/slack-acp --config /home/user-d/.config/slack-acp/bot-d/config.json --state-dir /home/user-d/.config/slack-acp/bot-d/state
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=default.target

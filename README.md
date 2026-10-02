@@ -281,6 +281,30 @@ Each line says which path the event arrived on, whether it was
 delivered, run, or dropped, and why — so "the bot didn't reply" is a
 one-command diagnosis with no debug mode and no re-provoking.
 
+## Deploying a fleet bot
+
+Hosts with an entry in the private fleet registry (`~/sync/shared/fleet/bots`,
+override with `FLEET_BOTS_DIR`; entries with `"relay": "slack-acp"`) are
+converged, never hand-deployed. This repo is public, so it holds only the
+distro spec — `distro.json`, the defaults every slack-acp bot shares — and
+`dist.lock`, the resolved release. `scripts/converge.sh` deep-merges
+`distro.json` <- the bot file (the bot wins; objects merge, arrays replace,
+`null` unsets a default) and makes the host match:
+
+```bash
+scripts/converge.sh --tot            # resolve the newest release into dist.lock (commit it)
+scripts/converge.sh <bot>            # dry run
+scripts/converge.sh <bot> --apply    # converge, restart, verify Slack connected
+```
+
+It manages the slack-acp binary, `config.json` and the supervisor
+definition (systemd user unit, or launchd plist on macOS — rendered exactly
+as `slack-acp install-service` would). The binary is downloaded on the host,
+checked against the release's `checksums.txt`, and renamed into place (no
+ETXTBSY, no stop-before-copy); then the service is restarted, since
+slack-acp has no graceful reload. `make all` runs `scripts/check-no-leak.sh`,
+which fails if any identifier from the registry appears in the tree.
+
 ## Repository layout
 
 ```
@@ -299,6 +323,9 @@ internal/sysprompt/   Slack-mrkdwn sysprompt composer injected per session
 internal/journal/     stable JSONL ingest-decision records
 internal/verify/      `slack-acp verify` self-verification harness
 docs/                 design notes + Slack app manifest template
+scripts/              converge.sh (fleet deploy) + check-no-leak.sh
+distro.json, dist.lock  fleet distro spec + resolved release (no bot instances)
+test/                 converge.sh tests on synthetic fixtures (test/fixtures/bots)
 ```
 
 Shared ACP primitives live in [`github.com/kfet/acp-kit`](https://github.com/kfet/acp-kit):
@@ -317,7 +344,7 @@ session-lifecycle model.
 
 ```bash
 make test        # go test ./...
-make all         # vet + race + cross-builds + license check
+make all         # no-leak + vet + race + coverage + script tests + cross-builds + license check
 ```
 
 ## License

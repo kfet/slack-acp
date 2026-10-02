@@ -1,0 +1,1 @@
+/home/user-d/.local/bin/slack-acp --config /home/user-d/.config/slack-acp/bot-d/config.json --state-dir /home/user-d/.config/slack-acp/bot-d/state

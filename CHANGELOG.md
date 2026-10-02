@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/converge.sh`: the fleet deploy path. Reads the private fleet registry (`$FLEET_BOTS_DIR`, entries with `"relay": "slack-acp"`), deep-merges `distro.json` <- the bot file, and converges the host to `dist.lock`: checksum-verified release download with an atomic temp+rename binary swap (no ETXTBSY, no stop-before-copy), `config.json`, and a systemd user unit or launchd plist rendered byte-for-byte as `install-service` writes it; then restarts and waits for Socket Mode to connect. `--tot` resolves the newest release that satisfies every bot's `require` into `dist.lock`.
+- `scripts/check-no-leak.sh` runs in `make all`: fails if any identifier from the fleet registry (names, hosts, Slack user/bot/app/team/channel ids, ...) is tracked. Skipped where there is no registry.
+
+### Changed
+
+- Socket Mode connect and disconnect are logged at info level (`slack: connected (Socket Mode)`), not only under `SLACK_ACP_DEBUG`.
+- Docs, tests and the bundled deploy/release/update skills use synthetic names and ids only.
+
+### Removed
+
+- `make deploy` (scp of a local build). Fleet hosts are converged from published releases; one-off hosts use `install.sh` or `slack-acp update`.
+
 ## [0.11.1] - 2026-10-01
 
 ### Changed

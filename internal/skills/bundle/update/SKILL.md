@@ -69,15 +69,23 @@ systemctl --user restart slack-acp
 
 If `brew upgrade` reports "already up-to-date" but the version still
 lags, the tap index is stale — re-run `brew update`. Persistent miss
-→ fall back to `make deploy`.
+→ fall back to `slack-acp update`.
 
-**Direct deploy (`~/.local/bin`, hotfix or canonical path):**
-From the repo:
+**Fleet bot (has a registry entry) — the canonical path:**
+From a slack-acp clone:
 ```bash
-make deploy HOST=<host>
-ssh <host> 'systemctl --user restart slack-acp'   # Linux
-ssh <host> 'launchctl kickstart -k gui/$(id -u)/dev.<you>.slack-acp'  # macOS
+scripts/converge.sh --tot                 # resolve the newest release into dist.lock; commit it
+scripts/converge.sh <bot>                 # dry run
+scripts/converge.sh <bot> --apply         # checksum-verified atomic swap, restart, verify
 ```
+
+**Self-update (`~/.local/bin`, one-off host):**
+```bash
+ssh <host> '~/.local/bin/slack-acp update && systemctl --user restart slack-acp'   # Linux
+ssh <host> '~/.local/bin/slack-acp update && launchctl kickstart -k gui/$(id -u)/dev.<you>.slack-acp'  # macOS
+```
+`update` verifies the sha256 and renames over the running binary
+(ETXTBSY-safe), so there is no stop-before-copy.
 
 **Local install (`$GOBIN`, dev machine):**
 ```bash
@@ -120,43 +128,43 @@ anything failed, surface the error and stop — do not paper over.
 
 ## Finish on the FLEET, not on one host
 
-**A deploy is done when the fleet is converged, not when a host is.** This relay
-is listed in the fleet inventory (`~/sync/shared/fleet/bots/bot-k.json`).
-That inventory is shared across all three relays and belongs to none of
-them; deploying is this repo's job, above. Close every
-release/deploy/update with the read-only sweep:
+**A deploy is done when the fleet is converged, not when a host is.**
+This repo is public: it holds the distro spec (`distro.json`, the defaults
+every slack-acp bot shares) and the resolution (`dist.lock`), never bot
+instances. Each bot is one JSON file in the private fleet registry —
+`$FLEET_BOTS_DIR`, default `~/sync/shared/fleet/bots` — with
+`"relay": "slack-acp"` and only the fields that differ from `distro.json`.
+That registry is shared by every relay (poe-acp, slack-acp, zulip-acp).
 
 ```bash
-~/sync/shared/fleet/fleet.sh status        # runs from any host
+scripts/converge.sh --tot            # resolve the newest release into dist.lock; commit it
+scripts/converge.sh <bot>            # dry run: binary, config.json, unit, running image
+scripts/converge.sh <bot> --apply    # make the host match, restart, verify
 ```
 
-It reports every relay instance on every host — poe-acp, slack-acp and
-zulip-acp — with wanted vs **running** version (read from the live process,
-never the on-disk binary) and drift. Do not say "released" or "deployed" until
-the `bot-k` row is `ok`. Paste the output into your reply.
+Then close with the read-only sweep (runs from any fleet host):
 
-Nothing to bump after a release: the sweep takes this relay's wanted
-version from its latest git tag, so cutting the tag IS the declaration.
-(An instance can hold back with `.pin` in its inventory entry, which
-requires a `.notes` reason.)
+```bash
+~/sync/shared/fleet/fleet.sh status
+```
 
-Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
-`~/.local/state/poe-acp/notes/fleet/docs/notes/relays.md`).
+It reports every relay instance on every host with wanted vs **running**
+version (read from the live process, never the on-disk binary) and drift.
+Do not say "released" or "deployed" until every slack-acp row is `ok`.
+Paste the output into your reply.
 
 ### Two traps this sweep exists to catch
 
-- **Never infer presence from a binary or a glob.** Every fleet host runs zsh,
-  where `ls ~/.local/bin/*-acp` **aborts the whole command** when it matches
-  nothing — and the empty output reads as "not installed". That is how a live
-  `slack-acp` was declared absent. Ask the supervisor:
+- **Never infer presence from a binary or a glob.** Under zsh,
+  `ls ~/.local/bin/*-acp` **aborts the whole command** when it matches
+  nothing — and the empty output reads as "not installed". Ask the supervisor:
   `systemctl --user list-units --type=service --all --no-legend --plain | awk '$1 ~ /acp/'`
   or `launchctl list | awk '$3 ~ /acp/'`. Match the unit **name**, not the
   Description.
 - **A repo can have two live clones and you will release from the stale one.**
   `git fetch origin`, then `git status -sb` and read *ahead/behind*, before you
-  trust any clone. Release from the clone on the host that RUNS the relay —
-  `host-d`. (2026-09-04: a `zulip-acp` release cut from the stale host-b
-  clone produced two different v0.14.0s.)
+  trust any clone. Release from one canonical clone only. (A relay release once
+  cut from a stale clone produced two different builds of the same tag.)
 
 
 ## Pitfalls
@@ -185,4 +193,4 @@ Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
 - [ ] `slack-acp --version` matches target.
 - [ ] Service active.
 - [ ] Socket Mode handshake observed in logs.
-- [ ] **`fleet.sh status` run, and the `bot-k` row is `ok`** (one host is not the job).
+- [ ] **`fleet.sh status` run, and every slack-acp row is `ok`** (one host is not the job).

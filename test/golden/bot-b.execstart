@@ -1,0 +1,1 @@
+/opt/homebrew/bin/slack-acp --config /Users/user-b/.config/slack-acp/config.json --state-dir /Users/user-b/Library/slack-acp/state

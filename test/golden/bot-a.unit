@@ -1,0 +1,13 @@
+[Unit]
+Description=slack-acp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/home/user-a/.config/slack-acp/env
+ExecStart=/home/user-a/.local/bin/slack-acp --config /home/user-a/.config/slack-acp/config.json
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target

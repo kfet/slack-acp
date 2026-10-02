@@ -67,9 +67,10 @@ After the user confirms, run `make publish`. This pushes `main` and
 After which `brew install kfet/ai/slack-acp` (or `brew upgrade`) will
 pick up the new version.
 
-Alternatively, `make deploy HOST=<host>` pushes the right
-cross-compiled binary directly to a remote host via scp (no GitHub
-release needed) — useful for hotfixing a deployment.
+Fleet hosts are then moved by `scripts/converge.sh --tot` (commit
+`dist.lock`) and `scripts/converge.sh <bot> --apply` — see the deploy
+skill. There is no scp/`make deploy` path: every host runs a published,
+checksum-verified release.
 
 If any step fails, stop and report. Do not push or publish unless the
 user confirms.
@@ -89,40 +90,40 @@ This must **not** use `--branch` filtering — tag-triggered workflows
 
 ## Finish on the FLEET, not on one host
 
-**A deploy is done when the fleet is converged, not when a host is.** This relay
-is listed in the fleet inventory (`~/sync/shared/fleet/bots/bot-k.json`).
-That inventory is shared across all three relays and belongs to none of
-them; deploying is this repo's job, above. Close every
-release/deploy/update with the read-only sweep:
+**A deploy is done when the fleet is converged, not when a host is.**
+This repo is public: it holds the distro spec (`distro.json`, the defaults
+every slack-acp bot shares) and the resolution (`dist.lock`), never bot
+instances. Each bot is one JSON file in the private fleet registry —
+`$FLEET_BOTS_DIR`, default `~/sync/shared/fleet/bots` — with
+`"relay": "slack-acp"` and only the fields that differ from `distro.json`.
+That registry is shared by every relay (poe-acp, slack-acp, zulip-acp).
 
 ```bash
-~/sync/shared/fleet/fleet.sh status        # runs from any host
+scripts/converge.sh --tot            # resolve the newest release into dist.lock; commit it
+scripts/converge.sh <bot>            # dry run: binary, config.json, unit, running image
+scripts/converge.sh <bot> --apply    # make the host match, restart, verify
 ```
 
-It reports every relay instance on every host — poe-acp, slack-acp and
-zulip-acp — with wanted vs **running** version (read from the live process,
-never the on-disk binary) and drift. Do not say "released" or "deployed" until
-the `bot-k` row is `ok`. Paste the output into your reply.
+Then close with the read-only sweep (runs from any fleet host):
 
-Nothing to bump after a release: the sweep takes this relay's wanted
-version from its latest git tag, so cutting the tag IS the declaration.
-(An instance can hold back with `.pin` in its inventory entry, which
-requires a `.notes` reason.)
+```bash
+~/sync/shared/fleet/fleet.sh status
+```
 
-Canonical note: `~/sync/shared/docs/notes/relays.md` (on a bot host:
-`~/.local/state/poe-acp/notes/fleet/docs/notes/relays.md`).
+It reports every relay instance on every host with wanted vs **running**
+version (read from the live process, never the on-disk binary) and drift.
+Do not say "released" or "deployed" until every slack-acp row is `ok`.
+Paste the output into your reply.
 
 ### Two traps this sweep exists to catch
 
-- **Never infer presence from a binary or a glob.** Every fleet host runs zsh,
-  where `ls ~/.local/bin/*-acp` **aborts the whole command** when it matches
-  nothing — and the empty output reads as "not installed". That is how a live
-  `slack-acp` was declared absent. Ask the supervisor:
+- **Never infer presence from a binary or a glob.** Under zsh,
+  `ls ~/.local/bin/*-acp` **aborts the whole command** when it matches
+  nothing — and the empty output reads as "not installed". Ask the supervisor:
   `systemctl --user list-units --type=service --all --no-legend --plain | awk '$1 ~ /acp/'`
   or `launchctl list | awk '$3 ~ /acp/'`. Match the unit **name**, not the
   Description.
 - **A repo can have two live clones and you will release from the stale one.**
   `git fetch origin`, then `git status -sb` and read *ahead/behind*, before you
-  trust any clone. Release from the clone on the host that RUNS the relay —
-  `host-d`. (2026-09-04: a `zulip-acp` release cut from the stale host-b
-  clone produced two different v0.14.0s.)
+  trust any clone. Release from one canonical clone only. (A relay release once
+  cut from a stale clone produced two different builds of the same tag.)

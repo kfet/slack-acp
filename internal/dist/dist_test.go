@@ -107,7 +107,7 @@ func TestAssetNamingMatchesGoReleaser(t *testing.T) {
 }
 
 // TestDeployBuildsAreRefusedButCanBePinned documents the contract for the
-// binary `make deploy` ships. The Makefile stamps an untagged build
+// binary a `make build` produces. The Makefile stamps an untagged build
 // "<version>-dev+<sha>[.dirty]", which distkit classifies as a working-tree
 // build and refuses to self-update off `latest` — correct, because that same
 // version string is also what a developer's own ./bin/slack-acp carries, and

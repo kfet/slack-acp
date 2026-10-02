@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.user-b.slack-acp</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . &apos;/Users/user-b/.config/slack-acp/env&apos;; set +a; exec &apos;/opt/homebrew/bin/slack-acp&apos; --config &apos;/Users/user-b/.config/slack-acp/config.json&apos; --state-dir &apos;/Users/user-b/Library/slack-acp/state&apos;</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/user-b/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key><string>/Users/user-b</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/user-b/Library/Logs/slack-acp.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/user-b/Library/Logs/slack-acp.err.log</string>
+</dict>
+</plist>

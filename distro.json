@@ -1,0 +1,25 @@
+{
+  "supervisor": "systemd-user",
+  "unit": "slack-acp",
+  "binary": "~/.local/bin/slack-acp",
+  "require": {
+    "slack_acp": ">=0.11.0"
+  },
+  "service": {
+    "config_path": "~/.config/slack-acp/config.json"
+  },
+  "credentials": {
+    "env_file": "~/.config/slack-acp/env"
+  },
+  "systemd": {
+    "restart": "on-failure",
+    "restart_sec": "2s"
+  },
+  "config": {
+    "agent_cmd": [
+      "fir",
+      "--mode",
+      "acp"
+    ]
+  }
+}

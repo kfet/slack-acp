@@ -210,7 +210,12 @@ func (c *Client) consume(ctx context.Context, events <-chan socketmode.Event) {
 
 func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 	switch evt.Type {
-	case socketmode.EventTypeConnecting, socketmode.EventTypeConnected, socketmode.EventTypeHello:
+	case socketmode.EventTypeConnected:
+		// Info level, not debug: this line is what an operator (and
+		// scripts/converge.sh after a restart) reads to know the relay
+		// is actually live on Slack.
+		log.Printf("slack-acp: slack: connected (Socket Mode)")
+	case socketmode.EventTypeConnecting, socketmode.EventTypeHello:
 		kitlog.Debugf("slack: %s", evt.Type)
 	case socketmode.EventTypeEventsAPI:
 		api, ok := evt.Data.(slackevents.EventsAPIEvent)
@@ -232,7 +237,7 @@ func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 		// rather than doing without.
 		c.handleEventsAPI(ctx, api, appIDOf(evt.Request))
 	case socketmode.EventTypeDisconnect:
-		kitlog.Debugf("slack: disconnected")
+		log.Printf("slack-acp: slack: disconnected (Socket Mode will reconnect)")
 	default:
 		kitlog.Debugf("slack: ignoring %s", evt.Type)
 	}

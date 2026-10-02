@@ -1,0 +1,24 @@
+{
+  "name": "bot-b",
+  "relay": "slack-acp",
+  "host": "host-b",
+  "platform": "darwin/arm64",
+  "supervisor": "launchd",
+  "binary": "/opt/homebrew/bin/slack-acp",
+  "require": null,
+  "service": {
+    "state_dir": "~/Library/slack-acp/state"
+  },
+  "launchd": {
+    "label": "dev.user-b.slack-acp"
+  },
+  "config": {
+    "allowed_user_ids": [
+      "U0HUMAN02"
+    ],
+    "agent_cmd": [
+      "claude-code",
+      "--acp"
+    ]
+  }
+}

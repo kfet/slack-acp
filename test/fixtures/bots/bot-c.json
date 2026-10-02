@@ -1,0 +1,9 @@
+{
+  "name": "bot-c",
+  "relay": "zulip-acp",
+  "host": "host-c",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "zulip-acp",
+  "binary": "~/.local/bin/zulip-acp"
+}
