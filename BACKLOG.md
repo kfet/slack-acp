@@ -55,3 +55,11 @@ Corollaries once the above is in place:
 - The manifest pin (`internal/slackproto/manifest_test.go`) forbidding
   `search:*` **bot** scopes stays regardless — the user token is not a
   bot scope, and nothing should ever put one on the app.
+
+## Wire acp-kit `autoupdate` (relay auto-update)
+
+acp-kit v0.31.0 ships `autoupdate`. It polls for releases, stages and verifies them, asks the owners to approve, applies at idle through the graceful reload, and rolls back to `.prev` if the new image fails its health gate. zulip-acp v0.47.0 is the reference wiring: `cmd/zulip-acp/autoupdate.go`, plus the `UpdateDecide` reaction hook and the `UpdateStatus` call on `!update --check` in its handler.
+
+Not wired yet. Slack can do it (chat.postMessage to an owner DM, chat.update, and reaction_added events or Block Kit buttons), but slack-acp has no `!update` updater or distkit self-update to build on. Add those first.
+
+The work is: an `auto_update` / `auto_update_quiet_hours` config, an `autoupdate.Surface` (Post returns an id; Edit), a way to map owner actions to `Manager.Decide`, `Idle` from `convo.Active().Len()`, a `HealthProbe` (queue/connection resumed plus one platform API round-trip plus agent initialised), and `go m.Run(intakeCtx)` after `update.Resume`.
