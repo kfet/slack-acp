@@ -60,6 +60,6 @@ Corollaries once the above is in place:
 
 acp-kit v0.31.0 ships `autoupdate`. It polls for releases, stages and verifies them, asks the owners to approve, applies at idle through the graceful reload, and rolls back to `.prev` if the new image fails its health gate. zulip-acp v0.47.0 is the reference wiring: `cmd/zulip-acp/autoupdate.go`, plus the `UpdateDecide` reaction hook and the `UpdateStatus` call on `!update --check` in its handler.
 
-Not wired yet. Slack can do it (chat.postMessage to an owner DM, chat.update, and reaction_added events or Block Kit buttons), but slack-acp has no `!update` updater or distkit self-update to build on. Add those first.
+Not wired yet. Slack can do it (chat.postMessage to an owner DM, chat.update, and reaction_added events or Block Kit buttons), and slack-acp already has distkit self-update (`internal/dist`). What it lacks is the acp-kit `update` `!update` command, which autoupdate uses for converge on fleet hosts and which is where `--check` lives. Wire that first.
 
 The work is: an `auto_update` / `auto_update_quiet_hours` config, an `autoupdate.Surface` (Post returns an id; Edit), a way to map owner actions to `Manager.Decide`, `Idle` from `convo.Active().Len()`, a `HealthProbe` (queue/connection resumed plus one platform API round-trip plus agent initialised), and `go m.Run(intakeCtx)` after `update.Resume`.
