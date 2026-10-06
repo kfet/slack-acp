@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-06
+
 ### Changed
 
 - Branches fork the origin session at the turn that contains the branch message instead of at its leaf. Each turn's agent leaf id (acp-kit v0.33.0 `PromptTurn`, fir ≥ 1.28.0 `_meta.leafId`) is recorded in the thread's `turns.json`, keyed by the Slack ts of the turn's prompt and reply; a message between turns maps to the earlier turn. Unknown turns, or a failed fork at that leaf, still fork at the leaf.
