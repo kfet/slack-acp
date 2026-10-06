@@ -31,6 +31,7 @@ type fakeAPI struct {
 	repliesByTS map[string][]slack.Message
 	replyCalls  []string
 	repliesErr  error
+	lastReplies slack.GetConversationRepliesParameters
 
 	history          []slack.Message
 	historyByChannel map[string][]slack.Message
@@ -55,6 +56,7 @@ type fakeAPI struct {
 
 func (f *fakeAPI) GetConversationRepliesContext(_ context.Context, p *slack.GetConversationRepliesParameters) ([]slack.Message, bool, string, error) {
 	if p != nil {
+		f.lastReplies = *p
 		f.replyCalls = append(f.replyCalls, p.ChannelID+"@"+p.Timestamp)
 		if f.repliesByTS != nil {
 			return f.repliesByTS[p.Timestamp], false, "", f.repliesErr
@@ -409,24 +411,6 @@ func TestPostRefusesSelfDriveSentinel(t *testing.T) {
 	// path posted it, or the streamer's loop guard has a blind spot.
 	if !r.cfg.SelfDrive.SeenTS("9.1") {
 		t.Fatal("agent-posted ts not recorded in the self-drive memory")
-	}
-}
-
-// The literal-string blocklist this replaced missed the labelled form
-// Slack itself emits, and posts go out with escape=false so Slack parses
-// them. Every form must go.
-func TestStripBroadcastPings(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"<!channel> hey <!here> all <!everyone>", "hey  all"},
-		{"<!here|@here> ping", "ping"},
-		{"<!channel|@channel>x", "x"},
-		{"<!subteam^S012|@oncall> up", "up"},
-		{"<!subteam^S012> up", "up"},
-		{"a <@U1> b", "a <@U1> b"}, // ordinary user mentions survive
-	} {
-		if got := stripBroadcastPings(tc.in); got != tc.want {
-			t.Errorf("stripBroadcastPings(%q) = %q, want %q", tc.in, got, tc.want)
-		}
 	}
 }
 

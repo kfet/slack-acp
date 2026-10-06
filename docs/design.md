@@ -27,8 +27,10 @@
 - No interactive permission prompts surfaced into Slack — `acp-kit`'s
   default policy auto-approves; the bot is meant to run as a trusted,
   private agent gated at the user/channel allowlist.
-- No reaction/button UX (e.g. 👍 to approve a tool call). All access
-  control is declarative (`allowed_user_ids`, `allowed_channel_ids`).
+- No reaction/button UX for access control (e.g. 👍 to approve a tool
+  call). All access control is declarative (`allowed_user_ids`,
+  `allowed_channel_ids`). The one reaction the relay acts on is
+  :fork_and_knife:, which branches a conversation (see Branching).
 
 ## Architecture
 
@@ -118,6 +120,27 @@ through to `session/new`; see Roadmap.
 
 Operators who want to reset a thread can just `rm -rf` the directory
 while the bot is idle on it; the next message will recreate it empty.
+
+## Branching
+
+A branch continues a conversation in a new thread. `!branch <text>`, a
+:fork_and_knife: reaction on a message, and the agent's `branch` MCP
+tool all go through `handler.performBranch`:
+
+1. Post a new top-level message in the same channel (opening a new
+   thread) that links to the branch point by permalink.
+2. Record the origin (`origin.json` in the child's thread dir: origin
+   channel, thread, branch-point ts) for `history(origin=true)`.
+3. Fork the origin's agent session (ACP `session/fork`, acp-kit
+   `ForkSession`, empty `_meta.at` = the parent's leaf) **into the
+   child's cwd**, so later resumes find it there. On
+   `ErrForkUnsupported` or any error the relay logs it and the child
+   opens a fresh session on its first turn.
+4. Post the new thread's link in the origin thread (the tool batches
+   its links into one post), then start the child's first turn with
+   the seed.
+
+A reaction branches a given message once per process.
 
 ## Streaming
 

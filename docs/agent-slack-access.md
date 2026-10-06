@@ -106,6 +106,21 @@ Served as MCP server `slack`, spawned by the agent over stdio.
 | `slack_list_channels()` | `users.conversations` | read |
 | `slack_search(query, channel?, limit?, days?, include_threads?)` | `conversations.history` (+ `conversations.replies`) fanout | read |
 | `slack_post(channel, thread_ts?, text)` | `chat.postMessage` | read_write |
+| `history(origin?, limit?)` | `conversations.replies` | read |
+| `branch(tasks[{seed?, title?, from_msg?}])` | `chat.postMessage` + `chat.getPermalink` | read |
+
+`history` and `branch` take no channel or thread: they act on the
+caller's own thread, resolved from the connection token, so the
+channel allowlist does not apply to them and they cannot be aimed at
+another conversation. `history(origin=true)` reads the thread this one
+was branched out of, clamped at the branch point. `branch` opens up to
+10 new threads per call — the same code path as `!branch` and the
+:fork_and_knife: reaction — and posts one message with their links in
+the caller's thread. It is available in `read` mode, so it is
+rate-capped on its own: `agent_posts_per_minute` tasks per minute
+(default 10), and channel-wide pings are stripped from what it posts.
+`history` and `slack_read_thread` return the newest messages of a long
+thread (up to `limit`), not its first page.
 
 Read tools return JSON: `ts`, `user` (resolved to a display name
 relay-side, cached), `is_bot`, `text`, `thread_ts`. User IDs are
@@ -208,7 +223,8 @@ with `poe-acp`.
   - `"read_write"` — additionally exposes `slack_post`.
   - Any other value is a config **error** at load time; a typo must not
     silently select a different security posture.
-- `agent_posts_per_minute` — global `slack_post` cap. Default 10.
+- `agent_posts_per_minute` — global `slack_post` cap, and separately
+  the `branch` tool's tasks per minute. Default 10.
   Only meaningful in `read_write`.
 
 The read cap (60/min, shared across the read tools) is a constant,

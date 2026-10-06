@@ -118,8 +118,9 @@ type Config struct {
 	AgentSlackAccess string `json:"agent_slack_access,omitempty"`
 
 	// AgentPostsPerMinute caps how many slack_post calls the relay will
-	// make on the agent's behalf per minute, across all sessions. Only
-	// meaningful when AgentSlackAccess is "read_write". Default 10.
+	// make on the agent's behalf per minute, across all sessions, and —
+	// separately — how many `branch` tool tasks it will open per minute.
+	// Default 10.
 	AgentPostsPerMinute int `json:"agent_posts_per_minute,omitempty"`
 
 	// ModelProbeBudgetSeconds bounds the total time the startup model

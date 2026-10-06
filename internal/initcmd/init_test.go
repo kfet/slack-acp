@@ -102,6 +102,9 @@ func TestRun_HappyPath_FlagsAndSkipVerify(t *testing.T) {
 	if !strings.Contains(out.String(), "wrote "+cfg) {
 		t.Fatalf("output missing wrote line: %q", out.String())
 	}
+	if !strings.Contains(out.String(), ScopeNote) || !strings.Contains(ScopeNote, "reactions:read") {
+		t.Fatalf("output missing the manifest/scope reminder: %q", out.String())
+	}
 }
 
 func TestRun_NonInteractive_MissingToken(t *testing.T) {

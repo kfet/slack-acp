@@ -12,6 +12,11 @@ func TestDefaultNonEmpty(t *testing.T) {
 	if !strings.Contains(Default(), "Slack") {
 		t.Fatal("Default() doesn't mention Slack")
 	}
+	for _, want := range []string{"!branch", ":fork_and_knife:", `"history"`, "origin=true", `"branch"`, "from_msg"} {
+		if !strings.Contains(Default(), want) {
+			t.Errorf("Default() does not mention %s", want)
+		}
+	}
 	if !strings.Contains(Default(), "mrkdwn") {
 		t.Fatal("Default() should name Slack's format (mrkdwn)")
 	}

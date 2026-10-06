@@ -27,10 +27,12 @@
                 "im:history",
                 "im:read",
                 "im:write",
+                "reactions:read",
                 "users:read"
             ],
             "user": [
-                "chat:write"
+                "chat:write",
+                "reactions:write"
             ]
         },
         "pkce_enabled": false
@@ -41,7 +43,8 @@
                 "app_mention",
                 "message.channels",
                 "message.groups",
-                "message.im"
+                "message.im",
+                "reaction_added"
             ]
         },
         "interactivity": {

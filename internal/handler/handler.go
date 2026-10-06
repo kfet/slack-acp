@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -65,7 +66,15 @@ type Config struct {
 	// Now is the clock used by the self-drive rate cap. Injected by
 	// tests; defaults to time.Now.
 	Now func() time.Time
+	// AgentPostsPerMinute caps the agent's `branch` tool tasks per
+	// minute (each one posts a top-level message and starts a turn).
+	// 0 uses defaultBranchesPerMinute.
+	AgentPostsPerMinute int
 }
+
+// defaultBranchesPerMinute mirrors config's agent_posts_per_minute
+// default.
+const defaultBranchesPerMinute = 10
 
 // Handler implements slackproto.Handler.
 type Handler struct {
@@ -81,6 +90,14 @@ type Handler struct {
 
 	// selfDrive rate-caps hatch events. Nil when the hatch is off.
 	selfDrive *ratelimit.Bucket
+
+	// branched marks "channel/ts" messages a :fork_and_knife: already
+	// branched.
+	branched markSet
+	// branchRate caps the agent's `branch` tool tasks.
+	branchRate *ratelimit.Bucket
+	// bg tracks branch work running off the event loop.
+	bg sync.WaitGroup
 }
 
 // New constructs a handler.
@@ -88,7 +105,7 @@ func New(cfg Config) *Handler {
 	if cfg.NoProgressTimeout <= 0 {
 		cfg.NoProgressTimeout = 2 * time.Minute
 	}
-	h := &Handler{cfg: cfg}
+	h := &Handler{cfg: cfg, branchRate: ratelimit.New(cfg.AgentPostsPerMinute, defaultBranchesPerMinute, cfg.Now)}
 	h.convo = mustConvo(h.newConvo())
 	if cfg.SelfDrive.Enabled() {
 		if cfg.SelfDrivePerMinute <= 0 {
@@ -103,7 +120,22 @@ func New(cfg Config) *Handler {
 // is done. Used by tests to synchronise on the inflight-empty
 // transition without wall-clock polling; also useful for graceful
 // shutdown paths.
-func (h *Handler) WaitIdle(ctx context.Context) error { return h.convo.Active().WaitIdle(ctx) }
+func (h *Handler) WaitIdle(ctx context.Context) error {
+	// Branch work goes first: it may still start a turn. On cancel the
+	// waiter goroutine outlives the call until that work ends; it holds
+	// nothing.
+	done := make(chan struct{})
+	go func() {
+		h.bg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return h.convo.Active().WaitIdle(ctx)
+}
 
 // SetAPI installs the Slack API client (used for posting/updating messages).
 // Called by main after the slackproto.Client has been constructed.
@@ -193,15 +225,17 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 		}
 	}
 
-	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
-	journal.Log(rec)
-
 	// Relay commands are answered here and never reach the agent;
 	// anything else starts a turn, superseding the thread's running one
 	// (convo Supersede mode). The turn's real bound is the
 	// progress-resetting liveness clock, armed inside run once the agent
 	// is about to be prompted.
-	h.convo.Dispatch(ctx, convo.In{Conv: key.String(), Text: text, Meta: ev})
+	res := h.convo.Dispatch(ctx, convo.In{Conv: key.String(), Text: text, Meta: ev})
+	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
+	if res.Handled {
+		rec.Reason = journal.ReasonCommand
+	}
+	journal.Log(rec)
 }
 
 // journalPath classifies an already-normalised event back onto the
@@ -477,7 +511,8 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	promptText := text
 	// In ambient mode, prefix messages with the sender's name so the
 	// agent knows who's speaking in the shared thread.
-	if h.cfg.Ambient && !ev.IsDM {
+	// A branch opened by the agent's tool has no human sender.
+	if h.cfg.Ambient && !ev.IsDM && ev.UserID != "" {
 		userName := h.getUserName(ctx, ev.UserID)
 		promptText = fmt.Sprintf("[%s] %s", userName, text)
 	}

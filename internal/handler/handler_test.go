@@ -46,6 +46,9 @@ type fakeAgent struct {
 	// the next model in line, reported by CurrentModel.
 	sessionModels []string
 	perModel      map[acp.SessionId]string
+	// forks records ForkSession calls; forkErr fails them.
+	forks   []forkCall
+	forkErr error
 }
 
 func (f *fakeAgent) CurrentModel(sid acp.SessionId) (string, bool) {
@@ -85,6 +88,23 @@ func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]client.SessionI
 
 func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, _ client.SessionUpdateSink) error {
 	return nil
+}
+
+func (f *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.SessionId, _ string, sink client.SessionUpdateSink) (acp.SessionId, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forks = append(f.forks, forkCall{cwd: cwd, parent: parent})
+	if f.forkErr != nil {
+		return "", f.forkErr
+	}
+	sid := acp.SessionId(fmt.Sprintf("fork-%d", len(f.forks)))
+	f.sinks[sid] = sink
+	return sid, nil
+}
+
+type forkCall struct {
+	cwd    string
+	parent acp.SessionId
 }
 
 func (f *fakeAgent) Prompt(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {

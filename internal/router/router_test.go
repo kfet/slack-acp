@@ -52,6 +52,27 @@ type fakeAgent struct {
 	lastPromptBlocks     []acp.ContentBlock
 	lastPromptSID        acp.SessionId
 	nextSessionCounter   int32
+
+	// forkHook, when set, answers ForkSession; nil returns "forked".
+	forkHook  func(cwd string, parent acp.SessionId) (acp.SessionId, error)
+	forkCalls int32
+}
+
+func (f *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.SessionId, at string, sink client.SessionUpdateSink) (acp.SessionId, error) {
+	atomic.AddInt32(&f.forkCalls, 1)
+	if at != "" {
+		return "", errors.New("unexpected fork point")
+	}
+	sid, err := acp.SessionId("forked"), error(nil)
+	if f.forkHook != nil {
+		sid, err = f.forkHook(cwd, parent)
+	}
+	if err == nil {
+		f.mu.Lock()
+		f.sinks[sid] = sink
+		f.mu.Unlock()
+	}
+	return sid, err
 }
 
 func newFakeAgent() *fakeAgent {
@@ -919,11 +940,6 @@ func TestLastTSClosedRouter(t *testing.T) {
 		t.Fatal("closed router SetLastTS should error")
 	}
 }
-
-// discardSink is a no-op sink for router tests that don't inspect output.
-type discardSink struct{}
-
-func (discardSink) OnUpdate(context.Context, acp.SessionNotification) error { return nil }
 
 // SessionKeyForCwd must invert cwdFor and match ConvKey.String(), so
 // MCP tool-call logs and router logs can be grepped with the same key.

@@ -24,6 +24,7 @@ type fakeCtrl struct {
 	oldest     string
 	text       string
 	search     SearchParams
+	origin     bool
 	called     string
 
 	result string
@@ -55,6 +56,24 @@ func (f *fakeCtrl) Post(_ context.Context, sessionKey, channel, threadTS, text s
 	return f.result, f.err
 }
 
+func (f *fakeCtrl) History(_ context.Context, sessionKey string, origin bool, limit int) (string, error) {
+	f.called, f.sessionKey, f.origin, f.limit = ToolHistory, sessionKey, origin, limit
+	return f.result, f.err
+}
+
+// fakeBrancher records the tasks the `branch` tool decoded.
+type fakeBrancher struct {
+	sessionKey string
+	tasks      []BranchTask
+	res        []BranchResult
+	err        error
+}
+
+func (f *fakeBrancher) BranchTasks(_ context.Context, sessionKey string, tasks []BranchTask) ([]BranchResult, error) {
+	f.sessionKey, f.tasks = sessionKey, tasks
+	return f.res, f.err
+}
+
 func TestConfigGetters(t *testing.T) {
 	hc := HostConfig()
 	if hc.ServerName != "slack" || hc.ServerInfoName != "slack-acp" || hc.SocketName != "mcp.sock" {
@@ -83,6 +102,11 @@ func TestConfigGetters(t *testing.T) {
 // returns the host plus a fresh token for session key "C1/9.9".
 func liveHost(t *testing.T, ctrl Controller, allowPost bool) (*mcphost.Host, string) {
 	t.Helper()
+	return liveHostWith(t, ctrl, nil, allowPost)
+}
+
+func liveHostWith(t *testing.T, ctrl Controller, br Brancher, allowPost bool) (*mcphost.Host, string) {
+	t.Helper()
 	cfg := HostConfig()
 	cfg.BaseDir = t.TempDir()
 	cfg.RedirCommand = "/bin/true"
@@ -91,7 +115,7 @@ func liveHost(t *testing.T, ctrl Controller, allowPost bool) (*mcphost.Host, str
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { h.Close() })
-	Register(h, ctrl, allowPost)
+	Register(h, ctrl, br, allowPost)
 	tok := ""
 	for _, e := range h.ServerConfigForSession("C1/9.9")[0].Stdio.Env {
 		if e.Name == EnvToken {
@@ -230,7 +254,7 @@ func TestPostToolAbsentWithoutAllowPost(t *testing.T) {
 	for _, tl := range res["tools"].([]any) {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{ToolReadThread, ToolReadChannel, ToolListChannels, ToolSearch} {
+	for _, want := range []string{ToolReadThread, ToolReadChannel, ToolListChannels, ToolSearch, ToolHistory} {
 		if !names[want] {
 			t.Errorf("read mode is missing %q", want)
 		}
@@ -238,8 +262,11 @@ func TestPostToolAbsentWithoutAllowPost(t *testing.T) {
 	if names[ToolPost] {
 		t.Error("slack_post exposed in read mode")
 	}
-	if len(names) != 4 {
-		t.Errorf("read mode exposes %d tools, want exactly 4: %v", len(names), names)
+	if names[ToolBranch] {
+		t.Error("branch exposed without a Brancher")
+	}
+	if len(names) != 5 {
+		t.Errorf("read mode exposes %d tools, want exactly 5: %v", len(names), names)
 	}
 }
 

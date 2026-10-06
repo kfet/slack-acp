@@ -33,6 +33,15 @@ import (
 	"github.com/kfet/slack-acp/internal/config"
 )
 
+// ScopeNote reminds the operator that the app must carry every scope
+// and event in docs/slack-app-manifest.json. auth.test proves the
+// tokens work, not that the app subscribes to everything the relay
+// uses; an app created from an older manifest silently lacks the
+// newer pieces.
+const ScopeNote = "note: the Slack app must be (re)installed from docs/slack-app-manifest.json — " +
+	"e.g. :fork_and_knife: branching needs the reactions:read scope and the reaction_added event; " +
+	"after changing scopes or events, Reinstall to Workspace."
+
 // Verifier validates a (bot, app) token pair against Slack. The
 // returned displayName is shown to the operator on success
 // (e.g. "team T01ABC user U02XYZ"). Stubbed in tests; the default
@@ -127,6 +136,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	fmt.Fprintf(opts.Out, "wrote %s\n", opts.EnvPath)
 
+	fmt.Fprintln(opts.Out, ScopeNote)
 	fmt.Fprintf(opts.Out, "next: run `slack-acp --config %s`, or supervise it (see the deploy skill).\n", opts.ConfigPath)
 	return nil
 }

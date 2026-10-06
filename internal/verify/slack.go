@@ -100,3 +100,10 @@ func (s *slackAPI) OpenDM(ctx context.Context, userID string) (string, error) {
 	}
 	return ch.ID, nil
 }
+
+func (s *slackAPI) React(ctx context.Context, channel, ts, name string) error {
+	if err := s.api.AddReactionContext(ctx, name, slack.ItemRef{Channel: channel, Timestamp: ts}); err != nil {
+		return fmt.Errorf("reactions.add: %w", err)
+	}
+	return nil
+}

@@ -59,7 +59,8 @@ func TestManifestSubscribesEveryMessageSource(t *testing.T) {
 	// message.channels. Without it the relay receives nothing
 	// un-mentioned in a private channel and ambient mode is silently
 	// inert there.
-	want := []string{"app_mention", "message.channels", "message.groups", "message.im"}
+	// reaction_added carries the :fork_and_knife: branch trigger.
+	want := []string{"app_mention", "message.channels", "message.groups", "message.im", "reaction_added"}
 	for _, ev := range want {
 		if !contains(m.Settings.EventSubscriptions.BotEvents, ev) {
 			t.Errorf("manifest bot_events missing %q", ev)
@@ -81,8 +82,9 @@ func TestManifestGrantsHistoryScopeForEveryChannelType(t *testing.T) {
 		"im:history",       // DMs
 		"im:read",
 		"im:write",
-		"chat:write", // posting and streaming edits
-		"users:read", // display names in backfill
+		"chat:write",     // posting and streaming edits
+		"users:read",     // display names in backfill
+		"reactions:read", // reaction_added (:fork_and_knife: branch)
 	}
 	for _, scope := range want {
 		if !contains(m.OAuthConfig.Scopes.Bot, scope) {
@@ -105,6 +107,9 @@ func TestManifestGrantsUserScopeForSelfVerification(t *testing.T) {
 	m := loadManifest(t)
 	if !contains(m.OAuthConfig.Scopes.User, "chat:write") {
 		t.Error("manifest user scopes missing \"chat:write\" — slack-acp verify cannot post as a human without it")
+	}
+	if !contains(m.OAuthConfig.Scopes.User, "reactions:write") {
+		t.Error("manifest user scopes missing \"reactions:write\" — slack-acp verify cannot react :fork_and_knife: as a human without it")
 	}
 }
 

@@ -26,6 +26,7 @@ func (h *Handler) newConvo() (*convo.Manager, error) {
 		Agent:    agent,
 		Sessions: sessions,
 		Mode:     convo.Supersede,
+		Extra:    []convo.Command{h.branchCommand()},
 		Liveness: convo.ProgressClock{
 			NoProgressTimeout: h.cfg.NoProgressTimeout,
 			MaxTurnDuration:   h.cfg.TurnCeiling,

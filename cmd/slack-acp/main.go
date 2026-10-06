@@ -232,6 +232,7 @@ func main() {
 		HideThinking:        cfg.HideThinking,
 		SelfDrive:           selfDrive,
 		SelfDrivePerMinute:  cfg.GetSelfDrivePerMinute(),
+		AgentPostsPerMinute: cfg.GetAgentPostsPerMinute(),
 	})
 
 	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h,
@@ -254,7 +255,8 @@ func main() {
 			SelfDrive:         selfDrive,
 			PostsPerMinute:    cfg.GetAgentPostsPerMinute(),
 			Logf:              log.Printf,
-		}), access == config.AgentSlackAccessReadWrite)
+			Origin:            h.Origin,
+		}), h, access == config.AgentSlackAccessReadWrite)
 		if lerr := mcpHost.Listen(); lerr != nil {
 			log.Fatalf("slack-mcp listener: %v", lerr)
 		}

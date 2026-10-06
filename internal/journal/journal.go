@@ -51,6 +51,8 @@ const (
 	PathMessageIM  Path = "message_im"
 	PathMessage    Path = "message_channel"
 	PathSelfDrive  Path = "self_drive"
+	// PathReaction is a :fork_and_knife: reaction_added event.
+	PathReaction Path = "reaction_added"
 )
 
 // Decision is the outcome for an event.
@@ -103,6 +105,14 @@ const (
 	ReasonEmptyText          = "empty_text"
 	ReasonAmbientUnknownThrd = "ambient_unknown_thread"
 	ReasonPrompt             = "prompt"
+	ReasonCommand            = "command" // a relay command (`!help`, `!branch` …): answered, no prompt
+
+	// Branch reactions (:fork_and_knife:).
+	ReasonBranchReaction   = "branch_reaction"   // slackproto: delivered to the handler
+	ReasonBranch           = "branch"            // handler: a branch was opened
+	ReasonBranchDuplicate  = "branch_duplicate"  // handler: that message was already branched
+	ReasonBranchUnreadable = "branch_unreadable" // handler: the reacted message could not be read
+	ReasonBranchFailed     = "branch_failed"     // handler: posting or starting the branch failed
 )
 
 // Record is one ingest decision. Field names are part of the stability

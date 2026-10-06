@@ -59,6 +59,7 @@ type Agent interface {
 	NewSession(ctx context.Context, cwd string, sink client.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
 	ListSessions(ctx context.Context, cwd string) ([]client.SessionInfo, error)
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error
+	ForkSession(ctx context.Context, cwd string, parent acp.SessionId, at string, sink client.SessionUpdateSink) (acp.SessionId, error)
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	DropSession(sid acp.SessionId)

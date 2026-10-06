@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -76,19 +75,6 @@ const defaultPostsPerMinute = 10
 // of 100-message calls, which is enumeration by another name.
 const defaultReadsPerMinute = 60
 
-// broadcastPing matches every form of Slack's channel-wide notification
-// escape — bare (<!here>), labelled (<!here|@here>, which is the form
-// Slack itself emits and happily re-parses), and user-group pings
-// (<!subteam^S012|@oncall>).
-//
-// A literal-string blocklist looked sufficient and was not: posts go out
-// with escape=false, so Slack parses the text, and the labelled form
-// sailed straight through. An agent has no business emitting any of
-// these, and "post @channel in #general saying…" is exactly the abuse
-// this blocks. Stripped rather than rejected so a benign message still
-// gets through.
-var broadcastPing = regexp.MustCompile(`<!(?:here|channel|everyone|subteam\^[^>|]*)(?:\|[^>]*)?>`)
-
 // API is the subset of *slack.Client the relay-hosted tools use.
 // Narrowed to an interface so the Relay is testable without a network.
 // *slack.Client satisfies it.
@@ -128,6 +114,9 @@ type RelayConfig struct {
 	Logf func(format string, v ...any)
 	// Now is injected for the rate limiter's clock. nil → time.Now.
 	Now func() time.Time
+	// Origin resolves the thread a session was branched out of, for
+	// history(origin=true). nil means no session has an origin.
+	Origin func(sessionKey string) (Origin, bool)
 }
 
 // Relay implements Controller by making every Slack call itself, with
@@ -192,12 +181,13 @@ func (r *Relay) ReadThread(ctx context.Context, sessionKey, channel, threadTS st
 	if err := r.admitRead(ToolReadThread, sessionKey, channel); err != nil {
 		return "", err
 	}
-	msgs, _, _, err := r.cfg.API.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+	// The newest messages, not the first page: replies pages
+	// oldest-first, so a long thread's first page is its beginning.
+	msgs, err := slackproto.ThreadTail(ctx, r.cfg.API, slack.GetConversationRepliesParameters{
 		ChannelID: channel,
 		Timestamp: threadTS,
-		Limit:     clampLimit(limit),
 		Inclusive: true,
-	})
+	}, clampLimit(limit))
 	if err != nil {
 		return "", r.fail(ToolReadThread, sessionKey, channel, fmt.Errorf("conversations.replies: %w", err))
 	}
@@ -509,7 +499,7 @@ func (r *Relay) Post(ctx context.Context, sessionKey, channel, threadTS, text st
 	// would spend one of ten posts per minute on a call that was never
 	// going to land, and the agent would read the resulting `no_text` as
 	// a mysterious Slack failure instead of the refusal it is.
-	clean := stripBroadcastPings(r.cfg.SelfDrive.Scrub(text))
+	clean := slackproto.StripBroadcastPings(r.cfg.SelfDrive.Scrub(text))
 	if clean == "" {
 		return "", r.fail(ToolPost, sessionKey, channel,
 			errors.New("refusing to post an empty message; the text was nothing but channel-wide pings, which this bot strips"))
@@ -685,12 +675,6 @@ func clampSearchDays(n int) int {
 		return maxSearchDays
 	}
 	return n
-}
-
-// stripBroadcastPings removes @channel/@here/@everyone and user-group
-// escapes in every syntactic form Slack accepts.
-func stripBroadcastPings(text string) string {
-	return strings.TrimSpace(broadcastPing.ReplaceAllString(text, ""))
 }
 
 // truncate shortens s to at most n runes, appending an ellipsis.

@@ -55,4 +55,16 @@ is enabled, each line you receive from the thread is prefixed with
 "[username]" to show who's speaking. You decide whether to reply or
 stay silent. To abstain (no reply), output exactly "<<SILENT>>" and
 nothing else; the relay will suppress posting. If you have nothing
-useful to add, abstain.`
+useful to add, abstain.
+
+The relay answers chat commands itself (they never reach you): !help,
+!model, !new, !stop, !status, and !branch <text>, which opens a new
+Slack thread in the same channel that continues this conversation —
+the same as a person reacting :fork_and_knife: to a message. Besides
+the slack_* tools, the relay's "slack" MCP server gives you "history"
+(read this thread; with origin=true, read the thread this one was
+branched out of, up to the branch point) and "branch" (fan work out
+into up to 10 new threads at once: tasks of {seed, title, from_msg}).
+A branch's session is a fork of yours when the agent supports it, so
+it starts with this conversation's context; otherwise it starts fresh
+and can catch up with history(origin=true).`

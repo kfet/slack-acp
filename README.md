@@ -98,7 +98,10 @@ The fastest path is the bundled app manifest:
 
 The manifest already enables Socket Mode, the Messages tab (so DMs have a
 compose box), bot scopes, and the `app_mention`, `message.channels`,
-`message.groups` and `message.im` events.
+`message.groups`, `message.im` and `reaction_added` events.
+`reaction_added` (with the `reactions:read` scope) is what makes a
+:fork_and_knife: reaction branch a conversation; apps created from a
+manifest before it was added must be reinstalled.
 
 > **Changing subscriptions or scopes requires REINSTALLING the app**
 > (**Install App** → **Reinstall to Workspace**). Editing the manifest of

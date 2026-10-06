@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Branching: continue a conversation in a new thread. `!branch <text>`, a :fork_and_knife: reaction on a message, or the agent's new `branch` MCP tool (up to 10 tasks of `{seed, title, from_msg}`) posts a new top-level message in the same channel linking back to the branch point, and links the new thread from the origin thread. The new thread's session forks the origin's agent session (ACP `session/fork`, acp-kit v0.32.0) into the new thread's cwd; if the agent cannot fork, the relay logs it and starts a fresh session.
+- `history` MCP tool: read this thread, or with `origin=true` the thread it was branched out of, up to the branch point.
+- `slack-acp verify` check `branch_reaction`.
+
+### Changed
+
+- The Slack app manifest adds the `reactions:read` bot scope, the `reaction_added` event and the `reactions:write` user scope (for `verify`). **Reinstall the app** for :fork_and_knife: branching. `slack-acp init` now reminds you.
+- The system prompt lists the relay commands and the `history` / `branch` tools.
+- `slack_read_thread` returns the newest `limit` messages of a thread instead of its first page.
+- The ingest journal records relay commands with reason `command` instead of `prompt`.
+
 ## [0.12.0] - 2026-10-02
 
 ### Added

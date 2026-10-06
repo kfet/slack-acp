@@ -63,6 +63,25 @@ type Handler interface {
 	Handle(ctx context.Context, ev Event)
 }
 
+// BranchReaction is the emoji name that branches a conversation when
+// a person adds it to a message (:fork_and_knife:).
+const BranchReaction = "fork_and_knife"
+
+// Reaction is a normalised :fork_and_knife: reaction on a message.
+type Reaction struct {
+	UserID    string // who reacted
+	BotUserID string
+	ChannelID string
+	// TS is the reacted-to message.
+	TS string
+}
+
+// ReactionHandler is the optional interface a Handler implements to
+// receive branch reactions. A handler without it never sees them.
+type ReactionHandler interface {
+	HandleReaction(ctx context.Context, r Reaction)
+}
+
 // Client is the Socket Mode client wrapper.
 type Client struct {
 	api       *slack.Client
@@ -294,6 +313,8 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			Text:      stripMention(ev.Text, c.botUserID),
 			IsMention: true,
 		})
+	case *slackevents.ReactionAddedEvent:
+		c.handleReaction(ctx, ev)
 	case *slackevents.MessageEvent:
 		rec := journal.Record{
 			Stage:    journal.StageProto,
@@ -559,6 +580,34 @@ func (c *Client) deliver(ctx context.Context, ev Event) {
 	if c.handler != nil {
 		c.handler.Handle(ctx, ev)
 	}
+}
+
+// handleReaction admits a :fork_and_knife: on a message, from anyone
+// but the bot itself. Every other reaction is ignored without a
+// journal record — reactions are chatter, not ingest.
+func (c *Client) handleReaction(ctx context.Context, ev *slackevents.ReactionAddedEvent) {
+	if ev.Reaction != BranchReaction || ev.Item.Type != "message" {
+		return
+	}
+	rec := journal.Record{
+		Stage:   journal.StageProto,
+		Path:    journal.PathReaction,
+		Channel: ev.Item.Channel,
+		TS:      ev.Item.Timestamp,
+		User:    ev.User,
+	}
+	if ev.User == "" || ev.User == c.botUserID {
+		rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonBotAuthored
+		journal.Log(rec)
+		return
+	}
+	rh, ok := c.handler.(ReactionHandler)
+	if !ok {
+		return
+	}
+	rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonBranchReaction
+	journal.Log(rec)
+	rh.HandleReaction(ctx, Reaction{UserID: ev.User, BotUserID: c.botUserID, ChannelID: ev.Item.Channel, TS: ev.Item.Timestamp})
 }
 
 func firstNonEmpty(a, b string) string {

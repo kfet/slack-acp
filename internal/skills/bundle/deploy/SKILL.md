@@ -33,10 +33,14 @@ Done in the Slack admin UI at https://api.slack.com/apps:
 
 1. Create app, **Enable Socket Mode** → generate app-level token
    (`xapp-…`) with `connections:write`.
-2. Bot scopes: `app_mentions:read`, `chat:write`, `im:history`,
-   `im:read`, `im:write`, `users:read`. Install to workspace; copy
-   the bot token (`xoxb-…`).
-3. Subscribe to events: `app_mention`, `message.im`.
+2. Bot scopes: create the app from `docs/slack-app-manifest.json`,
+   which carries the full set (`app_mentions:read`, `chat:write`,
+   `channels:*`, `groups:*`, `im:*`, `reactions:read`, `users:read`).
+   Install to workspace; copy the bot token (`xoxb-…`).
+3. Events (also in the manifest): `app_mention`, `message.channels`,
+   `message.groups`, `message.im`, `reaction_added` (the
+   :fork_and_knife: branch trigger). Adding a scope or event to an
+   installed app needs **Reinstall to Workspace**.
 4. Optional: enable DMs in **App Home → Messages Tab**.
 
 ## Steps

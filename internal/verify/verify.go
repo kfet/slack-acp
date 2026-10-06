@@ -41,6 +41,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -99,6 +100,8 @@ type Slack interface {
 	Replies(ctx context.Context, channel, threadTS string) ([]Message, error)
 	// OpenDM returns the IM channel id for a conversation with userID.
 	OpenDM(ctx context.Context, userID string) (string, error)
+	// React adds the named emoji reaction to a message.
+	React(ctx context.Context, channel, ts, name string) error
 }
 
 // Source yields the relay's ingest-journal records. The live
@@ -246,6 +249,7 @@ func (r *Runner) Run(ctx context.Context) ([]Result, error) {
 	mention, threadTS := r.checkMention(ctx, "app_mention_public", r.cfg.PublicChannel)
 	out = append(out, mention)
 	out = append(out, r.checkAmbientKnownThread(ctx, threadTS))
+	out = append(out, r.checkBranchReaction(ctx, threadTS))
 	out = append(out, r.checkPrivateMention(ctx))
 	out = append(out, r.checkDM(ctx))
 	out = append(out, r.checkAmbientUnknownThread(ctx))
@@ -295,6 +299,95 @@ func (r *Runner) checkAmbientKnownThread(ctx context.Context, threadTS string) R
 		return failf(name, "post as user: %v", err)
 	}
 	return r.expectRun(ctx, name, r.cfg.PublicChannel, threadTS, ts, journal.PathMessage, journal.ReasonAmbientThreadReply)
+}
+
+// checkBranchReaction reacts :fork_and_knife: to a human reply in the
+// live thread and expects the relay to open a branch: the slackproto
+// deliver on the reaction path, the handler's branch record, and the
+// "Branched to" link in the origin thread. The new top-level thread is
+// found through that link's permalink and queued for cleanup.
+func (r *Runner) checkBranchReaction(ctx context.Context, threadTS string) Result {
+	const name = "branch_reaction"
+	if r.cfg.User == nil {
+		return Result{Name: name, Status: StatusSkip, Detail: skipNoUserToken}
+	}
+	if threadTS == "" {
+		return Result{Name: name, Status: StatusSkip, Detail: "the public app_mention check did not establish a thread to branch from"}
+	}
+	channel := r.cfg.PublicChannel
+	ts, err := r.post(ctx, r.cfg.User, channel, threadTS, r.label("branch from here"))
+	if err != nil {
+		return failf(name, "post as user: %v", err)
+	}
+	if err := r.cfg.User.React(ctx, channel, ts, branchEmoji); err != nil {
+		return failf(name, "react as user: %v (the user token needs the reactions:write scope)", err)
+	}
+	var recs []journal.Record
+	err = r.cfg.Wait(ctx, func(ctx context.Context) (bool, error) {
+		var err error
+		if recs, err = r.recordsFor(ctx, channel, ts); err != nil {
+			return false, err
+		}
+		for _, rec := range recs {
+			if rec.Path == journal.PathReaction && rec.Decision == journal.DecisionDrop {
+				return false, &verdict{fmt.Sprintf("the relay REFUSED the reaction with reason=%q", rec.Reason)}
+			}
+		}
+		return hasRecordPath(recs, journal.StageHandler, journal.PathReaction, journal.DecisionRun, journal.ReasonBranch), nil
+	})
+	if err != nil {
+		return Result{Name: name, Status: StatusFail, Records: recs,
+			Detail: fmt.Sprintf("expected a branch for the reaction on ts=%s: %v (is reaction_added subscribed and reactions:read granted?)", ts, err)}
+	}
+	if !hasRecordPath(recs, journal.StageProto, journal.PathReaction, journal.DecisionDeliver, journal.ReasonBranchReaction) {
+		return Result{Name: name, Status: StatusFail, Records: recs,
+			Detail: fmt.Sprintf("expected slackproto deliver on path=%s reason=%s for ts=%s", journal.PathReaction, journal.ReasonBranchReaction, ts)}
+	}
+	var child string
+	err = r.cfg.Wait(ctx, func(ctx context.Context) (bool, error) {
+		replies, err := r.cfg.Bot.Replies(ctx, channel, threadTS)
+		if err != nil {
+			return false, err
+		}
+		r.trackBotReplies(channel, replies)
+		for _, m := range replies {
+			if m.authored(r.botUserID) && m.TS > ts && strings.Contains(m.Text, "Branched to") {
+				child = permalinkTS(m.Text)
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		return Result{Name: name, Status: StatusFail, Records: recs,
+			Detail: fmt.Sprintf("the relay journalled a branch but posted no link in thread %s: %v", threadTS, err)}
+	}
+	if child == "" {
+		return Result{Name: name, Status: StatusFail, Records: recs,
+			Detail: "the branch announcement carries no permalink to the new thread"}
+	}
+	// The bot authored the new thread: the bot token deletes it, after
+	// cleanup sweeps the replies the child's first turn posted there.
+	r.posted = append(r.posted, posted{slack: r.cfg.Bot, channel: channel, ts: child, thread: true})
+	return Result{Name: name, Status: StatusPass, Records: recs,
+		Detail: fmt.Sprintf("reaction delivered, branch opened as thread %s and linked from %s", child, threadTS)}
+}
+
+// branchEmoji is slackproto.BranchReaction, restated so the harness
+// does not import the relay's protocol layer.
+const branchEmoji = "fork_and_knife"
+
+// permalinkRE matches a Slack message permalink's ts segment.
+var permalinkRE = regexp.MustCompile(`/archives/[^/|>]+/p(\d+)(\d{6})\b`)
+
+// permalinkTS extracts the message ts from the first Slack permalink
+// in text (…/p1700000000000100 → 1700000000.000100), or "".
+func permalinkTS(text string) string {
+	m := permalinkRE.FindStringSubmatch(text)
+	if m == nil {
+		return ""
+	}
+	return m[1] + "." + m[2]
 }
 
 func (r *Runner) checkDM(ctx context.Context) Result {

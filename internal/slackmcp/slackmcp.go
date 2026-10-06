@@ -105,6 +105,9 @@ type Controller interface {
 	ListChannels(ctx context.Context, sessionKey string) (string, error)
 	Search(ctx context.Context, sessionKey string, p SearchParams) (string, error)
 	Post(ctx context.Context, sessionKey, channel, threadTS, text string) (string, error)
+	// History reads the caller's own thread, or with origin its origin
+	// thread up to the branch point.
+	History(ctx context.Context, sessionKey string, origin bool, limit int) (string, error)
 }
 
 // HostConfig returns the mcphost.Config for slack-acp's `slack` server.
@@ -132,10 +135,12 @@ func RedirConfig() mcphost.RedirConfig {
 }
 
 // Register registers the Slack tools on h, wiring them to ctrl. The
-// read tools are always registered; slack_post is registered only when
+// read tools and `history` are always registered; `branch` is
+// registered when br is non-nil; slack_post is registered only when
 // allowPost is true (config agent_slack_access = "read_write"), because
 // it lets ambient thread text steer the bot into posting elsewhere.
-func Register(h *mcphost.Host, ctrl Controller, allowPost bool) {
+func Register(h *mcphost.Host, ctrl Controller, br Brancher, allowPost bool) {
+	registerConversation(h, ctrl, br)
 	h.Tool(ToolReadThread,
 		"Read the messages of a Slack thread the bot can see. Use to pull context from "+
 			"another thread — including one in a different channel — without leaving this conversation.",

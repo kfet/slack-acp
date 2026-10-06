@@ -37,6 +37,20 @@ func (w *workspace) nextTS(prefix string) string {
 	return fmt.Sprintf("%s%04d.000000", prefix, w.seq)
 }
 
+// threadOf finds the thread a message ts lives in.
+func (w *workspace) threadOf(ts string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for thread, msgs := range w.threads {
+		for _, m := range msgs {
+			if m.TS == ts {
+				return thread
+			}
+		}
+	}
+	return ""
+}
+
 func (w *workspace) replies(threadTS string) []Message {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -57,6 +71,9 @@ type fakeSlack struct {
 	onUpdate  func(f *fakeSlack, channel, ts, text string)
 	deleted   []string
 	dmID      string
+	reactErr  error
+	// onReact scripts the relay's answer to a reaction.
+	onReact func(channel, ts, name string)
 
 	// onPost is invoked after every successful post, letting a test
 	// script the relay's reaction (e.g. "the bot replies").
@@ -119,6 +136,32 @@ func (f *fakeSlack) Replies(_ context.Context, _, threadTS string) ([]Message, e
 		return nil, f.replyErr
 	}
 	return f.ws.replies(threadTS), nil
+}
+
+func (f *fakeSlack) React(_ context.Context, channel, ts, name string) error {
+	if f.reactErr != nil {
+		return f.reactErr
+	}
+	if f.onReact != nil {
+		f.onReact(channel, ts, name)
+	}
+	return nil
+}
+
+// branch scripts the relay opening a branch for a reaction on ts: a new
+// bot-authored top-level thread, its first reply, and the link in the
+// origin thread. link controls whether the announcement carries the
+// permalink.
+func (f *fakeSlack) branch(channel, ts string, link bool) string {
+	child := f.ws.nextTS("300")
+	f.ws.add(child, Message{TS: child, User: "UBOT", BotID: "B1", Text: ":fork_and_knife: *x*"})
+	f.botReply(child)
+	text := ":fork_and_knife: Branched to x"
+	if link {
+		text = ":fork_and_knife: Branched to <https://w.slack.com/archives/" + channel + "/p" + strings.Replace(child, ".", "", 1) + "|x>"
+	}
+	f.ws.add(f.ws.threadOf(ts), Message{TS: f.ws.nextTS("400"), User: "UBOT", BotID: "B1", Text: text})
+	return child
 }
 
 func (f *fakeSlack) OpenDM(context.Context, string) (string, error) { return f.dmID, f.openErr }
@@ -198,6 +241,16 @@ func scriptedRelay(j *fakeJournal, botID string) (bot, user *fakeSlack) {
 		}
 	}
 	bot.onPost, user.onPost = react, react
+	user.onReact = func(channel, ts, name string) {
+		if name != "fork_and_knife" {
+			return
+		}
+		j.add(
+			journal.Record{Stage: journal.StageProto, Path: journal.PathReaction, Decision: journal.DecisionDeliver, Reason: journal.ReasonBranchReaction, Channel: channel, TS: ts},
+			journal.Record{Stage: journal.StageHandler, Path: journal.PathReaction, Decision: journal.DecisionRun, Reason: journal.ReasonBranch, Channel: channel, TS: ts},
+		)
+		bot.branch(channel, ts, true)
+	}
 	// An @-mention introduced by EDITING is delivered with `edited`
 	// set and refused by the self-authorship clause.
 	user.onUpdate = func(_ *fakeSlack, channel, ts, _ string) {
@@ -245,7 +298,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	for _, want := range []string{
 		"app_mention_public", "ambient_thread_reply_known", "app_mention_private",
 		"dm", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped",
-		"bot_echo_dropped", "self_drive_hatch",
+		"bot_echo_dropped", "self_drive_hatch", "branch_reaction",
 	} {
 		res, ok := byName[want]
 		if !ok {
@@ -259,7 +312,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !allOK {
 		t.Fatalf("Summarise says not ok:\n%s", report)
 	}
-	if !strings.Contains(report, "8 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(report, "9 passed, 0 failed, 0 skipped") {
 		t.Fatalf("unexpected summary:\n%s", report)
 	}
 }
@@ -302,7 +355,7 @@ func TestChecksSkipWithoutUserToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	byName := resultsByName(t, results)
-	for _, name := range []string{"app_mention_public", "app_mention_private", "dm", "ambient_thread_reply_known", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped"} {
+	for _, name := range []string{"app_mention_public", "app_mention_private", "dm", "ambient_thread_reply_known", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped", "branch_reaction"} {
 		res := byName[name]
 		if res.Status != StatusSkip {
 			t.Errorf("%s: want SKIP without a user token, got %s (%s)", name, res.Status, res.Detail)
@@ -491,7 +544,7 @@ func TestPostErrorsSurfaceAsFailures(t *testing.T) {
 		// The known-thread check depends on the mention check having
 		// established a thread; when posting is broken there is no
 		// thread, and SKIP (with a reason) is the honest answer.
-		if res.Name == "ambient_thread_reply_known" {
+		if res.Name == "ambient_thread_reply_known" || res.Name == "branch_reaction" {
 			if res.Status != StatusSkip {
 				t.Errorf("%s: want SKIP with no thread to reply into, got %s", res.Name, res.Status)
 			}

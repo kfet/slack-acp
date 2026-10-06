@@ -49,6 +49,11 @@ func fakeSlackServer(t *testing.T, ok bool) (*httptest.Server, *[]string) {
 			{"ts": "1.1", "user": "UBOT", "bot_id": "B1", "subtype": "bot_message", "text": "answer"},
 		}})
 	})
+	mux.HandleFunc("/reactions.add", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		seen = append(seen, "reactions.add name="+r.Form.Get("name"))
+		reply(w, map[string]any{})
+	})
 	mux.HandleFunc("/conversations.open", func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, "conversations.open")
 		reply(w, map[string]any{"channel": map[string]any{"id": "D1"}})
@@ -104,6 +109,12 @@ func TestSlackAdapterHappyPath(t *testing.T) {
 	if err != nil || dm != "D1" {
 		t.Fatalf("OpenDM = %q, %v", dm, err)
 	}
+	if err := api.React(ctx, "C1", "1.0", "fork_and_knife"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(*seen, "\n"), "reactions.add name=fork_and_knife") {
+		t.Fatalf("reaction not sent: %v", *seen)
+	}
 
 	// The threaded post must carry thread_ts; the top-level one must not.
 	joined := strings.Join(*seen, "\n")
@@ -133,6 +144,9 @@ func TestSlackAdapterSurfacesAPIErrors(t *testing.T) {
 	}
 	if _, err := api.OpenDM(ctx, "U1"); err == nil || !strings.Contains(err.Error(), "conversations.open") {
 		t.Errorf("OpenDM: got %v", err)
+	}
+	if err := api.React(ctx, "C1", "1.0", "x"); err == nil || !strings.Contains(err.Error(), "reactions.add") {
+		t.Errorf("React: got %v", err)
 	}
 }
 
