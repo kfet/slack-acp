@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-06
+
 ### Added
 
 - Branching: continue a conversation in a new thread. `!branch <text>`, a :fork_and_knife: reaction on a message, or the agent's new `branch` MCP tool (up to 10 tasks of `{seed, title, from_msg}`) posts a new top-level message in the same channel linking back to the branch point, and links the new thread from the origin thread. The new thread's session forks the origin's agent session (ACP `session/fork`, acp-kit v0.32.0) into the new thread's cwd; if the agent cannot fork, the relay logs it and starts a fresh session.
