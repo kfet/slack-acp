@@ -61,6 +61,9 @@ type Agent interface {
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error
 	ForkSession(ctx context.Context, cwd string, parent acp.SessionId, at string, sink client.SessionUpdateSink) (acp.SessionId, error)
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
+	// PromptTurn is Prompt that also returns the agent's leaf entry id
+	// for the turn, recorded for branch fork points (see RecordTurn).
+	PromptTurn(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (client.TurnResult, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	DropSession(sid acp.SessionId)
 	RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
@@ -92,6 +95,9 @@ type Router struct {
 	mu    sync.Mutex
 	byKey map[ConvKey]*Session
 	fresh map[ConvKey]bool // keys Reset since their last session: skip resume once
+
+	// turnsMu serialises read-modify-write of the per-thread turns.json.
+	turnsMu sync.Mutex
 }
 
 // Config configures a Router.

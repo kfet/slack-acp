@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -520,9 +521,10 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		promptText = prefix + "\n\n" + promptText
 	}
 
-	stop, err := h.cfg.Router.Agent().Prompt(lctx, sess.SessionID, []acp.ContentBlock{
+	res, err := h.cfg.Router.Agent().PromptTurn(lctx, sess.SessionID, []acp.ContentBlock{
 		{Text: &acp.ContentBlockText{Text: promptText}},
 	})
+	stop := res.Stop
 	wcancel()
 	if err != nil {
 		_ = stream.Close(context.Background(), h.failSuffix(lctx, err))
@@ -551,6 +553,7 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		}
 		if abstained {
 			kitlog.Debugf("handler: agent abstained, suppressing post")
+			h.recordTurn(key, ev.TS, "", res.LeafID)
 			return nil
 		}
 	}
@@ -577,7 +580,20 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// edit, and a mid-turn buffered one would be stranded above later
 	// chunks. Close is idempotent, so it also cannot double-post.
 	suffix += baseSink.maybeAppendFooter()
-	return stream.Close(context.Background(), suffix)
+	cerr := stream.Close(context.Background(), suffix)
+	h.recordTurn(key, ev.TS, stream.TS(), res.LeafID)
+	return cerr
+}
+
+// recordTurn keeps a finished turn's leaf id, keyed by the Slack ts of
+// its prompt and first reply message, so a later branch at a message in
+// it forks there. A failed write costs only that fork point (the fork
+// falls back to the session leaf), so it is logged.
+func (h *Handler) recordTurn(key router.ConvKey, promptTS, replyTS, leaf string) {
+	t := router.Turn{PromptTS: promptTS, ReplyTS: replyTS, Leaf: leaf}
+	if err := h.cfg.Router.RecordTurn(key, t); err != nil {
+		log.Printf("handler: recording turn leaf for %s: %v", key, err)
+	}
 }
 
 // failSuffix names why a turn ended, for the note appended to whatever

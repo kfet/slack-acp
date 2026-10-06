@@ -579,8 +579,14 @@ func TestPostStreamerInitialPost(t *testing.T) {
 	fs := newFakeSlackSrv()
 	defer fs.close()
 	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	if s.TS() != "" {
+		t.Fatal("no ts before the first post")
+	}
 	if err := s.Append(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
+	}
+	if s.TS() == "" {
+		t.Fatal("ts after the first post")
 	}
 	if atomic.LoadInt32(&fs.posts) != 1 {
 		t.Fatalf("expected 1 post, got %d", fs.posts)

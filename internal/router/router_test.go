@@ -56,12 +56,20 @@ type fakeAgent struct {
 	// forkHook, when set, answers ForkSession; nil returns "forked".
 	forkHook  func(cwd string, parent acp.SessionId) (acp.SessionId, error)
 	forkCalls int32
+	// forkAts records each ForkSession's at; forkAtErr fails a non-empty at.
+	forkAts   []string
+	forkAtErr error
+	// promptLeaf is PromptTurn's LeafID.
+	promptLeaf string
 }
 
 func (f *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.SessionId, at string, sink client.SessionUpdateSink) (acp.SessionId, error) {
 	atomic.AddInt32(&f.forkCalls, 1)
-	if at != "" {
-		return "", errors.New("unexpected fork point")
+	f.mu.Lock()
+	f.forkAts = append(f.forkAts, at)
+	f.mu.Unlock()
+	if at != "" && f.forkAtErr != nil {
+		return "", f.forkAtErr
 	}
 	sid, err := acp.SessionId("forked"), error(nil)
 	if f.forkHook != nil {
@@ -135,6 +143,11 @@ func (f *fakeAgent) Prompt(_ context.Context, sid acp.SessionId, blocks []acp.Co
 	f.lastPromptSID = sid
 	f.mu.Unlock()
 	return f.promptStop, f.promptErr
+}
+
+func (f *fakeAgent) PromptTurn(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (client.TurnResult, error) {
+	stop, err := f.Prompt(ctx, sid, blocks)
+	return client.TurnResult{Stop: stop, LeafID: f.promptLeaf}, err
 }
 
 func (f *fakeAgent) Cancel(_ context.Context, sid acp.SessionId) error {

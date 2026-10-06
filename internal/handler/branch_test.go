@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -577,5 +578,46 @@ func TestBranchTextHelpers(t *testing.T) {
 	}
 	if firstNonEmpty("", "b") != "b" || firstNonEmpty("a", "b") != "a" {
 		t.Fatal("firstNonEmpty")
+	}
+}
+
+func TestBranchForksAtContainingTurn(t *testing.T) {
+	e := newBranchEnv(t, Config{})
+	e.fa.leafFn = func(_ acp.SessionId, blocks []acp.ContentBlock) string {
+		return "leaf:" + blocks[len(blocks)-1].Text.Text
+	}
+	origin := router.ConvKey{ChannelID: "C1", ThreadTS: "1.0"}
+	e.send(t, slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "one"})
+	e.send(t, slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "101.5", Text: "two"})
+
+	replies := e.bs.inThread("1.0")
+	if len(replies) == 0 {
+		t.Fatal("no replies")
+	}
+	// Fake bot posts have ts 101.0, 102.0, …; prompts interleave.
+	// The first reply belongs to the first turn.
+	if got := e.r.TurnLeaf(origin, replies[0].ts); !strings.HasSuffix(got, "one") {
+		t.Fatalf("leaf at first reply = %q", got)
+	}
+	// A message after the second turn maps to it.
+	e.send(t, slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "150.0", Text: "!branch dig deeper"})
+	if len(e.fa.forks) != 1 || !strings.HasSuffix(e.fa.forks[0].at, "two") {
+		t.Fatalf("forks = %+v, want at the second turn's leaf", e.fa.forks)
+	}
+}
+
+func TestTurnLeafWriteFailureIsLogged(t *testing.T) {
+	e := newBranchEnv(t, Config{})
+	e.fa.leafFn = func(acp.SessionId, []acp.ContentBlock) string { return "L" }
+	// A directory where turns.json belongs makes the write fail.
+	if err := os.MkdirAll(filepath.Join(e.r.StateDir(), "threads", "C1", "1.0", "turns.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.send(t, slackproto.Event{UserID: "U1", ChannelID: "C1", ThreadTS: "1.0", TS: "1.0", Text: "one"})
+	if len(e.bs.inThread("1.0")) == 0 {
+		t.Fatal("the turn must still reply")
+	}
+	if got := e.r.TurnLeaf(router.ConvKey{ChannelID: "C1", ThreadTS: "1.0"}, "1.0"); got != "" {
+		t.Fatalf("leaf = %q", got)
 	}
 }

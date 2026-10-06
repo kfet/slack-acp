@@ -132,8 +132,13 @@ tool all go through `handler.performBranch`:
 2. Record the origin (`origin.json` in the child's thread dir: origin
    channel, thread, branch-point ts) for `history(origin=true)`.
 3. Fork the origin's agent session (ACP `session/fork`, acp-kit
-   `ForkSession`, empty `_meta.at` = the parent's leaf) **into the
-   child's cwd**, so later resumes find it there. On
+   `ForkSession`) **into the child's cwd**, so later resumes find it
+   there. The fork is cut (`_meta.at`) at the leaf of the origin turn
+   that contains the branch message: every turn's leaf id (fir's
+   `_meta.leafId`, acp-kit `PromptTurn`) is kept in `turns.json` in the
+   thread dir, keyed by the ts of its prompt and first reply, and a
+   message between turns maps to the earlier one. With no known turn
+   (or if forking at that leaf fails) it forks at the parent's leaf. On
    `ErrForkUnsupported` or any error the relay logs it and the child
    opens a fresh session on its first turn.
 4. Post the new thread's link in the origin thread (the tool batches

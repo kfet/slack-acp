@@ -693,6 +693,14 @@ func NewPostStreamer(api *slack.Client, channel, threadTS string) *PostStreamer 
 	}
 }
 
+// TS is the ts of the message the streamer owns, or "" before its
+// first post.
+func (s *PostStreamer) TS() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ts
+}
+
 // SetSelfDrive wires the self-drive hatch into the outbound path, so
 // posts are scrubbed of the sentinel and their ts values remembered.
 // Safe to omit; nil keeps both guards inert.

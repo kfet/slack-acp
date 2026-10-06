@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"time"
 
@@ -59,18 +60,19 @@ func (r *Router) OriginOf(child ConvKey) (Origin, bool) {
 	return o, true
 }
 
-// forkPoint is the agent entry id the fork is cut at (`_meta.at`).
+// forkPoint is the agent entry id the fork is cut at (`_meta.at`):
+// the leaf of the origin turn that contains the branch message at. A
+// message posted between two turns maps to the earlier one.
 //
-// It is always empty for now. The relay sees Slack message ts values
-// only; the agent never reports which of its session entries a Slack
-// message became, so there is no mapping. Empty forks at the parent's
-// leaf — for `!branch` and the tool that is "now", which is the branch
-// point. For a :fork_and_knife: on an older message the fork carries
-// more than the branch point; history(origin=true) is still clamped at
-// it. For the `branch` tool the origin is mid-turn (the tool call is in
-// flight); empty still forks at its last complete entry, which is
-// right — do not "fix" it by guessing an entry id.
-const forkPoint = ""
+// It is empty when no such turn is known — an agent that does not
+// report leaf ids, a message older than the kept turns or before the
+// first one. Empty forks at the parent's leaf: for `!branch` and the
+// tool that is "now", the branch point; for a :fork_and_knife: on an
+// older message the fork then carries more than the branch point, and
+// history(origin=true) is still clamped at it.
+func (r *Router) forkPoint(origin ConvKey, at string) string {
+	return r.TurnLeaf(origin, at)
+}
 
 // Fork gives child a copy of origin's agent session (ACP session/fork),
 // so the branch starts with the origin's context, and makes it child's
@@ -84,7 +86,7 @@ const forkPoint = ""
 // Errors (client.ErrForkUnsupported included) are returned for the
 // caller to log; the child then simply opens a fresh session on its
 // first turn.
-func (r *Router) Fork(ctx context.Context, origin, child ConvKey) (acp.SessionId, error) {
+func (r *Router) Fork(ctx context.Context, origin, child ConvKey, at string) (acp.SessionId, error) {
 	r.mu.Lock()
 	_, exists := r.byKey[child]
 	r.mu.Unlock()
@@ -99,7 +101,15 @@ func (r *Router) Fork(ctx context.Context, origin, child ConvKey) (acp.SessionId
 	if err != nil {
 		return "", err
 	}
-	sid, err := r.agent.ForkSession(ctx, cwd, parent, forkPoint, discardSink{})
+	point := r.forkPoint(origin, at)
+	sid, err := r.agent.ForkSession(ctx, cwd, parent, point, discardSink{})
+	if err != nil && point != "" && ctx.Err() == nil && !errors.Is(err, client.ErrForkUnsupported) {
+		// The leaf can belong to an earlier session of the origin (a
+		// failed resume opens a fresh one in the same thread). Fork at
+		// the session leaf instead of not at all.
+		log.Printf("router: forking %s at %s failed (%v); forking at its leaf", parent, point, err)
+		sid, err = r.agent.ForkSession(ctx, cwd, parent, "", discardSink{})
+	}
 	if err != nil {
 		return "", fmt.Errorf("forking session %s: %w", parent, err)
 	}

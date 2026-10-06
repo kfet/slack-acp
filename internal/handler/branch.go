@@ -257,7 +257,7 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (branchMade, 
 	if err := h.cfg.Router.SetOrigin(child, router.Origin{ChannelID: p.origin.ChannelID, ThreadTS: p.origin.ThreadTS, BranchTS: p.at}); err != nil {
 		kitlog.Debugf("handler: branch %s: recording origin: %v", child, err)
 	}
-	forked := h.forkBranch(ctx, p.origin, child)
+	forked := h.forkBranch(ctx, p.origin, child, p.at)
 	made := branchMade{child: child, title: title, link: h.permalink(ctx, child.ChannelID, child.ThreadTS)}
 	if p.announce {
 		h.post(ctx, p.origin.ChannelID, p.origin.ThreadTS, ":fork_and_knife: Branched to "+slackLink(made.link, title))
@@ -274,8 +274,8 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (branchMade, 
 // forkBranch forks the origin's session into child, reporting whether
 // it did. Any failure is logged and the child opens a fresh session on
 // its first turn.
-func (h *Handler) forkBranch(ctx context.Context, origin, child router.ConvKey) bool {
-	sid, err := h.cfg.Router.Fork(ctx, origin, child)
+func (h *Handler) forkBranch(ctx context.Context, origin, child router.ConvKey, at string) bool {
+	sid, err := h.cfg.Router.Fork(ctx, origin, child, at)
 	switch {
 	case errors.Is(err, client.ErrForkUnsupported):
 		log.Printf("handler: branch %s: agent cannot fork sessions (%v); starting a fresh session", child, err)

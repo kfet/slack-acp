@@ -75,7 +75,7 @@ func TestForkFromLiveOrigin(t *testing.T) {
 		gotCwd, gotParent = cwd, parent
 		return "child-sid", nil
 	}
-	sid, err := r.Fork(context.Background(), origin, child)
+	sid, err := r.Fork(context.Background(), origin, child, "")
 	if err != nil || sid != "child-sid" {
 		t.Fatalf("Fork = %q, %v", sid, err)
 	}
@@ -95,7 +95,7 @@ func TestForkFromLiveOrigin(t *testing.T) {
 	if r.TakePendingSystemPrompt(cs) != "" {
 		t.Fatal("a fork carries the origin's system prompt; nothing to inline")
 	}
-	if _, err := r.Fork(context.Background(), origin, child); err == nil {
+	if _, err := r.Fork(context.Background(), origin, child, ""); err == nil {
 		t.Fatal("forking into a child that has a session must fail")
 	}
 }
@@ -110,7 +110,7 @@ func TestForkFromListedOrigin(t *testing.T) {
 		return "c", nil
 	}
 	origin := ConvKey{ChannelID: "C1", ThreadTS: "1.0"}
-	if _, err := r.Fork(context.Background(), origin, ConvKey{ChannelID: "C1", ThreadTS: "2.0"}); err != nil {
+	if _, err := r.Fork(context.Background(), origin, ConvKey{ChannelID: "C1", ThreadTS: "2.0"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if gotParent != "newest" {
@@ -159,7 +159,7 @@ func TestForkFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r, fa := newTestRouter(t)
 			tc.setup(r, fa)
-			_, err := r.Fork(ctx, tc.org, tc.child)
+			_, err := r.Fork(ctx, tc.org, tc.child, "")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}

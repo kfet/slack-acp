@@ -49,6 +49,8 @@ type fakeAgent struct {
 	// forks records ForkSession calls; forkErr fails them.
 	forks   []forkCall
 	forkErr error
+	// leafFn, when set, gives PromptTurn's LeafID.
+	leafFn func(sid acp.SessionId, blocks []acp.ContentBlock) string
 }
 
 func (f *fakeAgent) CurrentModel(sid acp.SessionId) (string, bool) {
@@ -90,10 +92,10 @@ func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, 
 	return nil
 }
 
-func (f *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.SessionId, _ string, sink client.SessionUpdateSink) (acp.SessionId, error) {
+func (f *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.SessionId, at string, sink client.SessionUpdateSink) (acp.SessionId, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.forks = append(f.forks, forkCall{cwd: cwd, parent: parent})
+	f.forks = append(f.forks, forkCall{cwd: cwd, parent: parent, at: at})
 	if f.forkErr != nil {
 		return "", f.forkErr
 	}
@@ -105,6 +107,16 @@ func (f *fakeAgent) ForkSession(_ context.Context, cwd string, parent acp.Sessio
 type forkCall struct {
 	cwd    string
 	parent acp.SessionId
+	at     string
+}
+
+func (f *fakeAgent) PromptTurn(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (client.TurnResult, error) {
+	stop, err := f.Prompt(ctx, sid, blocks)
+	res := client.TurnResult{Stop: stop}
+	if f.leafFn != nil {
+		res.LeafID = f.leafFn(sid, blocks)
+	}
+	return res, err
 }
 
 func (f *fakeAgent) Prompt(ctx context.Context, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, error) {
