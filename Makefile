@@ -52,8 +52,11 @@ $(BINDIR):
 build: tidy | $(BINDIR)
 	$(call RUN,build (native),$(GOBUILD) -o $(BINARY) ./cmd/slack-acp/)
 
+# No `make install`: it used to `go install` into ~/go/bin, which left stale
+# copies beside the real install that `slack-acp update` never touches. Install
+# with install.sh and upgrade with `slack-acp update` (or converge on a fleet host).
 install:
-	go install -ldflags="$(LDFLAGS)" ./cmd/slack-acp/
+	@echo 'make install is disabled: install with install.sh (BIN_DIR=$$HOME/.local/bin), upgrade with `slack-acp update`.' >&2; exit 1
 
 # Cross-compile matrix — matches fir's targets: darwin/{arm64,amd64},
 # linux/{armv6,arm64,amd64}.  Each entry expands to its own phony target so
