@@ -105,7 +105,8 @@ const (
 	ReasonEmptyText          = "empty_text"
 	ReasonAmbientUnknownThrd = "ambient_unknown_thread"
 	ReasonPrompt             = "prompt"
-	ReasonCommand            = "command" // a relay command (`!help`, `!branch` …): answered, no prompt
+	ReasonCommand            = "command"    // a relay command (`!help`, `!branch` …): answered, no prompt
+	ReasonOwnerOnly          = "owner_only" // an operator command from a non-owner: refused with a reply
 
 	// Branch reactions (:fork_and_knife:).
 	ReasonBranchReaction   = "branch_reaction"   // slackproto: delivered to the handler

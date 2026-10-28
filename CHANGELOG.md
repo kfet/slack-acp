@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `owner_user_ids` config: operator commands (`!fir`, `!run`, `!skills`, `!update`, `!login` and the rest of the login family, `!logout`) run only for owners; others get a short "owner-only" refusal and the message never reaches the agent. Fails closed — with no owners configured nobody may run them, so set it to keep using `!login`. While an owner's login waits for its redirect URL, a non-owner's message in that thread goes to the agent instead of completing it.
+- Journal reason `owner_only` for a refused operator command, and a `slack-acp verify` check (`owner_gate_refused`) that DMs `!update --check` as the test user and expects the refusal.
+
 ## [0.14.0] - 2026-10-06
 
 ### Changed

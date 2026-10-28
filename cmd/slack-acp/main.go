@@ -222,6 +222,7 @@ func main() {
 	h := handler.New(handler.Config{
 		Router:              r,
 		AllowedUserIDs:      allowedUsers,
+		OwnerUserIDs:        toSet(cfg.OwnerUserIDs),
 		AllowedChannelIDs:   allowedChannels,
 		NoProgressTimeout:   cfg.NoProgressTimeout(),
 		TurnCeiling:         cfg.TurnCeiling(),

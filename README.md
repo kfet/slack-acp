@@ -162,6 +162,7 @@ Or with a config file:
   "app_token": "xapp-…",
   "agent_cmd": ["fir", "--mode", "acp"],
   "allowed_user_ids": ["U0123456"],
+  "owner_user_ids": ["U0123456"],
   "state_dir": "/var/lib/slack-acp"
 }
 ```

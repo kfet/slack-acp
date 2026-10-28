@@ -252,6 +252,7 @@ func (r *Runner) Run(ctx context.Context) ([]Result, error) {
 	out = append(out, r.checkBranchReaction(ctx, threadTS))
 	out = append(out, r.checkPrivateMention(ctx))
 	out = append(out, r.checkDM(ctx))
+	out = append(out, r.checkOwnerGate(ctx))
 	out = append(out, r.checkAmbientUnknownThread(ctx))
 	out = append(out, r.checkEditedMention(ctx))
 	out = append(out, r.checkBotEcho(ctx))
@@ -404,6 +405,61 @@ func (r *Runner) checkDM(ctx context.Context) Result {
 		return failf(name, "post as user: %v", err)
 	}
 	return r.expectRun(ctx, name, dm, ts, ts, journal.PathMessageIM, journal.ReasonDM)
+}
+
+// checkOwnerGate DMs an operator command as the test user and expects
+// the owner gate to refuse it with a reply. The command must lead the
+// message, so the disclosure label trails it here. A test user listed
+// in owner_user_ids cannot exercise the refusal: that is a skip.
+func (r *Runner) checkOwnerGate(ctx context.Context) Result {
+	const name = "owner_gate_refused"
+	if r.cfg.User == nil {
+		return Result{Name: name, Status: StatusSkip, Detail: skipNoUserToken}
+	}
+	dm, err := r.cfg.Bot.OpenDM(ctx, r.humanID)
+	if err != nil {
+		return failf(name, "conversations.open with the test user: %v (the bot token needs the im:write scope)", err)
+	}
+	ts, err := r.post(ctx, r.cfg.User, dm, "", "!update --check "+r.label("owner gate probe"))
+	if err != nil {
+		return failf(name, "post as user: %v", err)
+	}
+	var recs []journal.Record
+	err = r.cfg.Wait(ctx, func(ctx context.Context) (bool, error) {
+		var err error
+		if recs, err = r.recordsFor(ctx, dm, ts); err != nil {
+			return false, err
+		}
+		for _, rec := range recs {
+			if rec.Stage == journal.StageHandler {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		return Result{Name: name, Status: StatusFail, Records: recs,
+			Detail: fmt.Sprintf("no handler record for ts=%s: %v", ts, err)}
+	}
+	if !hasRecord(recs, journal.StageHandler, journal.DecisionDrop, journal.ReasonOwnerOnly) {
+		if hasRecord(recs, journal.StageHandler, journal.DecisionRun, journal.ReasonCommand) {
+			return Result{Name: name, Status: StatusSkip, Records: recs,
+				Detail: "the test user is in owner_user_ids, so the refusal cannot be exercised"}
+		}
+		return Result{Name: name, Status: StatusFail, Records: recs,
+			Detail: fmt.Sprintf("ts=%s was not refused as %s — a non-owner reached an operator command", ts, journal.ReasonOwnerOnly)}
+	}
+	replies, err := r.cfg.Bot.Replies(ctx, dm, ts)
+	if err != nil {
+		return failf(name, "conversations.replies: %v", err)
+	}
+	if !r.botReplied(replies, ts) {
+		return Result{Name: name, Status: StatusFail, Records: recs,
+			Detail: "refused in the journal, but no refusal reply landed"}
+	}
+	r.trackBotReplies(dm, replies)
+	return Result{Name: name, Status: StatusPass, Records: recs,
+		Detail: "a non-owner's operator command was refused with a reply"}
 }
 
 func (r *Runner) checkAmbientUnknownThread(ctx context.Context) Result {

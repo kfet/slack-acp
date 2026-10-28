@@ -51,6 +51,8 @@ type fakeAgent struct {
 	forkErr error
 	// leafFn, when set, gives PromptTurn's LeafID.
 	leafFn func(sid acp.SessionId, blocks []acp.ContentBlock) string
+	// redirects records each login redirect URL submitted.
+	redirects []string
 }
 
 func (f *fakeAgent) CurrentModel(sid acp.SessionId) (string, bool) {

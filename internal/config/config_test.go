@@ -28,6 +28,17 @@ func TestLoadOK(t *testing.T) {
 	}
 }
 
+func TestLoadOwnerUserIDs(t *testing.T) {
+	p := write(t, `{"owner_user_ids":["U1","U2"]}`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(c.OwnerUserIDs, ",") != "U1,U2" {
+		t.Fatalf("owners = %v", c.OwnerUserIDs)
+	}
+}
+
 func TestLoadUnknownField(t *testing.T) {
 	p := write(t, `{"nope":1}`)
 	if _, err := Load(p); err == nil {

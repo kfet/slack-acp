@@ -188,6 +188,11 @@ at a time, and the agent isn't billed for tokens it'll never deliver.
   gate access at the `allowed_*` boundary instead.
 - Allowlists: `allowed_user_ids` and `allowed_channel_ids` gate inbound
   events at the handler boundary.
+- Owner gate: operator commands (`!fir`, `!run`, `!skills`, `!update`,
+  `!login`, `!logins`, `!cancel-login`, `!logout`) run only for
+  `owner_user_ids`; anyone else gets a one-line refusal and the message
+  never reaches the agent. Empty means nobody may run them (fail closed).
+  Per-user RBAC beyond that belongs to the ACP agent, not the relay.
 
 ## Package boundaries (think before specialising)
 

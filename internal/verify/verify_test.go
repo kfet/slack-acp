@@ -220,6 +220,12 @@ func scriptedRelay(j *fakeJournal, botID string) (bot, user *fakeSlack) {
 	bot, user = newWorkspace()
 	react := func(f *fakeSlack, channel, threadTS, ts, text string) {
 		switch {
+		case f == user && channel == bot.dmID && strings.HasPrefix(text, "!update"):
+			j.add(
+				journal.Record{Stage: journal.StageProto, Path: journal.PathMessageIM, Decision: journal.DecisionDeliver, Reason: journal.ReasonDM, Channel: channel, TS: ts},
+				journal.Record{Stage: journal.StageHandler, Path: journal.PathMessageIM, Decision: journal.DecisionDrop, Reason: journal.ReasonOwnerOnly, Channel: channel, TS: ts},
+			)
+			bot.botReply(threadTS)
 		case f == user && channel == bot.dmID:
 			j.delivered(channel, ts, journal.PathMessageIM, journal.ReasonDM)
 			bot.botReply(threadTS)
@@ -297,7 +303,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	byName := resultsByName(t, results)
 	for _, want := range []string{
 		"app_mention_public", "ambient_thread_reply_known", "app_mention_private",
-		"dm", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped",
+		"dm", "owner_gate_refused", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped",
 		"bot_echo_dropped", "self_drive_hatch", "branch_reaction",
 	} {
 		res, ok := byName[want]
@@ -312,7 +318,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !allOK {
 		t.Fatalf("Summarise says not ok:\n%s", report)
 	}
-	if !strings.Contains(report, "9 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(report, "10 passed, 0 failed, 0 skipped") {
 		t.Fatalf("unexpected summary:\n%s", report)
 	}
 }
@@ -355,7 +361,7 @@ func TestChecksSkipWithoutUserToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	byName := resultsByName(t, results)
-	for _, name := range []string{"app_mention_public", "app_mention_private", "dm", "ambient_thread_reply_known", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped", "branch_reaction"} {
+	for _, name := range []string{"app_mention_public", "app_mention_private", "dm", "owner_gate_refused", "ambient_thread_reply_known", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped", "branch_reaction"} {
 		res := byName[name]
 		if res.Status != StatusSkip {
 			t.Errorf("%s: want SKIP without a user token, got %s (%s)", name, res.Status, res.Detail)
@@ -1057,5 +1063,81 @@ func TestTerminalRefusalsCoverEveryOutrightRefusal(t *testing.T) {
 		if terminalRefusals[reason] {
 			t.Errorf("%q accompanies a successful delivery and must NOT be terminal", reason)
 		}
+	}
+}
+
+// ownerGateRunner wires checkOwnerGate to a user whose DM post produces
+// the handler record rec (if any) and, when reply is set, a bot reply.
+func ownerGateRunner(t *testing.T, rec *journal.Record, reply bool) (*Runner, *fakeSlack, *fakeSlack) {
+	t.Helper()
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	user.onPost = func(_ *fakeSlack, channel, threadTS, ts, _ string) {
+		if rec != nil {
+			r := *rec
+			r.Channel, r.TS = channel, ts
+			j.add(r)
+		}
+		if reply {
+			bot.botReply(threadTS)
+		}
+	}
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	r.botUserID, r.humanID = "UBOT", "UHUMAN"
+	return r, bot, user
+}
+
+func TestOwnerGateOutcomes(t *testing.T) {
+	refused := &journal.Record{Stage: journal.StageHandler, Decision: journal.DecisionDrop, Reason: journal.ReasonOwnerOnly}
+	owner := &journal.Record{Stage: journal.StageHandler, Decision: journal.DecisionRun, Reason: journal.ReasonCommand}
+	leaked := &journal.Record{Stage: journal.StageHandler, Decision: journal.DecisionRun, Reason: journal.ReasonPrompt}
+	for _, c := range []struct {
+		name   string
+		rec    *journal.Record
+		reply  bool
+		status Status
+		detail string
+	}{
+		{"refused", refused, true, StatusPass, "refused with a reply"},
+		{"owner", owner, true, StatusSkip, "owner_user_ids"},
+		{"leaked", leaked, true, StatusFail, "was not refused"},
+		{"silent", refused, false, StatusFail, "no refusal reply"},
+		{"unseen", nil, false, StatusFail, "no handler record"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, _, _ := ownerGateRunner(t, c.rec, c.reply)
+			res := r.checkOwnerGate(context.Background())
+			if res.Status != c.status || !strings.Contains(res.Detail, c.detail) {
+				t.Fatalf("got %+v", res)
+			}
+		})
+	}
+}
+
+func TestOwnerGateErrors(t *testing.T) {
+	refused := &journal.Record{Stage: journal.StageHandler, Decision: journal.DecisionDrop, Reason: journal.ReasonOwnerOnly}
+	r, bot, _ := ownerGateRunner(t, refused, true)
+	bot.openErr = errors.New("missing_scope")
+	if res := r.checkOwnerGate(context.Background()); res.Status != StatusFail || !strings.Contains(res.Detail, "im:write") {
+		t.Fatalf("open: %+v", res)
+	}
+	r, _, user := ownerGateRunner(t, refused, true)
+	user.postErr = errors.New("boom")
+	if res := r.checkOwnerGate(context.Background()); res.Status != StatusFail || !strings.Contains(res.Detail, "post as user") {
+		t.Fatalf("post: %+v", res)
+	}
+	r, bot, _ = ownerGateRunner(t, refused, true)
+	bot.replyErr = errors.New("channel_not_found")
+	if res := r.checkOwnerGate(context.Background()); res.Status != StatusFail || !strings.Contains(res.Detail, "conversations.replies") {
+		t.Fatalf("replies: %+v", res)
+	}
+	r, _, _ = ownerGateRunner(t, refused, true)
+	r.cfg.Journal = &fakeJournal{err: errors.New("journalctl")}
+	if res := r.checkOwnerGate(context.Background()); res.Status != StatusFail || !strings.Contains(res.Detail, "no handler record") {
+		t.Fatalf("journal: %+v", res)
+	}
+	r.cfg.User = nil
+	if res := r.checkOwnerGate(context.Background()); res.Status != StatusSkip {
+		t.Fatalf("no user: %+v", res)
 	}
 }

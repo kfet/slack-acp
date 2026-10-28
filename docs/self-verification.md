@@ -13,7 +13,7 @@ by an operator or an automated relay — nobody has to type in Slack.
 
 ## Why it needs a user token
 
-Six of the seven checks post as a **human**, using a Slack user token
+Eight of the ten checks post as a **human**, using a Slack user token
 (`xoxp-`). This is not a convenience; it is the entire design.
 
 `app_mention` carries an absolute guard in `internal/slackproto`:
@@ -327,6 +327,7 @@ The bot must be a member of both channels.
 | `ambient_thread_reply_known` | User token posts an **un-mentioned** reply in the thread the previous check created | delivered on `message_channel`/`ambient_thread_reply`, prompt run, bot replies |
 | `app_mention_private` | Same as the first, in the private channel | as above |
 | `dm` | Bot opens the IM with the test user; user token posts into it | delivered on `message_im`/`dm`, prompt run, bot replies |
+| `owner_gate_refused` | User token DMs `!update --check` (label trails the command) | handler `drop`/`owner_only`, bot replies with the refusal. SKIPs if the test user is in `owner_user_ids` |
 | `ambient_thread_reply_unknown_dropped` | User token starts an unrelated thread (no mention) and replies to it | **dropped** with `ambient_unknown_thread`, no reply |
 | `edited_mention_dropped` | User token posts *without* a mention, then `chat.update`s one in | **dropped** (`bot_authored`), no reply |
 | `bot_echo_dropped` | **Bot token** posts `<@BOT> …` into its own thread | **dropped** (`bot_authored` / `api_authored` / `self_drive_not_accepted` / `self_posted_ts`), no reply |

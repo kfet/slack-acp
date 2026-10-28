@@ -31,6 +31,9 @@ type Config struct {
 	API               *slack.Client
 	AllowedUserIDs    map[string]struct{}
 	AllowedChannelIDs map[string]struct{}
+	// OwnerUserIDs may run operator commands (!fir, !run, !skills,
+	// !update, !login …). Empty: nobody may.
+	OwnerUserIDs map[string]struct{}
 	// NoProgressTimeout cuts a turn that has stopped making progress:
 	// no agent output and no tool-call activity for this long. It is a
 	// WEDGE guard, not a working bound — a legitimately long tool call
@@ -233,7 +236,10 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	// is about to be prompted.
 	res := h.convo.Dispatch(ctx, convo.In{Conv: key.String(), Text: text, Meta: ev})
 	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
-	if res.Handled {
+	switch {
+	case res.Handled && h.ownerRefuses(ev, text):
+		rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonOwnerOnly
+	case res.Handled:
 		rec.Reason = journal.ReasonCommand
 	}
 	journal.Log(rec)

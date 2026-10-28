@@ -31,6 +31,10 @@ type Config struct {
 	AllowedUserIDs []string `json:"allowed_user_ids,omitempty"`
 	// AllowedChannelIDs, if non-empty, restricts where the bot will respond.
 	AllowedChannelIDs []string `json:"allowed_channel_ids,omitempty"`
+	// OwnerUserIDs are the Slack user IDs allowed to run operator
+	// commands (!fir, !run, !skills, !update, !login …). Others get a
+	// short refusal. Empty means nobody may run them.
+	OwnerUserIDs []string `json:"owner_user_ids,omitempty"`
 
 	// SessionIdleTimeoutSeconds: GC sessions idle this long. 0 = default 30m.
 	SessionIdleTimeoutSeconds int `json:"session_idle_timeout_seconds,omitempty"`
