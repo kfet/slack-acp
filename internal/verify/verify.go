@@ -102,6 +102,14 @@ type Slack interface {
 	OpenDM(ctx context.Context, userID string) (string, error)
 	// React adds the named emoji reaction to a message.
 	React(ctx context.Context, channel, ts, name string) error
+	// Upload shares a small text file into channel with comment as its
+	// message text, returning the file id.
+	Upload(ctx context.Context, channel, name, content, comment string) (string, error)
+	// FileShareTS returns the ts of the message that shared fileID in
+	// channel, or "" while Slack has not recorded the share yet.
+	FileShareTS(ctx context.Context, fileID, channel string) (string, error)
+	// DeleteFile removes an uploaded file.
+	DeleteFile(ctx context.Context, fileID string) error
 }
 
 // Source yields the relay's ingest-journal records. The live
@@ -162,6 +170,9 @@ type posted struct {
 	// sweep it for relay replies that landed too late to be tracked
 	// during the check itself.
 	thread bool
+	// file, when set, is an uploaded file to delete instead of a
+	// message.
+	file string
 }
 
 // PollWaiter returns a Wait function that re-evaluates cond every
@@ -253,6 +264,7 @@ func (r *Runner) Run(ctx context.Context) ([]Result, error) {
 	out = append(out, r.checkPrivateMention(ctx))
 	out = append(out, r.checkDM(ctx))
 	out = append(out, r.checkOwnerGate(ctx))
+	out = append(out, r.checkFileShare(ctx))
 	out = append(out, r.checkAmbientUnknownThread(ctx))
 	out = append(out, r.checkEditedMention(ctx))
 	out = append(out, r.checkBotEcho(ctx))
@@ -460,6 +472,47 @@ func (r *Runner) checkOwnerGate(ctx context.Context) Result {
 	r.trackBotReplies(dm, replies)
 	return Result{Name: name, Status: StatusPass, Records: recs,
 		Detail: "a non-owner's operator command was refused with a reply"}
+}
+
+// checkFileShare uploads a file into the DM as the human. Slack delivers
+// it as a message with subtype file_share, which the relay must admit
+// (every other subtype is dropped) and journal with its file count.
+func (r *Runner) checkFileShare(ctx context.Context) Result {
+	const name = "dm_file_share"
+	if r.cfg.User == nil {
+		return Result{Name: name, Status: StatusSkip, Detail: skipNoUserToken}
+	}
+	dm, err := r.cfg.Bot.OpenDM(ctx, r.humanID)
+	if err != nil {
+		return failf(name, "conversations.open with the test user: %v (the bot token needs the im:write scope)", err)
+	}
+	id, err := r.cfg.User.Upload(ctx, dm, "verify-"+r.cfg.Nonce+".txt", r.label("attachment"), r.label("file"))
+	if err != nil {
+		return failf(name, "upload as user: %v (the user token needs files:write)", err)
+	}
+	r.posted = append(r.posted, posted{slack: r.cfg.User, file: id})
+	var ts string
+	err = r.cfg.Wait(ctx, func(ctx context.Context) (bool, error) {
+		var err error
+		ts, err = r.cfg.User.FileShareTS(ctx, id, dm)
+		return ts != "", err
+	})
+	if err != nil {
+		return failf(name, "file %s never appeared as shared in %s: %v (the user token needs files:read)", id, dm, err)
+	}
+	r.posted = append(r.posted, posted{slack: r.cfg.User, channel: dm, ts: ts, thread: true})
+	res := r.expectRun(ctx, name, dm, ts, ts, journal.PathMessageIM, journal.ReasonDM)
+	if res.Status != StatusPass {
+		return res
+	}
+	for _, rec := range res.Records {
+		if rec.Stage == journal.StageProto && rec.Decision == journal.DecisionDeliver && rec.Files > 0 {
+			return res
+		}
+	}
+	res.Status = StatusFail
+	res.Detail = fmt.Sprintf("the relay answered ts=%s but journalled no attached files", ts)
+	return res
 }
 
 func (r *Runner) checkAmbientUnknownThread(ctx context.Context) Result {
@@ -825,6 +878,10 @@ func (r *Runner) cleanup(ctx context.Context) {
 		// Best-effort: a failed delete must not mask a check result,
 		// and Slack refuses deletes of messages the token did not
 		// author (which the accounting above already avoids).
+		if p.file != "" {
+			_ = p.slack.DeleteFile(ctx, p.file)
+			continue
+		}
 		_ = p.slack.Delete(ctx, p.channel, p.ts)
 	}
 	r.posted = nil

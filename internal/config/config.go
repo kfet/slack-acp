@@ -127,6 +127,11 @@ type Config struct {
 	// Default 10.
 	AgentPostsPerMinute int `json:"agent_posts_per_minute,omitempty"`
 
+	// MaxAttachmentBytes caps one inbound Slack file the relay downloads
+	// into the thread's inbox/. Larger files are skipped and named in
+	// the prompt. 0 = default 20 MiB.
+	MaxAttachmentBytes int64 `json:"max_attachment_bytes,omitempty"`
+
 	// ModelProbeBudgetSeconds bounds the total time the startup model
 	// probe may spend retrying a not-yet-ready agent. Agents that block
 	// on external readiness (e.g. `fir --mode acp --wait-mcp` waiting

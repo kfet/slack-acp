@@ -127,6 +127,8 @@ type Record struct {
 	TS       string   `json:"ts"`
 	ThreadTS string   `json:"thread_ts,omitempty"`
 	User     string   `json:"user,omitempty"`
+	// Files counts the attachments the message carried.
+	Files int `json:"files,omitempty"`
 }
 
 // out is the sink. Nil (the default) routes through the standard

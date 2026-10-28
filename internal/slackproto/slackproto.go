@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -55,7 +56,55 @@ type Event struct {
 	// The handler uses it to bypass the *user* allowlist — and nothing
 	// else; the channel allowlist and rate cap still apply.
 	SelfDrive bool
+	// Files are the attachments Slack shared with this message. Their
+	// URLs are private: fetching one needs the bot token (files:read).
+	Files []File
 }
+
+// File is one Slack file attached to an inbound message.
+type File struct {
+	ID       string
+	Name     string
+	Mimetype string
+	Size     int
+	// URL is url_private_download (falling back to url_private).
+	URL string
+}
+
+// files maps Slack's file objects onto File, dropping any without a
+// downloadable URL on Slack's own HTTPS file host (external files,
+// tombstones of deleted ones): the handler fetches these URLs with the
+// bot token, which must never go anywhere else.
+func files(in []slack.File) []File {
+	var out []File
+	for _, f := range in {
+		u := firstNonEmpty(f.URLPrivateDownload, f.URLPrivate)
+		if !slackFileURL(u) {
+			kitlog.Debugf("slack: skipping file %s with non-Slack url %q", f.ID, u)
+			continue
+		}
+		out = append(out, File{ID: f.ID, Name: f.Name, Mimetype: f.Mimetype, Size: f.Size, URL: u})
+	}
+	return out
+}
+
+func slackFileURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	// slack-gov.com is GovSlack's equivalent of slack.com.
+	for _, d := range []string{"slack.com", "slack-gov.com"} {
+		if u.Host == d || strings.HasSuffix(u.Host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// subtypeFileShare is the subtype Slack gives an original human post
+// that carries files. It is admitted like a plain message.
+const subtypeFileShare = "file_share"
 
 // Handler processes a normalised event. Implementations should return
 // quickly; long work belongs in goroutines they own.
@@ -303,7 +352,8 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			kitlog.Debugf("slack: drop %s app_mention in %s ts=%s", reason, ev.Channel, ev.TimeStamp)
 			return
 		}
-		rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonMention
+		mentionFiles := files(ev.Files)
+		rec.Decision, rec.Reason, rec.Files = journal.DecisionDeliver, journal.ReasonMention, len(mentionFiles)
 		journal.Log(rec)
 		c.deliver(ctx, Event{
 			UserID:    ev.User,
@@ -312,6 +362,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 			TS:        ev.TimeStamp,
 			Text:      stripMention(ev.Text, c.botUserID),
 			IsMention: true,
+			Files:     mentionFiles,
 		})
 	case *slackevents.ReactionAddedEvent:
 		c.handleReaction(ctx, ev)
@@ -331,8 +382,9 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 		// relay streams by *editing* its own message, so every
 		// throttled chat.update arrives here as message_changed; if
 		// those reached the hatch, one self-drive reply would
-		// re-trigger on each update. Only original posts are matched.
-		if ev.SubType != "" {
+		// re-trigger on each update. Only original posts are matched;
+		// file_share IS an original post, one that carries files.
+		if ev.SubType != "" && ev.SubType != subtypeFileShare {
 			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSubType
 			journal.Log(rec)
 			return
@@ -340,6 +392,11 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 
 		text := ev.Text
 		selfDrive := false
+		var attached []File
+		if ev.Message != nil {
+			attached = files(ev.Message.Files)
+		}
+		rec.Files = len(attached)
 		if c.refuseAuthor(ev.User, ev.BotID, appID, ev.Channel+"/"+ev.TimeStamp, false) != "" {
 			// Not a human post. The ONLY way through is the self-drive
 			// hatch: a sentinel anchored at the start of the message.
@@ -381,6 +438,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 				Text:      text,
 				IsDM:      true,
 				SelfDrive: selfDrive,
+				Files:     attached,
 			})
 			return
 		}
@@ -400,6 +458,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 				TS:        ev.TimeStamp,
 				Text:      text,
 				SelfDrive: true,
+				Files:     attached,
 			})
 			return
 		}
@@ -430,6 +489,7 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 				ThreadTS:  ev.ThreadTimeStamp,
 				TS:        ev.TimeStamp,
 				Text:      ev.Text,
+				Files:     attached,
 			})
 		}
 	}

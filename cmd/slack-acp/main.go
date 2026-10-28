@@ -234,6 +234,8 @@ func main() {
 		SelfDrive:           selfDrive,
 		SelfDrivePerMinute:  cfg.GetSelfDrivePerMinute(),
 		AgentPostsPerMinute: cfg.GetAgentPostsPerMinute(),
+		FileClient:          handler.NewFileClient(cfg.BotToken),
+		MaxAttachmentBytes:  cfg.MaxAttachmentBytes,
 	})
 
 	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h,

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,12 @@ type Config struct {
 	// minute (each one posts a top-level message and starts a turn).
 	// 0 uses defaultBranchesPerMinute.
 	AgentPostsPerMinute int
+	// FileClient downloads inbound attachments; it must authenticate as
+	// the bot (see NewFileClient). Nil uses http.DefaultClient.
+	FileClient *http.Client
+	// MaxAttachmentBytes caps one inbound file. 0 uses
+	// DefaultMaxAttachmentBytes.
+	MaxAttachmentBytes int64
 }
 
 // defaultBranchesPerMinute mirrors config's agent_posts_per_minute
@@ -154,6 +161,7 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 		TS:       ev.TS,
 		ThreadTS: ev.ThreadTS,
 		User:     ev.UserID,
+		Files:    len(ev.Files),
 	}
 	drop := func(reason string) {
 		rec.Decision, rec.Reason = journal.DecisionDrop, reason
@@ -183,7 +191,7 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 		return
 	}
 	text := strings.TrimSpace(ev.Text)
-	if text == "" {
+	if text == "" && len(ev.Files) == 0 {
 		drop(journal.ReasonEmptyText)
 		return
 	}
@@ -527,13 +535,18 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		promptText = prefix + "\n\n" + promptText
 	}
 
-	res, err := h.cfg.Router.Agent().PromptTurn(lctx, sess.SessionID, []acp.ContentBlock{
-		{Text: &acp.ContentBlockText{Text: promptText}},
-	})
+	note, fileBlocks := h.ingest(lctx, sess.Cwd, ev, live.Progress)
+	blocks := append([]acp.ContentBlock{{Text: &acp.ContentBlockText{Text: strings.TrimSpace(promptText + note)}}}, fileBlocks...)
+	res, err := h.cfg.Router.Agent().PromptTurn(lctx, sess.SessionID, blocks)
 	stop := res.Stop
 	wcancel()
 	if err != nil {
 		_ = stream.Close(context.Background(), h.failSuffix(lctx, err))
+		// A superseded turn leaves its outbox to the turn replacing it:
+		// the agent may still be writing.
+		if !errors.Is(context.Cause(lctx), context.Canceled) {
+			h.uploadOutbox(context.Background(), sess.Cwd, ev.ChannelID, ev.ThreadTS)
+		}
 		return err
 	}
 	// The bound covers the prompt and nothing after it. It must come
@@ -559,6 +572,8 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 		}
 		if abstained {
 			kitlog.Debugf("handler: agent abstained, suppressing post")
+			// A file in the outbox is a reply even when the text is not.
+			h.uploadOutbox(context.Background(), sess.Cwd, ev.ChannelID, ev.ThreadTS)
 			h.recordTurn(key, ev.TS, "", res.LeafID)
 			return nil
 		}
@@ -587,6 +602,8 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// chunks. Close is idempotent, so it also cannot double-post.
 	suffix += baseSink.maybeAppendFooter()
 	cerr := stream.Close(context.Background(), suffix)
+	// Files follow the answer they belong to.
+	h.uploadOutbox(context.Background(), sess.Cwd, ev.ChannelID, ev.ThreadTS)
 	h.recordTurn(key, ev.TS, stream.TS(), res.LeafID)
 	return cerr
 }

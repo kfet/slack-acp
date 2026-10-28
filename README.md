@@ -103,6 +103,12 @@ compose box), bot scopes, and the `app_mention`, `message.channels`,
 :fork_and_knife: reaction branch a conversation; apps created from a
 manifest before it was added must be reinstalled.
 
+`files:read` lets the relay download files people attach (into the
+thread's `inbox/`, capped by `max_attachment_bytes`, default 20 MiB) and
+`files:write` lets it upload whatever the agent leaves in the thread's
+`outbox/` at the end of a turn. Installs that predate them must
+reinstall the app for attachments to work.
+
 > **Changing subscriptions or scopes requires REINSTALLING the app**
 > (**Install App** → **Reinstall to Workspace**). Editing the manifest of
 > an already-installed app does not grant the new scopes, and the symptom

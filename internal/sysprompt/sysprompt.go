@@ -67,4 +67,9 @@ branched out of, up to the branch point) and "branch" (fan work out
 into up to 10 new threads at once: tasks of {seed, title, from_msg}).
 A branch's session is a fork of yours when the agent supports it, so
 it starts with this conversation's context; otherwise it starts fresh
-and can catch up with history(origin=true).`
+and can catch up with history(origin=true).
+
+Files people attach in Slack are downloaded into ./inbox/ in your
+working directory; the message names their paths. To attach a file to
+your reply, write it into ./outbox/ in your working directory: every
+file left there is uploaded into this thread when your turn ends.`

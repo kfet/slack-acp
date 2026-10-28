@@ -107,3 +107,37 @@ func (s *slackAPI) React(ctx context.Context, channel, ts, name string) error {
 	}
 	return nil
 }
+
+func (s *slackAPI) Upload(ctx context.Context, channel, name, content, comment string) (string, error) {
+	f, err := s.api.UploadFileContext(ctx, slack.UploadFileParameters{
+		Content:        content,
+		FileSize:       len(content),
+		Filename:       name,
+		Channel:        channel,
+		InitialComment: comment,
+	})
+	if err != nil {
+		return "", fmt.Errorf("files.uploadV2: %w", err)
+	}
+	return f.ID, nil
+}
+
+func (s *slackAPI) FileShareTS(ctx context.Context, fileID, channel string) (string, error) {
+	f, _, _, err := s.api.GetFileInfoContext(ctx, fileID, 0, 0)
+	if err != nil {
+		return "", fmt.Errorf("files.info: %w", err)
+	}
+	for _, shares := range []map[string][]slack.ShareFileInfo{f.Shares.Private, f.Shares.Public} {
+		if sh := shares[channel]; len(sh) > 0 {
+			return sh[0].Ts, nil
+		}
+	}
+	return "", nil
+}
+
+func (s *slackAPI) DeleteFile(ctx context.Context, fileID string) error {
+	if err := s.api.DeleteFileContext(ctx, fileID); err != nil {
+		return fmt.Errorf("files.delete: %w", err)
+	}
+	return nil
+}

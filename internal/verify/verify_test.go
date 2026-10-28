@@ -75,6 +75,15 @@ type fakeSlack struct {
 	// onReact scripts the relay's answer to a reaction.
 	onReact func(channel, ts, name string)
 
+	// Uploads: shares maps file id -> message ts; shareErr fails
+	// FileShareTS; unshared leaves FileShareTS returning "".
+	uploadErr    error
+	shareErr     error
+	unshared     bool
+	shares       map[string]string
+	deletedFiles []string
+	onUpload     func(channel, ts string)
+
 	// onPost is invoked after every successful post, letting a test
 	// script the relay's reaction (e.g. "the bot replies").
 	onPost func(f *fakeSlack, channel, threadTS, ts, text string)
@@ -164,6 +173,35 @@ func (f *fakeSlack) branch(channel, ts string, link bool) string {
 	return child
 }
 
+func (f *fakeSlack) Upload(_ context.Context, channel, name, content, comment string) (string, error) {
+	if f.uploadErr != nil {
+		return "", f.uploadErr
+	}
+	ts := f.ws.nextTS("100")
+	f.ws.add(ts, Message{TS: ts, User: f.userID, SubType: "file_share", Text: comment})
+	id := "F" + ts
+	if f.shares == nil {
+		f.shares = map[string]string{}
+	}
+	f.shares[id] = ts
+	if f.onUpload != nil {
+		f.onUpload(channel, ts)
+	}
+	return id, nil
+}
+
+func (f *fakeSlack) FileShareTS(_ context.Context, id, _ string) (string, error) {
+	if f.unshared {
+		return "", f.shareErr
+	}
+	return f.shares[id], f.shareErr
+}
+
+func (f *fakeSlack) DeleteFile(_ context.Context, id string) error {
+	f.deletedFiles = append(f.deletedFiles, id)
+	return nil
+}
+
 func (f *fakeSlack) OpenDM(context.Context, string) (string, error) { return f.dmID, f.openErr }
 
 // fakeJournal serves records, optionally generating them from posts.
@@ -247,6 +285,13 @@ func scriptedRelay(j *fakeJournal, botID string) (bot, user *fakeSlack) {
 		}
 	}
 	bot.onPost, user.onPost = react, react
+	user.onUpload = func(channel, ts string) {
+		j.add(
+			journal.Record{Stage: journal.StageProto, Path: journal.PathMessageIM, Decision: journal.DecisionDeliver, Reason: journal.ReasonDM, Channel: channel, TS: ts, Files: 1},
+			journal.Record{Stage: journal.StageHandler, Path: journal.PathMessageIM, Decision: journal.DecisionRun, Reason: journal.ReasonPrompt, Channel: channel, TS: ts, Files: 1},
+		)
+		bot.botReply(ts)
+	}
 	user.onReact = func(channel, ts, name string) {
 		if name != "fork_and_knife" {
 			return
@@ -304,7 +349,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	for _, want := range []string{
 		"app_mention_public", "ambient_thread_reply_known", "app_mention_private",
 		"dm", "owner_gate_refused", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped",
-		"bot_echo_dropped", "self_drive_hatch", "branch_reaction",
+		"bot_echo_dropped", "self_drive_hatch", "branch_reaction", "dm_file_share",
 	} {
 		res, ok := byName[want]
 		if !ok {
@@ -318,7 +363,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !allOK {
 		t.Fatalf("Summarise says not ok:\n%s", report)
 	}
-	if !strings.Contains(report, "10 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(report, "11 passed, 0 failed, 0 skipped") {
 		t.Fatalf("unexpected summary:\n%s", report)
 	}
 }
@@ -1139,5 +1184,58 @@ func TestOwnerGateErrors(t *testing.T) {
 	r.cfg.User = nil
 	if res := r.checkOwnerGate(context.Background()); res.Status != StatusSkip {
 		t.Fatalf("no user: %+v", res)
+	}
+}
+
+func TestCheckFileShareFailures(t *testing.T) {
+	cases := map[string]struct {
+		setup func(bot, user *fakeSlack, j *fakeJournal)
+		want  string
+	}{
+		"open dm":      {func(bot, _ *fakeSlack, _ *fakeJournal) { bot.openErr = errors.New("nope") }, "im:write"},
+		"upload":       {func(_, user *fakeSlack, _ *fakeJournal) { user.uploadErr = errors.New("missing_scope") }, "files:write"},
+		"never shared": {func(_, user *fakeSlack, _ *fakeJournal) { user.unshared = true }, "files:read"},
+		"refused": {func(_, user *fakeSlack, j *fakeJournal) {
+			user.onUpload = func(channel, ts string) { j.dropped(channel, ts, journal.PathMessageIM, journal.ReasonSubType) }
+		}, "REFUSED"},
+		"no files journalled": {func(bot, user *fakeSlack, j *fakeJournal) {
+			user.onUpload = func(channel, ts string) {
+				j.delivered(channel, ts, journal.PathMessageIM, journal.ReasonDM)
+				bot.botReply(ts)
+			}
+		}, "journalled no attached files"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			j := &fakeJournal{}
+			bot, user := scriptedRelay(j, "UBOT")
+			tc.setup(bot, user, j)
+			r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+			r.humanID = "UHUMAN"
+			res := r.checkFileShare(context.Background())
+			if res.Status != StatusFail || !strings.Contains(res.Detail, tc.want) {
+				t.Fatalf("got %s: %s", res.Status, res.Detail)
+			}
+		})
+	}
+}
+
+func TestCheckFileShareSkipsWithoutUser(t *testing.T) {
+	bot, _ := newWorkspace()
+	r, _ := New(Config{Bot: bot, Journal: &fakeJournal{}, PublicChannel: "C", Nonce: "n", Wait: immediateWait})
+	if res := r.checkFileShare(context.Background()); res.Status != StatusSkip {
+		t.Fatalf("got %s", res.Status)
+	}
+}
+
+func TestCleanupDeletesUploadedFile(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := scriptedRelay(j, "UBOT")
+	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(user.deletedFiles) != 1 {
+		t.Fatalf("deleted files %v", user.deletedFiles)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,6 +193,12 @@ type fakeSlack struct {
 	// fs.updates with sleeps. Buffered so the handler never blocks
 	// when no one is listening.
 	updated chan struct{}
+
+	// uploads records "filename=content@thread" for each files.uploadV2
+	// that completed; uploadErr fails getUploadURLExternal.
+	uploads   []string
+	uploadErr bool
+	pending   map[string]string
 }
 
 func newFakeSlack() *fakeSlack {
@@ -230,6 +237,42 @@ func newFakeSlack() *fakeSlack {
 		}
 		_, _ = w.Write([]byte(`{"ok":true,"channel":"C1","ts":"1.0","text":"x"}`))
 	})
+	mux.HandleFunc("/files.getUploadURLExternal", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		fs.mu.Lock()
+		fail := fs.uploadErr
+		fs.mu.Unlock()
+		if fail {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope"}`))
+			return
+		}
+		id := "F" + r.FormValue("filename")
+		_, _ = w.Write([]byte(`{"ok":true,"file_id":"` + id + `","upload_url":"` + fs.srv.URL + `/upload/` + id + `"}`))
+	})
+	mux.HandleFunc("/upload/", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		f, hdr, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		b, _ := io.ReadAll(f)
+		fs.mu.Lock()
+		fs.pending[strings.TrimPrefix(r.URL.Path, "/upload/")] = hdr.Filename + "=" + string(b)
+		fs.mu.Unlock()
+	})
+	mux.HandleFunc("/files.completeUploadExternal", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		var files []struct{ ID string }
+		_ = json.Unmarshal([]byte(r.FormValue("files")), &files)
+		fs.mu.Lock()
+		for _, f := range files {
+			fs.uploads = append(fs.uploads, fs.pending[f.ID]+"@"+r.FormValue("thread_ts"))
+		}
+		fs.mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"files":[{"id":"F1","title":"t"}]}`))
+	})
+	fs.pending = map[string]string{}
 	fs.srv = httptest.NewServer(mux)
 	return fs
 }

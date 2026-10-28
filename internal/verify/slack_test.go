@@ -58,7 +58,31 @@ func fakeSlackServer(t *testing.T, ok bool) (*httptest.Server, *[]string) {
 		seen = append(seen, "conversations.open")
 		reply(w, map[string]any{"channel": map[string]any{"id": "D1"}})
 	})
-	srv := httptest.NewServer(mux)
+	var srv *httptest.Server
+	mux.HandleFunc("/files.getUploadURLExternal", func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, "files.getUploadURLExternal")
+		reply(w, map[string]any{"file_id": "F1", "upload_url": srv.URL + "/upload"})
+	})
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, "upload")
+	})
+	mux.HandleFunc("/files.completeUploadExternal", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		seen = append(seen, "files.completeUploadExternal comment="+r.Form.Get("initial_comment"))
+		reply(w, map[string]any{"files": []map[string]any{{"id": "F1"}}})
+	})
+	mux.HandleFunc("/files.info", func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, "files.info")
+		reply(w, map[string]any{"file": map[string]any{"id": "F1", "shares": map[string]any{
+			"private": map[string]any{"D1": []map[string]any{{"ts": "5.5"}}},
+			"public":  map[string]any{"C1": []map[string]any{{"ts": "6.6"}}},
+		}}})
+	})
+	mux.HandleFunc("/files.delete", func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, "files.delete")
+		reply(w, map[string]any{})
+	})
+	srv = httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, &seen
 }
@@ -116,6 +140,22 @@ func TestSlackAdapterHappyPath(t *testing.T) {
 		t.Fatalf("reaction not sent: %v", *seen)
 	}
 
+	id, err := api.Upload(ctx, "D1", "f.txt", "hi", "note")
+	if err != nil || id != "F1" {
+		t.Fatalf("Upload = %q, %v", id, err)
+	}
+	if !strings.Contains(strings.Join(*seen, "\n"), "files.completeUploadExternal comment=note") {
+		t.Fatalf("comment not sent: %v", *seen)
+	}
+	for ch, want := range map[string]string{"D1": "5.5", "C1": "6.6", "C9": ""} {
+		if ts, err := api.FileShareTS(ctx, "F1", ch); err != nil || ts != want {
+			t.Fatalf("FileShareTS(%s) = %q, %v; want %q", ch, ts, err, want)
+		}
+	}
+	if err := api.DeleteFile(ctx, "F1"); err != nil {
+		t.Fatal(err)
+	}
+
 	// The threaded post must carry thread_ts; the top-level one must not.
 	joined := strings.Join(*seen, "\n")
 	if !strings.Contains(joined, "chat.postMessage thread_ts=1.0") || !strings.Contains(joined, "chat.postMessage thread_ts=\n") && !strings.HasSuffix(strings.Split(joined, "\n")[1], "thread_ts=") {
@@ -147,6 +187,15 @@ func TestSlackAdapterSurfacesAPIErrors(t *testing.T) {
 	}
 	if err := api.React(ctx, "C1", "1.0", "x"); err == nil || !strings.Contains(err.Error(), "reactions.add") {
 		t.Errorf("React: got %v", err)
+	}
+	if _, err := api.Upload(ctx, "C1", "f", "x", ""); err == nil || !strings.Contains(err.Error(), "files.uploadV2") {
+		t.Errorf("Upload: got %v", err)
+	}
+	if _, err := api.FileShareTS(ctx, "F1", "C1"); err == nil || !strings.Contains(err.Error(), "files.info") {
+		t.Errorf("FileShareTS: got %v", err)
+	}
+	if err := api.DeleteFile(ctx, "F1"); err == nil || !strings.Contains(err.Error(), "files.delete") {
+		t.Errorf("DeleteFile: got %v", err)
 	}
 }
 

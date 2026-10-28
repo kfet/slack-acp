@@ -224,9 +224,11 @@ guard was never meant to stop.
 
 1. Go to <https://api.slack.com/apps> and open the app.
 2. **OAuth & Permissions** → **Scopes** → **User Token Scopes** (*not*
-   Bot Token Scopes) → **Add an OAuth Scope** → `chat:write` and
-   `reactions:write` (the latter lets the `branch_reaction` check add
-   a :fork_and_knife: as a human).
+   Bot Token Scopes) → **Add an OAuth Scope** → `chat:write`,
+   `reactions:write` (lets the `branch_reaction` check add a
+   :fork_and_knife: as a human), and `files:write` + `files:read` (let
+   the `dm_file_share` check upload a file as a human and find the
+   message that shared it).
 3. A banner appears: *"You've changed the permission scopes… reinstall
    your app."* Click **reinstall**, review, **Allow** — **while logged
    in as the account the harness should post as.** Use a dedicated test
@@ -328,6 +330,7 @@ The bot must be a member of both channels.
 | `app_mention_private` | Same as the first, in the private channel | as above |
 | `dm` | Bot opens the IM with the test user; user token posts into it | delivered on `message_im`/`dm`, prompt run, bot replies |
 | `owner_gate_refused` | User token DMs `!update --check` (label trails the command) | handler `drop`/`owner_only`, bot replies with the refusal. SKIPs if the test user is in `owner_user_ids` |
+| `dm_file_share` | User token uploads a small text file into the same IM | delivered on `message_im`/`dm` with `files` ≥ 1 in the journal, prompt run, bot replies; the file is deleted on the way out |
 | `ambient_thread_reply_unknown_dropped` | User token starts an unrelated thread (no mention) and replies to it | **dropped** with `ambient_unknown_thread`, no reply |
 | `edited_mention_dropped` | User token posts *without* a mention, then `chat.update`s one in | **dropped** (`bot_authored`), no reply |
 | `bot_echo_dropped` | **Bot token** posts `<@BOT> …` into its own thread | **dropped** (`bot_authored` / `api_authored` / `self_drive_not_accepted` / `self_posted_ts`), no reply |
