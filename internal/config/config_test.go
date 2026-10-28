@@ -304,6 +304,25 @@ func TestValidateBackfillMaxMessages(t *testing.T) {
 	}
 }
 
+func TestCatchupMaxAge(t *testing.T) {
+	if got := (&Config{}).CatchupMaxAge(); got != DefaultCatchupMaxAge {
+		t.Fatalf("default: %s", got)
+	}
+	zero, hour, neg := 0, 3600, -1
+	if got := (&Config{CatchupMaxAgeSeconds: &zero}).CatchupMaxAge(); got != 0 {
+		t.Fatalf("explicit 0 turns it off: %s", got)
+	}
+	if got := (&Config{CatchupMaxAgeSeconds: &hour}).CatchupMaxAge(); got != time.Hour {
+		t.Fatalf("override: %s", got)
+	}
+	if err := (&Config{CatchupMaxAgeSeconds: &neg}).Validate(); err == nil {
+		t.Fatal("negative catchup_max_age_seconds should fail validation")
+	}
+	if err := (&Config{CatchupMaxAgeSeconds: &zero}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGetSilentSentinel(t *testing.T) {
 	if got := (&Config{}).GetSilentSentinel(); got != "<<SILENT>>" {
 		t.Fatalf("default sentinel: got %q", got)

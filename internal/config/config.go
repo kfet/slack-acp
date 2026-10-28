@@ -78,6 +78,18 @@ type Config struct {
 	// when backfilling a detected gap. Default: 50.
 	BackfillMaxMessages int `json:"backfill_max_messages,omitempty"`
 
+	// CatchupMaxAgeSeconds bounds the connect-time catch-up. Every
+	// time Socket Mode connects (startup and every reconnect) the relay
+	// reads conversations.history / conversations.replies forward from
+	// a per-conversation checkpoint (<state_dir>/catchup.json) and
+	// gives each thread ONE collapsed turn for what it missed; messages
+	// older than this are skipped with a one-line notice in the thread.
+	//
+	// Unset = DefaultCatchupMaxAge (24h); an explicit 0 turns the
+	// catch-up off. It is a pointer so those two cases stay
+	// distinguishable.
+	CatchupMaxAgeSeconds *int `json:"catchup_max_age_seconds,omitempty"`
+
 	// SilentSentinel is the exact output string that signals the agent
 	// has chosen not to reply. The relay suppresses posting when the
 	// full streamed response equals this sentinel. Default: "<<SILENT>>"
@@ -199,6 +211,9 @@ func (c *Config) Validate() error {
 	if c.PromptTimeoutSeconds < 0 {
 		return fmt.Errorf("prompt_timeout_seconds must be >= 0")
 	}
+	if c.CatchupMaxAgeSeconds != nil && *c.CatchupMaxAgeSeconds < 0 {
+		return fmt.Errorf("catchup_max_age_seconds must be >= 0")
+	}
 	if c.BackfillMaxMessages < 0 {
 		return fmt.Errorf("backfill_max_messages must be >= 0")
 	}
@@ -299,6 +314,19 @@ func (c *Config) GetSilentSentinel() string {
 		return "<<SILENT>>"
 	}
 	return c.SilentSentinel
+}
+
+// DefaultCatchupMaxAge is how old a missed message may be and still be
+// answered by the catch-up, when the config does not say.
+const DefaultCatchupMaxAge = 24 * time.Hour
+
+// CatchupMaxAge is the catch-up's age bound; 0 means the catch-up is
+// off.
+func (c *Config) CatchupMaxAge() time.Duration {
+	if c.CatchupMaxAgeSeconds == nil {
+		return DefaultCatchupMaxAge
+	}
+	return time.Duration(*c.CatchupMaxAgeSeconds) * time.Second
 }
 
 // GetBackfillMaxMessages returns the configured limit or the default.

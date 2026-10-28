@@ -26,7 +26,6 @@ var errFakePrompt = errors.New("fake prompt error")
 type richSlack struct {
 	srv *httptest.Server
 
-	posts   int
 	replies []slack.Message // returned by conversations.replies
 	repErr  bool            // make conversations.replies fail
 }
@@ -36,7 +35,6 @@ func newRichSlack(t *testing.T) *richSlack {
 	rs := &richSlack{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
-		rs.posts++
 		_, _ = w.Write([]byte(`{"ok":true,"channel":"C1","ts":"1.0","message":{"text":"x"}}`))
 	})
 	mux.HandleFunc("/chat.update", func(w http.ResponseWriter, _ *http.Request) {

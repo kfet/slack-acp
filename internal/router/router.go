@@ -12,7 +12,9 @@ package router
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -201,6 +203,30 @@ func (r *Router) Known(key ConvKey) bool {
 	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS)
 	_, err := root.Stat(rel)
 	return err == nil
+}
+
+// KnownThreads lists the thread ts of every thread in channel that has
+// a session directory — the threads the bot has been summoned into.
+// The catch-up re-reads them: a reply in a thread whose parent predates
+// the checkpoint is otherwise invisible to conversations.history.
+func (r *Router) KnownThreads(channel string) []string {
+	r.mu.Lock()
+	root := r.root
+	r.mu.Unlock()
+	if root == nil || validateKeyComponent(channel) != nil {
+		return nil
+	}
+	entries, err := fs.ReadDir(root.FS(), path.Join("threads", channel))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && validateKeyComponent(e.Name()) == nil {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
 
 // GetLastTS returns the last processed message timestamp for the given

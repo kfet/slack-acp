@@ -136,6 +136,11 @@ type Config struct {
 	PublicChannel  string
 	PrivateChannel string
 
+	// Outage, when set, enables the catch-up checks: it stops the
+	// relay, the harness posts while it is down, and it starts it again.
+	// Nil SKIPs them.
+	Outage Outage
+
 	// SelfDriveSentinel enables the self-drive check when non-empty.
 	SelfDriveSentinel string
 
@@ -269,6 +274,8 @@ func (r *Runner) Run(ctx context.Context) ([]Result, error) {
 	out = append(out, r.checkEditedMention(ctx))
 	out = append(out, r.checkBotEcho(ctx))
 	out = append(out, r.checkSelfDrive(ctx))
+	// Last: it restarts the relay.
+	out = append(out, r.checkCatchUp(ctx)...)
 	return out, nil
 }
 

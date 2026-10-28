@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -902,6 +903,39 @@ func TestKnownClosedRouter(t *testing.T) {
 	_ = r.Close()
 	if r.Known(ConvKey{ChannelID: "C1", ThreadTS: "1.0"}) {
 		t.Fatal("closed router must report unknown")
+	}
+}
+
+func TestKnownThreads(t *testing.T) {
+	r := newRouter(t, newFakeAgent())
+	if got := r.KnownThreads("C1"); got != nil {
+		t.Fatalf("no threads yet: %v", got)
+	}
+	for _, ts := range []string{"200.0", "100.0"} {
+		if _, err := r.GetOrCreate(context.Background(), ConvKey{ChannelID: "C1", ThreadTS: ts}, discardSink{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.GetOrCreate(context.Background(), ConvKey{ChannelID: "C2", ThreadTS: "300.0"}, discardSink{}); err != nil {
+		t.Fatal(err)
+	}
+	// Neither a stray file nor a hidden dir is a thread.
+	dir := filepath.Join(r.StateDir(), "threads", "C1")
+	if err := os.WriteFile(filepath.Join(dir, "stray"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".hidden"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(r.KnownThreads("C1"), ","); got != "100.0,200.0" {
+		t.Fatalf("KnownThreads(C1) = %q", got)
+	}
+	if got := r.KnownThreads(".."); got != nil {
+		t.Fatalf("traversal channel: %v", got)
+	}
+	_ = r.Close()
+	if got := r.KnownThreads("C1"); got != nil {
+		t.Fatalf("closed router: %v", got)
 	}
 }
 

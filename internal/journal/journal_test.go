@@ -23,6 +23,7 @@ func TestLogWritesPrefixedJSONToSink(t *testing.T) {
 		ThreadTS: "100.0",
 		User:     "U1",
 		Files:    2,
+		CatchUp:  true,
 	})
 
 	line := buf.String()
@@ -36,7 +37,7 @@ func TestLogWritesPrefixedJSONToSink(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(line), Prefix)), &got); err != nil {
 		t.Fatalf("payload is not JSON: %v (%q)", err, line)
 	}
-	want := Record{StageProto, PathAppMention, DecisionDrop, ReasonBotAuthored, "C1", "100.5", "100.0", "U1", 2}
+	want := Record{StageProto, PathAppMention, DecisionDrop, ReasonBotAuthored, "C1", "100.5", "100.0", "U1", 2, true}
 	if got != want {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
 	}
@@ -51,7 +52,7 @@ func TestLogOmitsOptionalFields(t *testing.T) {
 
 	Log(Record{Stage: StageHandler, Path: PathMessage, Decision: DecisionRun, Reason: ReasonPrompt, Channel: "C1", TS: "1.0"})
 
-	if s := buf.String(); strings.Contains(s, "thread_ts") || strings.Contains(s, "user") || strings.Contains(s, "files") {
+	if s := buf.String(); strings.Contains(s, "thread_ts") || strings.Contains(s, "user") || strings.Contains(s, "files") || strings.Contains(s, "catch_up") {
 		t.Fatalf("optional empty fields must be omitted: %q", s)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/mcphost"
 	"github.com/kfet/distkit"
+	"github.com/kfet/slack-acp/internal/catchup"
 	"github.com/kfet/slack-acp/internal/config"
 	"github.com/kfet/slack-acp/internal/dist"
 	"github.com/kfet/slack-acp/internal/handler"
@@ -236,12 +237,29 @@ func main() {
 		AgentPostsPerMinute: cfg.GetAgentPostsPerMinute(),
 		FileClient:          handler.NewFileClient(cfg.BotToken),
 		MaxAttachmentBytes:  cfg.MaxAttachmentBytes,
+		CatchupMaxAge:       cfg.CatchupMaxAge(),
 	})
 
-	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h,
+	opts := []slackproto.Option{
 		slackproto.WithSelfDrive(selfDrive),
 		slackproto.WithHumanAuthors(humanAuthors),
-		slackproto.WithHumanAuthorRate(cfg.HumanAuthorPerMinute))
+		slackproto.WithHumanAuthorRate(cfg.HumanAuthorPerMinute),
+	}
+	if cfg.CatchupMaxAge() == 0 {
+		log.Printf("slack-acp: catch-up off (catchup_max_age_seconds=0); messages posted while disconnected are not answered")
+	} else {
+		log.Printf("slack-acp: catch-up on (messages up to %s old are answered after a reconnect)", cfg.CatchupMaxAge())
+		store, serr := catchup.Open(filepath.Join(cfg.StateDir, "catchup.json"), time.Now())
+		if serr != nil {
+			log.Fatalf("catch-up: %v", serr)
+		}
+		opts = append(opts, slackproto.WithCatchUp(catchup.Config{
+			Store:   store,
+			Threads: r.KnownThreads,
+			Logf:    log.Printf,
+		}))
+	}
+	sc, err := slackproto.New(cfg.BotToken, cfg.AppToken, h, opts...)
 	if err != nil {
 		log.Fatalf("slack: %v", err)
 	}
@@ -421,6 +439,8 @@ func runVerify(args []string) error {
 	journalCmd := fs.String("journal-cmd", "", "override the journal reader with a shell command line (e.g. `ssh host journalctl --user -u slack-acp --since \"10 min ago\"`); default reads the local unit")
 	sentinel := fs.String("self-drive-sentinel", "", "self-drive sentinel, if the relay is configured with one; empty skips that check")
 	timeout := fs.Duration("timeout", 3*time.Minute, "per-assertion wait budget")
+	stopCmd := fs.String("outage-stop-cmd", "", "shell command that stops the relay (e.g. `systemctl --user stop slack-acp`); with --outage-start-cmd enables the catch-up checks, which restart the relay")
+	startCmd := fs.String("outage-start-cmd", "", "shell command that starts the relay again (e.g. `systemctl --user start slack-acp`)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -447,6 +467,11 @@ func runVerify(args []string) error {
 		return err
 	}
 
+	outage, err := verify.NewShellOutage(*stopCmd, *startCmd)
+	if err != nil {
+		return err
+	}
+
 	runner, err := verify.New(verify.Config{
 		Bot:               verify.NewSlack(botToken),
 		User:              user,
@@ -454,6 +479,7 @@ func runVerify(args []string) error {
 		PublicChannel:     *public,
 		PrivateChannel:    *private,
 		SelfDriveSentinel: *sentinel,
+		Outage:            outage,
 		Wait:              verify.PollWaiter(500*time.Millisecond, *timeout),
 	})
 	if err != nil {

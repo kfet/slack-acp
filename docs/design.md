@@ -161,6 +161,14 @@ of 40k), we trim from the front and prepend an ellipsis marker. A future
 version may switch to "rolling new message" behaviour for very long
 responses.
 
+## Catch-up
+
+Socket Mode never replays what was posted while no socket was open. On
+every connect (startup and each reconnect) the relay reads
+`conversations.history` / `conversations.replies` forward from a
+per-conversation checkpoint and answers what it missed exactly once,
+one collapsed turn per thread. See [catch-up.md](catch-up.md).
+
 ## Cancellation & ordering
 
 ACP allows at most one outstanding prompt per session. The handler

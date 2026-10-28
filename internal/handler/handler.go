@@ -81,6 +81,13 @@ type Config struct {
 	// MaxAttachmentBytes caps one inbound file. 0 uses
 	// DefaultMaxAttachmentBytes.
 	MaxAttachmentBytes int64
+	// CatchupMaxAge: a missed message older than this is not answered
+	// by the catch-up; its thread gets a one-line notice instead. 0
+	// means no age bound.
+	CatchupMaxAge time.Duration
+	// CatchupTurns bounds how many catch-up turns run at once. 0 uses
+	// DefaultCatchupTurns.
+	CatchupTurns int
 }
 
 // defaultBranchesPerMinute mirrors config's agent_posts_per_minute
@@ -109,6 +116,13 @@ type Handler struct {
 	branchRate *ratelimit.Bucket
 	// bg tracks branch work running off the event loop.
 	bg sync.WaitGroup
+
+	// catchupSlots bounds concurrent catch-up turns.
+	catchupSlots chan struct{}
+	// liveTS maps a conversation to the ts of the newest live message
+	// that started a turn there, so a catch-up turn never supersedes a
+	// newer live one.
+	liveTS sync.Map
 }
 
 // New constructs a handler.
@@ -118,6 +132,10 @@ func New(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, branchRate: ratelimit.New(cfg.AgentPostsPerMinute, defaultBranchesPerMinute, cfg.Now)}
 	h.convo = mustConvo(h.newConvo())
+	if cfg.CatchupTurns <= 0 {
+		cfg.CatchupTurns = DefaultCatchupTurns
+	}
+	h.catchupSlots = make(chan struct{}, cfg.CatchupTurns)
 	if cfg.SelfDrive.Enabled() {
 		if cfg.SelfDrivePerMinute <= 0 {
 			h.cfg.SelfDrivePerMinute = defaultSelfDrivePerMinute
@@ -154,18 +172,52 @@ func (h *Handler) SetAPI(api *slack.Client) { h.cfg.API = api }
 
 // Handle is called by slackproto.Client for each inbound event.
 func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
-	rec := journal.Record{
+	rec := handlerRecord(ev)
+	key, text, ok := h.admit(ev, &rec, nil)
+	if !ok {
+		return
+	}
+	// Relay commands are answered here and never reach the agent;
+	// anything else starts a turn, superseding the thread's running one
+	// (convo Supersede mode). The turn's real bound is the
+	// progress-resetting liveness clock, armed inside run once the agent
+	// is about to be prompted.
+	res := h.convo.Dispatch(ctx, convo.In{Conv: key.String(), Text: text, Meta: ev})
+	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
+	switch {
+	case res.Handled && h.ownerRefuses(ev, text):
+		rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonOwnerOnly
+	case res.Handled:
+		rec.Reason = journal.ReasonCommand
+	default:
+		h.liveTS.Store(key, ev.TS)
+	}
+	journal.Log(rec)
+}
+
+// handlerRecord starts the handler-stage journal record for ev.
+func handlerRecord(ev slackproto.Event) journal.Record {
+	return journal.Record{
 		Stage:    journal.StageHandler,
-		Path:     journalPath(ev),
+		Path:     ev.JournalPath(),
 		Channel:  ev.ChannelID,
 		TS:       ev.TS,
 		ThreadTS: ev.ThreadTS,
 		User:     ev.UserID,
 		Files:    len(ev.Files),
+		CatchUp:  ev.CatchUp,
 	}
+}
+
+// admit applies the handler's ingest gates to ev, recording a drop in
+// rec. It returns the conversation and the trimmed text of an admitted
+// event. summoned names threads that an earlier event of the same
+// catch-up batch addressed the bot in; the ambient gate treats them as
+// known. It is nil for a live event.
+func (h *Handler) admit(ev slackproto.Event, rec *journal.Record, summoned map[router.ConvKey]bool) (router.ConvKey, string, bool) {
 	drop := func(reason string) {
 		rec.Decision, rec.Reason = journal.DecisionDrop, reason
-		journal.Log(rec)
+		journal.Log(*rec)
 	}
 	// DEFENCE IN DEPTH — the relay must never act on its own message.
 	//
@@ -183,17 +235,17 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	if ev.BotUserID != "" && ev.UserID == ev.BotUserID && !ev.SelfDrive {
 		drop(journal.ReasonBotAuthored)
 		kitlog.Debugf("handler: drop self-authored ev in %s ts=%s", ev.ChannelID, ev.TS)
-		return
+		return router.ConvKey{}, "", false
 	}
 	if !h.allowed(ev) {
 		drop(journal.ReasonAllowlist)
 		kitlog.Debugf("handler: drop ev from user=%s channel=%s (not allowed)", ev.UserID, ev.ChannelID)
-		return
+		return router.ConvKey{}, "", false
 	}
 	text := strings.TrimSpace(ev.Text)
 	if text == "" && len(ev.Files) == 0 {
 		drop(journal.ReasonEmptyText)
-		return
+		return router.ConvKey{}, "", false
 	}
 	key := router.ConvKey{ChannelID: ev.ChannelID, ThreadTS: ev.ThreadTS}
 
@@ -210,65 +262,38 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	// would otherwise have run.
 	if ev.SelfDrive && !h.admitSelfDrive(ev) {
 		drop(journal.ReasonSelfDriveRateCap)
-		return
+		return router.ConvKey{}, "", false
 	}
 
 	if ev.BotUserID != "" {
-		// ev.IsMention is authoritative: the app_mention path strips the
-		// mention from Text, so the Contains check below can never see
-		// it there. The Contains fallback is kept only for the
-		// message.* path and for legacy callers that populate Text but
-		// not the flag.
-		isMention := ev.IsMention || strings.Contains(ev.Text, fmt.Sprintf("<@%s>", ev.BotUserID))
-		// A self-drive message is addressed *by its sentinel* — the
-		// hatch cannot rely on @-mentioning the bot, because 3a kills
-		// the app_mention twin. So it summons like a mention does,
-		// rather than falling into the ambient known-thread gate
-		// (which would drop it and make the hatch useless for
-		// starting a thread).
-		if !ev.IsDM && !isMention && !ev.SelfDrive {
+		if !addressed(ev) {
 			// This is an ambient (non-summoning) thread reply. Only forward
 			// if Ambient is enabled and we're already in this thread.
-			if !h.cfg.Ambient || !h.cfg.Router.Known(key) {
+			if !h.cfg.Ambient || !(summoned[key] || h.cfg.Router.Known(key)) {
 				drop(journal.ReasonAmbientUnknownThrd)
 				kitlog.Debugf("handler: drop ambient reply in unknown thread %s", key)
-				return
+				return router.ConvKey{}, "", false
 			}
 		}
 	}
 
-	// Relay commands are answered here and never reach the agent;
-	// anything else starts a turn, superseding the thread's running one
-	// (convo Supersede mode). The turn's real bound is the
-	// progress-resetting liveness clock, armed inside run once the agent
-	// is about to be prompted.
-	res := h.convo.Dispatch(ctx, convo.In{Conv: key.String(), Text: text, Meta: ev})
-	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
-	switch {
-	case res.Handled && h.ownerRefuses(ev, text):
-		rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonOwnerOnly
-	case res.Handled:
-		rec.Reason = journal.ReasonCommand
-	}
-	journal.Log(rec)
+	return key, text, true
 }
 
-// journalPath classifies an already-normalised event back onto the
-// inbound surface it arrived on, so handler-stage records line up with
-// the slackproto-stage record for the same ts. SelfDrive wins over
-// IsDM: a self-driven DM is still the hatch being exercised, and that
-// is the distinction an operator (or the verifier) cares about.
-func journalPath(ev slackproto.Event) journal.Path {
-	switch {
-	case ev.SelfDrive:
-		return journal.PathSelfDrive
-	case ev.IsDM:
-		return journal.PathMessageIM
-	case ev.IsMention:
-		return journal.PathAppMention
-	default:
-		return journal.PathMessage
-	}
+// addressed reports whether ev summons the bot: a DM, an @-mention or
+// a self-drive message, as opposed to an ambient thread reply.
+//
+// ev.IsMention is authoritative: the app_mention path strips the
+// mention from Text, so the Contains check can never see it there. The
+// Contains fallback is kept only for the message.* path and for legacy
+// callers that populate Text but not the flag.
+//
+// A self-drive message is addressed *by its sentinel* — the hatch
+// cannot rely on @-mentioning the bot, because 3a kills the app_mention
+// twin.
+func addressed(ev slackproto.Event) bool {
+	mention := ev.IsMention || (ev.BotUserID != "" && strings.Contains(ev.Text, "<@"+ev.BotUserID+">"))
+	return ev.IsDM || mention || ev.SelfDrive
 }
 
 func (h *Handler) allowed(ev slackproto.Event) bool {
@@ -424,7 +449,9 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// backfill semantics only make sense when the bot follows a whole
 	// thread. Non-fatal — a failure just means we proceed without the
 	// missed context rather than dropping the live message.
-	if h.cfg.Ambient && h.cfg.Backfill && h.cfg.Router.Known(key) {
+	//
+	// A catch-up turn already carries every missed line of the thread.
+	if h.cfg.Ambient && h.cfg.Backfill && !ev.CatchUp && h.cfg.Router.Known(key) {
 		if err := h.backfillIfNeeded(ctx, ev, key); err != nil {
 			kitlog.Debugf("handler: backfill error: %v", err)
 		}
@@ -527,7 +554,8 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// In ambient mode, prefix messages with the sender's name so the
 	// agent knows who's speaking in the shared thread.
 	// A branch opened by the agent's tool has no human sender.
-	if h.cfg.Ambient && !ev.IsDM && ev.UserID != "" {
+	// A catch-up turn names the sender on each of its lines instead.
+	if h.cfg.Ambient && !ev.IsDM && !ev.CatchUp && ev.UserID != "" {
 		userName := h.getUserName(ctx, ev.UserID)
 		promptText = fmt.Sprintf("[%s] %s", userName, text)
 	}

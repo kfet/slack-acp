@@ -54,7 +54,7 @@ thread msg ─→ Known(key)?  ──exists──→ resume + forward
 | Edge | Handling |
 |------|----------|
 | **Restart** | *Free.* `byKey` empty after restart, but dirs are on disk; `tryResume` already reattaches per-cwd. Only change: `Known` consults disk, not just memory. |
-| **Missed while down** | *Backfill.* Socket Mode does **not** replay missed events. Track `last_ts` per thread; on the next message, fetch `conversations.replies` since the gap and feed the missed lines into the session before the new one. |
+| **Missed while down** | *Catch-up* ([catch-up.md](catch-up.md)): on every connect, read history since a per-conversation checkpoint and answer once per thread. *Backfill* still fills a gap on the next live message: track `last_ts` per thread, fetch `conversations.replies` since it and feed the missed lines into the session before the new one. |
 | **Duplicate delivery** | *Free.* Slack is at-least-once → drop any `ts <= last_ts`. Same state as backfill. |
 | **First tag lost (bot down)** | *Accept.* No dir = blind to that thread, correctly — it was never summoned. A re-tag re-creates the dir. Exactly how an offline colleague behaves. |
 | **Edits / deletes** | *Drop.* Already ignored via `SubType`. Keep ignoring — replaying edits is noise. |

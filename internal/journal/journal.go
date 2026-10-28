@@ -99,6 +99,11 @@ const (
 	ReasonNotThreadReply     = "not_thread_reply"  // top-level channel chatter
 	ReasonMentionDuplicate   = "mention_duplicate" // app_mention is the canonical copy
 
+	// slackproto, catch-up. ReasonCatchUpSeen: a live event that
+	// arrived while the catch-up ran, for a message the catch-up had
+	// already read — delivering it again would answer it twice.
+	ReasonCatchUpSeen = "catch_up_seen"
+
 	// handler stage.
 	ReasonAllowlist          = "allowlist"
 	ReasonSelfDriveRateCap   = "self_drive_rate_cap"
@@ -107,6 +112,13 @@ const (
 	ReasonPrompt             = "prompt"
 	ReasonCommand            = "command"    // a relay command (`!help`, `!branch` …): answered, no prompt
 	ReasonOwnerOnly          = "owner_only" // an operator command from a non-owner: refused with a reply
+	// ReasonCatchUpCommand: a relay or slash command the catch-up read
+	// from history. It was typed for a relay that was not there, so it
+	// is not run late.
+	ReasonCatchUpCommand = "catch_up_command"
+	// ReasonCatchUpTooOld: a missed message older than the catch-up's
+	// age bound; its thread gets one notice instead of an answer.
+	ReasonCatchUpTooOld = "catch_up_too_old"
 
 	// Branch reactions (:fork_and_knife:).
 	ReasonBranchReaction   = "branch_reaction"   // slackproto: delivered to the handler
@@ -129,6 +141,9 @@ type Record struct {
 	User     string   `json:"user,omitempty"`
 	// Files counts the attachments the message carried.
 	Files int `json:"files,omitempty"`
+	// CatchUp is set on records for messages the catch-up read from
+	// history after a gap in the Socket Mode connection.
+	CatchUp bool `json:"catch_up,omitempty"`
 }
 
 // out is the sink. Nil (the default) routes through the standard

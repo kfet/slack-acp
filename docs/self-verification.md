@@ -281,6 +281,8 @@ Flags:
 | `--journal-cmd` | — | Override the journal reader with a **shell command line** (quoting preserved, e.g. `ssh host journalctl --user -u slack-acp --since "10 min ago"`). |
 | `--self-drive-sentinel` | — | Empty → the self-drive check SKIPs. |
 | `--timeout` | `3m` | Per-assertion wait budget. |
+| `--outage-stop-cmd` | — | Shell command that stops the relay (e.g. `systemctl --user stop slack-acp`). With `--outage-start-cmd`, enables the catch-up checks. **They restart the relay.** |
+| `--outage-start-cmd` | — | Shell command that starts it again. Exactly one of the two is an error. |
 
 The bot must be a member of both channels.
 
@@ -335,6 +337,8 @@ The bot must be a member of both channels.
 | `edited_mention_dropped` | User token posts *without* a mention, then `chat.update`s one in | **dropped** (`bot_authored`), no reply |
 | `bot_echo_dropped` | **Bot token** posts `<@BOT> …` into its own thread | **dropped** (`bot_authored` / `api_authored` / `self_drive_not_accepted` / `self_posted_ts`), no reply |
 | `self_drive_hatch` | Bot token posts a sentinel-prefixed message | delivered on `self_drive`, prompt run, bot replies |
+| `catch_up_mention_answered` | Stops the relay, user token posts `<@BOT> …`, starts it again | delivered on `app_mention`/`mention` with `catch_up: true`, prompt run, bot replies. Runs last. See [catch-up.md](catch-up.md) |
+| `catch_up_command_skipped` | In the same outage, user token posts `<@BOT> !status …` | handler **drop** `catch_up_command`, no reply |
 | `branch_reaction` | User token replies in the first check's thread and reacts :fork_and_knife: to the reply | delivered on `reaction_added`/`branch_reaction`, handler `branch`, bot posts a "Branched to" link in the thread; the new thread is deleted on the way out |
 
 Everything the harness posts carries a per-run nonce and is deleted on

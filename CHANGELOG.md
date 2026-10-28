@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Catch-up: on every Socket Mode connect (startup and each reconnect) the relay reads `conversations.history` / `conversations.replies` forward from a per-conversation checkpoint (`<state_dir>/catchup.json`) and answers what it missed — mentions, DMs, ambient thread replies — exactly once, through the same gates as live events, one collapsed turn per thread, at most 4 at once. Live events arriving during a run are held and deduplicated against the checkpoints. First run, and any channel the bot joins later, start at "now", so nothing old replays. Messages older than `catchup_max_age_seconds` (default 24h, 0 = off) get a one-line notice instead of an answer. 429s are waited out per `Retry-After`; each run logs its API calls, 429s and wait. Relay commands typed during the outage are not run late. See `docs/catch-up.md`.
+- Journal: `catch_up` field, reasons `catch_up_seen`, `catch_up_command` and `catch_up_too_old`.
+- `slack-acp verify --outage-stop-cmd … --outage-start-cmd …`: checks `catch_up_mention_answered` and `catch_up_command_skipped`.
+
 ## [0.16.0] - 2026-10-28
 
 ### Added

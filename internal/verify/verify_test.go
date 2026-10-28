@@ -336,6 +336,7 @@ func TestRunAllChecksPass(t *testing.T) {
 		SelfDriveSentinel: "!!drive!!",
 		Nonce:             "nonce",
 		Wait:              immediateWait,
+		Outage:            withOutage(j, bot, user),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -350,6 +351,7 @@ func TestRunAllChecksPass(t *testing.T) {
 		"app_mention_public", "ambient_thread_reply_known", "app_mention_private",
 		"dm", "owner_gate_refused", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped",
 		"bot_echo_dropped", "self_drive_hatch", "branch_reaction", "dm_file_share",
+		"catch_up_mention_answered", "catch_up_command_skipped",
 	} {
 		res, ok := byName[want]
 		if !ok {
@@ -363,7 +365,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !allOK {
 		t.Fatalf("Summarise says not ok:\n%s", report)
 	}
-	if !strings.Contains(report, "11 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(report, "13 passed, 0 failed, 0 skipped") {
 		t.Fatalf("unexpected summary:\n%s", report)
 	}
 }
@@ -586,7 +588,7 @@ func TestPostErrorsSurfaceAsFailures(t *testing.T) {
 	user.postErr, bot.postErr = boom, boom
 
 	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", PrivateChannel: "C_PRIV",
-		SelfDriveSentinel: "!!drive!!", Nonce: "n", Wait: immediateWait})
+		SelfDriveSentinel: "!!drive!!", Nonce: "n", Wait: immediateWait, Outage: withOutage(j, bot, user)})
 	results, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)

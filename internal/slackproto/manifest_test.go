@@ -85,6 +85,9 @@ func TestManifestGrantsHistoryScopeForEveryChannelType(t *testing.T) {
 		"chat:write",     // posting and streaming edits
 		"users:read",     // display names in backfill
 		"reactions:read", // reaction_added (:fork_and_knife: branch)
+		// The catch-up lists conversations (users.conversations: the
+		// *:read scopes above) and reads them (the *:history scopes);
+		// see docs/catch-up.md.
 	}
 	for _, scope := range want {
 		if !contains(m.OAuthConfig.Scopes.Bot, scope) {

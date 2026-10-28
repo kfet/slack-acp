@@ -56,6 +56,11 @@ type Event struct {
 	// The handler uses it to bypass the *user* allowlist — and nothing
 	// else; the channel allowlist and rate cap still apply.
 	SelfDrive bool
+	// CatchUp marks an event the catch-up read from history after a
+	// gap in the Socket Mode connection, rather than one Slack
+	// delivered live. Such events reach a CatchUpHandler in one batch
+	// per conversation.
+	CatchUp bool
 	// Files are the attachments Slack shared with this message. Their
 	// URLs are private: fetching one needs the bot token (files:read).
 	Files []File
@@ -105,6 +110,24 @@ func slackFileURL(raw string) bool {
 // subtypeFileShare is the subtype Slack gives an original human post
 // that carries files. It is admitted like a plain message.
 const subtypeFileShare = "file_share"
+
+// JournalPath classifies an already-normalised event back onto the
+// inbound surface it arrived on, so later records line up with the
+// slackproto-stage record for the same ts. SelfDrive wins over IsDM: a
+// self-driven DM is still the hatch being exercised, and that is the
+// distinction an operator (or the verifier) cares about.
+func (ev Event) JournalPath() journal.Path {
+	switch {
+	case ev.SelfDrive:
+		return journal.PathSelfDrive
+	case ev.IsDM:
+		return journal.PathMessageIM
+	case ev.IsMention:
+		return journal.PathAppMention
+	default:
+		return journal.PathMessage
+	}
+}
 
 // Handler processes a normalised event. Implementations should return
 // quickly; long work belongs in goroutines they own.
@@ -157,6 +180,8 @@ type Client struct {
 	// Empty means we never learned it — in which case the
 	// reclassification refuses everything, i.e. it fails CLOSED.
 	appID string
+	// catchUp is nil when the catch-up is off.
+	catchUp *catchUpState
 }
 
 // Option customises a Client.
@@ -283,6 +308,9 @@ func (c *Client) dispatch(ctx context.Context, evt socketmode.Event) {
 		// scripts/converge.sh after a restart) reads to know the relay
 		// is actually live on Slack.
 		log.Printf("slack-acp: slack: connected (Socket Mode)")
+		// Every connect — the first and each reconnect — follows a
+		// window in which Slack had no socket to deliver to.
+		c.startCatchUp(ctx)
 	case socketmode.EventTypeConnecting, socketmode.EventTypeHello:
 		kitlog.Debugf("slack: %s", evt.Type)
 	case socketmode.EventTypeEventsAPI:
@@ -315,183 +343,240 @@ func (c *Client) handleEventsAPI(ctx context.Context, api slackevents.EventsAPIE
 	if api.Type != slackevents.CallbackEvent {
 		return
 	}
+	emit := func(ev Event) { c.deliverLive(ctx, ev) }
 	switch ev := api.InnerEvent.Data.(type) {
 	case *slackevents.AppMentionEvent:
-		rec := journal.Record{
-			Stage:    journal.StageProto,
-			Path:     journal.PathAppMention,
-			Channel:  ev.Channel,
-			TS:       ev.TimeStamp,
-			ThreadTS: firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
-			User:     ev.User,
-		}
-		// ABSOLUTE GUARD — app_mention never accepts a message the
-		// relay itself could have produced. Split into two clauses
-		// that are NOT equally negotiable:
-		//
-		// 1. Self-authorship (below, in refuseAuthor): no author, our
-		//    own bot user, or an edit. Unconditional, no override,
-		//    ever. The relay posts its replies as this same bot, so
-		//    admitting one is a reply → trigger → reply loop with no
-		//    natural bound, and a deployment without an
-		//    AllowedUserIDs allowlist has nothing else in the way.
-		//
-		// 2. bot_id as a proxy for "not a human". Slack stamps the
-		//    posting app's bot_id onto EVERY API message, including
-		//    one sent with a user token on behalf of a real person —
-		//    so this clause is a proxy, not a fact, and it is
-		//    overridable per named user id via HumanAuthorUserIDs.
-		//    Overriding it cannot reach clause 1.
-		//
-		// AppMentionEvent has no SubType field; Edited is its
-		// equivalent — it marks an event that is not an original human
-		// post, which is what SubType screens for on the message path.
-		if reason := c.refuseAuthor(ev.User, ev.BotID, appID, ev.Channel+"/"+ev.TimeStamp, ev.Edited != nil); reason != "" {
-			rec.Decision, rec.Reason = journal.DecisionDrop, reason
-			journal.Log(rec)
-			kitlog.Debugf("slack: drop %s app_mention in %s ts=%s", reason, ev.Channel, ev.TimeStamp)
-			return
-		}
-		mentionFiles := files(ev.Files)
-		rec.Decision, rec.Reason, rec.Files = journal.DecisionDeliver, journal.ReasonMention, len(mentionFiles)
-		journal.Log(rec)
-		c.deliver(ctx, Event{
-			UserID:    ev.User,
-			ChannelID: ev.Channel,
-			ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
-			TS:        ev.TimeStamp,
-			Text:      stripMention(ev.Text, c.botUserID),
-			IsMention: true,
-			Files:     mentionFiles,
-		})
+		c.ingestMention(inMsg{
+			channel:  ev.Channel,
+			user:     ev.User,
+			botID:    ev.BotID,
+			appID:    appID,
+			ts:       ev.TimeStamp,
+			threadTS: ev.ThreadTimeStamp,
+			text:     ev.Text,
+			edited:   ev.Edited != nil,
+			files:    ev.Files,
+		}, emit)
+		c.observe(ev.Channel, ev.TimeStamp)
 	case *slackevents.ReactionAddedEvent:
 		c.handleReaction(ctx, ev)
 	case *slackevents.MessageEvent:
-		rec := journal.Record{
-			Stage:    journal.StageProto,
-			Path:     journal.PathMessage,
-			Channel:  ev.Channel,
-			TS:       ev.TimeStamp,
-			ThreadTS: firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
-			User:     ev.User,
-		}
-		if ev.ChannelType == "im" {
-			rec.Path = journal.PathMessageIM
-		}
-		// Subtype events are always dropped, hatch or no hatch. The
-		// relay streams by *editing* its own message, so every
-		// throttled chat.update arrives here as message_changed; if
-		// those reached the hatch, one self-drive reply would
-		// re-trigger on each update. Only original posts are matched;
-		// file_share IS an original post, one that carries files.
-		if ev.SubType != "" && ev.SubType != subtypeFileShare {
-			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSubType
-			journal.Log(rec)
-			return
-		}
-
-		text := ev.Text
-		selfDrive := false
-		var attached []File
+		var attached []slack.File
 		if ev.Message != nil {
-			attached = files(ev.Message.Files)
+			attached = ev.Message.Files
 		}
-		rec.Files = len(attached)
-		if c.refuseAuthor(ev.User, ev.BotID, appID, ev.Channel+"/"+ev.TimeStamp, false) != "" {
-			// Not a human post. The ONLY way through is the self-drive
-			// hatch: a sentinel anchored at the start of the message.
-			stripped, ok := c.selfDrive.Accept(text)
-			if !ok {
-				rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSelfDriveNotAccept
-				journal.Log(rec)
-				// Operator-visible, not debug: a sentinel that is
-				// present but not leading is the exact shape of the
-				// hatch "silently doing nothing", and this line is
-				// what makes it a one-second diagnosis. It also
-				// confirms the echo guard working as intended when the
-				// agent quotes its own trigger back.
-				if c.selfDrive.containsButNotPrefix(text) {
-					log.Printf("SELF-DRIVE IGNORED: channel=%s ts=%s — message contains the sentinel but does not START with it; the sentinel must be a PREFIX (note Slack HTML-escapes < > & in inbound text)", ev.Channel, ev.TimeStamp)
-				}
-				return
-			}
-			// Second layer: never act on a ts we posted ourselves.
-			if c.selfDrive.SeenTS(ev.TimeStamp) {
-				rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSelfPostedTS
-				journal.Log(rec)
-				kitlog.Debugf("slack: drop self-posted ts=%s in %s", ev.TimeStamp, ev.Channel)
-				return
-			}
-			text, selfDrive = stripMention(stripped, c.botUserID), true
-			rec.Path = journal.PathSelfDrive
-		}
+		c.ingestMessage(inMsg{
+			channel:  ev.Channel,
+			im:       ev.ChannelType == "im",
+			user:     ev.User,
+			botID:    ev.BotID,
+			appID:    appID,
+			ts:       ev.TimeStamp,
+			threadTS: ev.ThreadTimeStamp,
+			text:     ev.Text,
+			subType:  ev.SubType,
+			files:    attached,
+		}, emit)
+		c.observe(ev.Channel, ev.TimeStamp)
+	}
+}
 
-		// Forward DMs unconditionally.
-		if ev.ChannelType == "im" {
-			rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonDM
+// inMsg is an inbound message normalised from either a live event or a
+// conversations.history / conversations.replies entry, so both pass
+// through the very same gates.
+type inMsg struct {
+	channel  string
+	im       bool
+	user     string
+	botID    string
+	appID    string
+	ts       string
+	threadTS string // "" for a top-level message
+	text     string
+	subType  string
+	edited   bool
+	files    []slack.File
+	// catchUp marks a message read by the catch-up rather than
+	// delivered as an event; it is recorded in the journal.
+	catchUp bool
+}
+
+func (m inMsg) record(path journal.Path) journal.Record {
+	return journal.Record{
+		Stage:    journal.StageProto,
+		Path:     path,
+		Channel:  m.channel,
+		TS:       m.ts,
+		ThreadTS: firstNonEmpty(m.threadTS, m.ts),
+		User:     m.user,
+		CatchUp:  m.catchUp,
+	}
+}
+
+// ingestMention is the app_mention path.
+func (c *Client) ingestMention(m inMsg, emit func(Event)) {
+	rec := m.record(journal.PathAppMention)
+	// ABSOLUTE GUARD — app_mention never accepts a message the
+	// relay itself could have produced. Split into two clauses
+	// that are NOT equally negotiable:
+	//
+	// 1. Self-authorship (below, in refuseAuthor): no author, our
+	//    own bot user, or an edit. Unconditional, no override,
+	//    ever. The relay posts its replies as this same bot, so
+	//    admitting one is a reply → trigger → reply loop with no
+	//    natural bound, and a deployment without an
+	//    AllowedUserIDs allowlist has nothing else in the way.
+	//
+	// 2. bot_id as a proxy for "not a human". Slack stamps the
+	//    posting app's bot_id onto EVERY API message, including
+	//    one sent with a user token on behalf of a real person —
+	//    so this clause is a proxy, not a fact, and it is
+	//    overridable per named user id via HumanAuthorUserIDs.
+	//    Overriding it cannot reach clause 1.
+	//
+	// AppMentionEvent has no SubType field; Edited is its
+	// equivalent — it marks an event that is not an original human
+	// post, which is what SubType screens for on the message path.
+	if reason := c.refuseAuthor(m.user, m.botID, m.appID, m.channel+"/"+m.ts, m.edited); reason != "" {
+		rec.Decision, rec.Reason = journal.DecisionDrop, reason
+		journal.Log(rec)
+		kitlog.Debugf("slack: drop %s app_mention in %s ts=%s", reason, m.channel, m.ts)
+		return
+	}
+	mentionFiles := files(m.files)
+	rec.Decision, rec.Reason, rec.Files = journal.DecisionDeliver, journal.ReasonMention, len(mentionFiles)
+	journal.Log(rec)
+	emit(Event{
+		UserID:    m.user,
+		ChannelID: m.channel,
+		ThreadTS:  firstNonEmpty(m.threadTS, m.ts),
+		TS:        m.ts,
+		Text:      stripMention(m.text, c.botUserID),
+		IsMention: true,
+		CatchUp:   m.catchUp,
+		Files:     mentionFiles,
+	})
+}
+
+// ingestMessage is the message.* path.
+func (c *Client) ingestMessage(m inMsg, emit func(Event)) {
+	rec := m.record(journal.PathMessage)
+	if m.im {
+		rec.Path = journal.PathMessageIM
+	}
+	// Subtype events are always dropped, hatch or no hatch. The
+	// relay streams by *editing* its own message, so every
+	// throttled chat.update arrives here as message_changed; if
+	// those reached the hatch, one self-drive reply would
+	// re-trigger on each update. Only original posts are matched;
+	// file_share IS an original post, one that carries files.
+	if m.subType != "" && m.subType != subtypeFileShare {
+		rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSubType
+		journal.Log(rec)
+		return
+	}
+
+	text := m.text
+	selfDrive := false
+	attached := files(m.files)
+	rec.Files = len(attached)
+	if c.refuseAuthor(m.user, m.botID, m.appID, m.channel+"/"+m.ts, false) != "" {
+		// Not a human post. The ONLY way through is the self-drive
+		// hatch: a sentinel anchored at the start of the message.
+		stripped, ok := c.selfDrive.Accept(text)
+		if !ok {
+			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSelfDriveNotAccept
 			journal.Log(rec)
-			c.deliver(ctx, Event{
-				UserID:    ev.User,
-				ChannelID: ev.Channel,
-				ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
-				TS:        ev.TimeStamp,
-				Text:      text,
-				IsDM:      true,
-				SelfDrive: selfDrive,
-				Files:     attached,
-			})
+			// Operator-visible, not debug: a sentinel that is
+			// present but not leading is the exact shape of the
+			// hatch "silently doing nothing", and this line is
+			// what makes it a one-second diagnosis. It also
+			// confirms the echo guard working as intended when the
+			// agent quotes its own trigger back.
+			if c.selfDrive.containsButNotPrefix(text) {
+				log.Printf("SELF-DRIVE IGNORED: channel=%s ts=%s — message contains the sentinel but does not START with it; the sentinel must be a PREFIX (note Slack HTML-escapes < > & in inbound text)", m.channel, m.ts)
+			}
 			return
 		}
-
-		// Self-drive messages are accepted top-level as well as in a
-		// thread (a top-level one starts a thread), and are exempt
-		// from the mentionsBot suppression below: 3a guarantees their
-		// app_mention twin is already dead, so suppressing here too
-		// would drop a mention+sentinel message on *both* paths.
-		if selfDrive {
-			rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonSelfDrive
+		// Second layer: never act on a ts we posted ourselves.
+		if c.selfDrive.SeenTS(m.ts) {
+			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonSelfPostedTS
 			journal.Log(rec)
-			c.deliver(ctx, Event{
-				UserID:    ev.User,
-				ChannelID: ev.Channel,
-				ThreadTS:  firstNonEmpty(ev.ThreadTimeStamp, ev.TimeStamp),
-				TS:        ev.TimeStamp,
-				Text:      text,
-				SelfDrive: true,
-				Files:     attached,
-			})
+			kitlog.Debugf("slack: drop self-posted ts=%s in %s", m.ts, m.channel)
 			return
 		}
+		text, selfDrive = stripMention(stripped, c.botUserID), true
+		rec.Path = journal.PathSelfDrive
+	}
 
-		// Forward thread replies in non-DM channels. The handler will
-		// decide whether to process them based on ambient config and
-		// whether the thread is known.
-		//
-		// Skip messages that @-mention the bot: Slack delivers those
-		// via a *separate* app_mention event too, so forwarding here
-		// as well would double-process the same (channel,ts) — the
-		// second delivery cancels the first in-flight prompt and
-		// restarts it. app_mention is the canonical path for tagged
-		// messages; message.channels is only for *un-tagged* replies.
-		switch {
-		case ev.ThreadTimeStamp == "":
-			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonNotThreadReply
-			journal.Log(rec)
-		case mentionsBot(ev.Text, c.botUserID):
-			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonMentionDuplicate
-			journal.Log(rec)
-		default:
-			rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonAmbientThreadReply
-			journal.Log(rec)
-			c.deliver(ctx, Event{
-				UserID:    ev.User,
-				ChannelID: ev.Channel,
-				ThreadTS:  ev.ThreadTimeStamp,
-				TS:        ev.TimeStamp,
-				Text:      ev.Text,
-				Files:     attached,
-			})
-		}
+	// Forward DMs unconditionally.
+	if m.im {
+		rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonDM
+		journal.Log(rec)
+		emit(Event{
+			UserID:    m.user,
+			ChannelID: m.channel,
+			ThreadTS:  firstNonEmpty(m.threadTS, m.ts),
+			TS:        m.ts,
+			Text:      text,
+			IsDM:      true,
+			SelfDrive: selfDrive,
+			CatchUp:   m.catchUp,
+			Files:     attached,
+		})
+		return
+	}
+
+	// Self-drive messages are accepted top-level as well as in a
+	// thread (a top-level one starts a thread), and are exempt
+	// from the mentionsBot suppression below: 3a guarantees their
+	// app_mention twin is already dead, so suppressing here too
+	// would drop a mention+sentinel message on *both* paths.
+	if selfDrive {
+		rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonSelfDrive
+		journal.Log(rec)
+		emit(Event{
+			UserID:    m.user,
+			ChannelID: m.channel,
+			ThreadTS:  firstNonEmpty(m.threadTS, m.ts),
+			TS:        m.ts,
+			Text:      text,
+			SelfDrive: true,
+			CatchUp:   m.catchUp,
+			Files:     attached,
+		})
+		return
+	}
+
+	// Forward thread replies in non-DM channels. The handler will
+	// decide whether to process them based on ambient config and
+	// whether the thread is known.
+	//
+	// Skip messages that @-mention the bot: Slack delivers those
+	// via a *separate* app_mention event too, so forwarding here
+	// as well would double-process the same (channel,ts) — the
+	// second delivery cancels the first in-flight prompt and
+	// restarts it. app_mention is the canonical path for tagged
+	// messages; message.channels is only for *un-tagged* replies.
+	switch {
+	case m.threadTS == "":
+		rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonNotThreadReply
+		journal.Log(rec)
+	case mentionsBot(m.text, c.botUserID):
+		rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonMentionDuplicate
+		journal.Log(rec)
+	default:
+		rec.Decision, rec.Reason = journal.DecisionDeliver, journal.ReasonAmbientThreadReply
+		journal.Log(rec)
+		emit(Event{
+			UserID:    m.user,
+			ChannelID: m.channel,
+			ThreadTS:  m.threadTS,
+			TS:        m.ts,
+			Text:      m.text,
+			CatchUp:   m.catchUp,
+			Files:     attached,
+		})
 	}
 }
 
