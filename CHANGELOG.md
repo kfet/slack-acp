@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-28
+
 ### Added
 - Attachments in and out. Files shared with a message are downloaded with the bot token into `<thread cwd>/inbox/<ts>/` (per-file cap `max_attachment_bytes`, default 20 MiB; at most 10 per message) and passed to the agent as ACP `resource_link` blocks. Files the agent leaves in `<thread cwd>/outbox/` are uploaded into the thread at turn end (files.uploadV2) and moved to `outbox/.sent/` (on success, abstain and error turns; a superseded turn leaves them to its successor). The bot token is only ever sent to HTTPS file URLs on `slack.com` / `slack-gov.com` and the download client never follows redirects. Ingest journal records carry a `files` count. Needs the new `files:read` and `files:write` bot scopes — reinstall the app.
 - `slack-acp verify` check `dm_file_share`: uploads a file into the DM as the human and asserts the `file_share` message is admitted, journalled with its files, and answered. Needs `files:read` + `files:write` on the user token.
