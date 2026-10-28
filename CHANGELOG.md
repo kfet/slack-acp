@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-28
+
 ### Added
 
 - `owner_user_ids` config: operator commands (`!fir`, `!run`, `!skills`, `!update`, `!login` and the rest of the login family, `!logout`) run only for owners; others get a short "owner-only" refusal and the message never reaches the agent. Fails closed — with no owners configured nobody may run them, so set it to keep using `!login`. While an owner's login waits for its redirect URL, a non-owner's message in that thread goes to the agent instead of completing it.
