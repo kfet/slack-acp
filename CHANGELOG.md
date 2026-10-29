@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-29
+
 ### Changed
 
 - Docs: README sections on `owner_user_ids` and catch-up; `docs/config.example.json` shows `catchup_max_age_seconds`; the bundled deploy skill covers the v0.15–v0.17 rollout (`files:read`/`files:write` + reinstall, owner gate, catch-up, post-deploy checks).
