@@ -38,7 +38,7 @@ func (r *Router) SetOrigin(child ConvKey, o Origin) error {
 		return err
 	}
 	b, _ := json.Marshal(o) //nolint:errchkjson // struct of strings; cannot fail
-	return r.root.WriteFile(filepath.Join("threads", child.ChannelID, child.ThreadTS, originFile), b, 0o644)
+	return r.root.WriteFile(filepath.Join(child.Thread().relDir(), originFile), b, 0o644)
 }
 
 // OriginOf returns the origin recorded for child, if any.
@@ -46,10 +46,11 @@ func (r *Router) OriginOf(child ConvKey) (Origin, bool) {
 	r.mu.Lock()
 	root := r.root
 	r.mu.Unlock()
-	if root == nil || validateKeyComponent(child.ChannelID) != nil || validateKeyComponent(child.ThreadTS) != nil {
+	child = child.Thread()
+	if root == nil || child.validate() != nil {
 		return Origin{}, false
 	}
-	b, err := root.ReadFile(filepath.Join("threads", child.ChannelID, child.ThreadTS, originFile))
+	b, err := root.ReadFile(filepath.Join(child.relDir(), originFile))
 	if err != nil {
 		return Origin{}, false
 	}
@@ -102,13 +103,13 @@ func (r *Router) Fork(ctx context.Context, origin, child ConvKey, at string) (ac
 		return "", err
 	}
 	point := r.forkPoint(origin, at)
-	sid, err := r.agent.ForkSession(ctx, cwd, parent, point, discardSink{})
+	sid, err := r.agent.ForkSession(ctx, r.wireCwd(cwd), parent, point, discardSink{})
 	if err != nil && point != "" && ctx.Err() == nil && !errors.Is(err, client.ErrForkUnsupported) {
 		// The leaf can belong to an earlier session of the origin (a
 		// failed resume opens a fresh one in the same thread). Fork at
 		// the session leaf instead of not at all.
 		log.Printf("router: forking %s at %s failed (%v); forking at its leaf", parent, point, err)
-		sid, err = r.agent.ForkSession(ctx, cwd, parent, "", discardSink{})
+		sid, err = r.agent.ForkSession(ctx, r.wireCwd(cwd), parent, "", discardSink{})
 	}
 	if err != nil {
 		return "", fmt.Errorf("forking session %s: %w", parent, err)
@@ -124,6 +125,7 @@ func (r *Router) Fork(ctx context.Context, origin, child ConvKey, at string) (ac
 	// origin's, along with the rest of its context.
 	r.byKey[child] = &Session{Key: child, SessionID: sid, Cwd: cwd, lastUsed: time.Now()}
 	delete(r.fresh, child)
+	r.remember(child, sid)
 	return sid, nil
 }
 
@@ -135,20 +137,19 @@ func (r *Router) originSession(ctx context.Context, origin ConvKey) (acp.Session
 	if sid, _, ok := r.Live(origin); ok {
 		return sid, nil
 	}
-	if !r.agent.Caps().ListSessions {
+	if err := origin.validate(); err != nil {
+		return "", fmt.Errorf("invalid origin %s: %w", origin, err)
+	}
+	sid, err := r.storedSession(ctx, origin, filepath.Join(r.stateDir, origin.relDir()))
+	switch {
+	case errors.Is(err, errNoList):
 		return "", errors.New("the origin thread has no live session and the agent cannot list sessions")
-	}
-	if validateKeyComponent(origin.ChannelID) != nil || validateKeyComponent(origin.ThreadTS) != nil {
-		return "", fmt.Errorf("invalid origin %s", origin)
-	}
-	list, err := r.agent.ListSessions(ctx, filepath.Join(r.stateDir, "threads", origin.ChannelID, origin.ThreadTS))
-	if err != nil {
-		return "", fmt.Errorf("listing the origin's sessions: %w", err)
-	}
-	if len(list) == 0 {
+	case errors.Is(err, errNoSession):
 		return "", errors.New("the origin thread has no session to fork")
+	case err != nil:
+		return "", fmt.Errorf("finding the origin's session: %w", err)
 	}
-	return acp.SessionId(list[0].SessionId), nil
+	return sid, nil
 }
 
 // discardSink drops updates. A forked session runs no turn until the

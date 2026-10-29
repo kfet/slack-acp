@@ -536,3 +536,32 @@ func captureWarnings(buf *bytes.Buffer) func() {
 		log.SetPrefix(prevPrefix)
 	}
 }
+
+func TestAddresseeMentionedOnEveryBody(t *testing.T) {
+	fs := newFakeSlackSrv()
+	defer fs.close()
+	s := NewPostStreamer(fs.client(), "C1", "100.0")
+	s.SetAddressee("U1")
+	s.minInterval = 0
+	ctx := context.Background()
+	if err := s.Start(ctx, "thinking"); err != nil {
+		t.Fatal(err)
+	}
+	s.FirstChunk()
+	if err := s.Append(ctx, "answer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.bodies) == 0 {
+		t.Fatal("nothing posted")
+	}
+	for i, b := range fs.bodies {
+		if !strings.HasPrefix(b, "<@U1> ") {
+			t.Errorf("body %d = %q", i, b)
+		}
+	}
+}

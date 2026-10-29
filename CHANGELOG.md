@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `session_scope`: `thread` (default) or `thread_user` — one agent session per (thread, sender); replies @-mention the user they answer and a message supersedes only its sender's turn.
+- `cwd_mode`: `local` (default) or `agent` — the agent gets the placeholder cwd `/slack-acp/agent-chooses-cwd` and picks the real one; sessions resume from a recorded id; login commands are no longer owner-only (ACP `authenticate` carries no origin, so any allowed user can change the agent's login); the relay's `slack` MCP server is not offered in this mode.
+- Every session call (new/resume/load/fork/prompt) carries the triggering message as `dev.acp-kit.origin/v1` `_meta` (acp-kit v0.38.0).
+
+### Removed
+
+- The ambient-mode `[name]` prefix on prompt text: the sender travels only in the origin `_meta`, so an agent that ignores it no longer knows who is speaking in a shared thread.
+
 ## [0.17.1] - 2026-10-29
 
 ### Changed

@@ -88,6 +88,13 @@ type Config struct {
 	// CatchupTurns bounds how many catch-up turns run at once. 0 uses
 	// DefaultCatchupTurns.
 	CatchupTurns int
+	// PerUserSessions is session_scope "thread_user": one agent session
+	// per (thread, sender), replies @-mention the user they answer, and
+	// a message supersedes only its sender's running turn.
+	PerUserSessions bool
+	// AgentCwd is cwd_mode "agent": the agent picks the cwd, and the
+	// login commands are each sender's own rather than owner-only.
+	AgentCwd bool
 }
 
 // defaultBranchesPerMinute mirrors config's agent_posts_per_minute
@@ -182,7 +189,8 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	// (convo Supersede mode). The turn's real bound is the
 	// progress-resetting liveness clock, armed inside run once the agent
 	// is about to be prompted.
-	res := h.convo.Dispatch(ctx, convo.In{Conv: key.String(), Text: text, Meta: ev})
+	conv := key.String()
+	res := h.convo.Dispatch(withOrigin(ctx, ev), convo.In{Conv: conv, Token: h.tokenOf(conv, ev), Text: text, Meta: ev})
 	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
 	switch {
 	case res.Handled && h.ownerRefuses(ev, text):
@@ -277,7 +285,7 @@ func (h *Handler) admit(ev slackproto.Event, rec *journal.Record, summoned map[r
 		}
 	}
 
-	return key, text, true
+	return h.scoped(key, ev), text, true
 }
 
 // addressed reports whether ev summons the bot: a DM, an @-mention or
@@ -445,6 +453,9 @@ func (h *Handler) getUserName(ctx context.Context, userID string) string {
 
 // run handles a single prompt end-to-end.
 func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvKey, text string) error {
+	// Every session call of the turn (new/resume/fork/prompt, backfill
+	// included) carries the triggering message's origin _meta.
+	ctx = withOrigin(ctx, ev)
 	// Backfill missed thread context on a detected gap. Ambient-only:
 	// backfill semantics only make sense when the bot follows a whole
 	// thread. Non-fatal — a failure just means we proceed without the
@@ -458,6 +469,7 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	}
 
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
+	stream.SetAddressee(h.addressee(ev))
 	// Loop guards 1 & 2 on the outbound side: scrub the sentinel out of
 	// everything we post, and remember our own ts values so Slack's
 	// echo of them can be skipped on the way back in.
@@ -550,15 +562,9 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 	// at most once per session, so a reset or GC'd session gets it too.
 	h.convo.ApplyModel(ctx, key.String(), sess.SessionID)
 
+	// The sender is named in the origin _meta (see withOrigin), never
+	// in the prompt text.
 	promptText := text
-	// In ambient mode, prefix messages with the sender's name so the
-	// agent knows who's speaking in the shared thread.
-	// A branch opened by the agent's tool has no human sender.
-	// A catch-up turn names the sender on each of its lines instead.
-	if h.cfg.Ambient && !ev.IsDM && !ev.CatchUp && ev.UserID != "" {
-		userName := h.getUserName(ctx, ev.UserID)
-		promptText = fmt.Sprintf("[%s] %s", userName, text)
-	}
 	if prefix := h.cfg.Router.TakePendingSystemPrompt(sess); prefix != "" {
 		promptText = prefix + "\n\n" + promptText
 	}

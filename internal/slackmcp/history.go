@@ -29,6 +29,8 @@ type Origin struct {
 // other conversation. The read rate cap still applies.
 func (r *Relay) History(ctx context.Context, sessionKey string, origin bool, limit int) (string, error) {
 	channel, threadTS, ok := strings.Cut(sessionKey, "/")
+	// A session_scope "thread_user" key also names the user.
+	threadTS, _, _ = strings.Cut(threadTS, "/")
 	if !ok || channel == "" || threadTS == "" {
 		return "", r.fail(ToolHistory, sessionKey, "", fmt.Errorf("session %q is not a Slack thread", sessionKey))
 	}

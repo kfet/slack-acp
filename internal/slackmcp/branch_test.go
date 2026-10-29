@@ -142,3 +142,15 @@ func TestRelayHistoryFailures(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A session_scope "thread_user" key ("channel/ts/user") reads its thread.
+func TestRelayHistoryPerUserKey(t *testing.T) {
+	api := &fakeAPI{replies: []slack.Message{mkMsg("1.0", "", "a")}}
+	r, _ := newRelay(t, api, RelayConfig{})
+	if _, err := r.History(t.Context(), "C1/1.0/U1", false, 0); err != nil {
+		t.Fatal(err)
+	}
+	if p := api.lastReplies; p.ChannelID != "C1" || p.Timestamp != "1.0" {
+		t.Fatalf("params = %+v", p)
+	}
+}

@@ -226,6 +226,7 @@ func (c *Client) handOff(ctx context.Context, evs []Event) {
 	}
 	for i := range evs {
 		evs[i].BotUserID = c.botUserID
+		evs[i].TeamID = c.teamID
 	}
 	if h, ok := c.handler.(CatchUpHandler); ok {
 		h.CatchUp(ctx, evs)

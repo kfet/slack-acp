@@ -81,7 +81,7 @@ func (h *Handler) branchCommand() convo.Command {
 			ev := in.Meta.(slackproto.Event)
 			h.background(func() {
 				_, err := h.performBranch(ctx, branchPlan{
-					origin:   router.ConvKey{ChannelID: ev.ChannelID, ThreadTS: ev.ThreadTS},
+					origin:   h.keyOf(ev),
 					at:       ev.TS,
 					seed:     arg,
 					actor:    ev.UserID,
@@ -156,7 +156,7 @@ func (h *Handler) branchReaction(ctx context.Context, r slackproto.Reaction) {
 	}
 	rec.ThreadTS = threadOf(m)
 	if _, err := h.performBranch(ctx, branchPlan{
-		origin:   router.ConvKey{ChannelID: r.ChannelID, ThreadTS: rec.ThreadTS},
+		origin:   h.scoped(router.ConvKey{ChannelID: r.ChannelID, ThreadTS: rec.ThreadTS}, slackproto.Event{UserID: r.UserID}),
 		at:       r.TS,
 		seed:     strings.TrimSpace(m.Text),
 		actor:    r.UserID,
@@ -253,7 +253,7 @@ func (h *Handler) performBranch(ctx context.Context, p branchPlan) (branchMade, 
 	// The thread exists now: finish wiring it even if the caller's
 	// deadline (the tool's) runs out, or it is left without a session.
 	ctx = context.WithoutCancel(ctx)
-	child := router.ConvKey{ChannelID: p.origin.ChannelID, ThreadTS: ts}
+	child := router.ConvKey{ChannelID: p.origin.ChannelID, ThreadTS: ts, UserID: p.origin.UserID}
 	if err := h.cfg.Router.SetOrigin(child, router.Origin{ChannelID: p.origin.ChannelID, ThreadTS: p.origin.ThreadTS, BranchTS: p.at}); err != nil {
 		kitlog.Debugf("handler: branch %s: recording origin: %v", child, err)
 	}

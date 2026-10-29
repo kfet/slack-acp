@@ -11,6 +11,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -26,13 +27,64 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 )
 
-// ConvKey identifies a conversation: a Slack thread.
+// ConvKey identifies a conversation: a Slack thread, or — under
+// session_scope "thread_user" — one user's conversation in a thread.
 type ConvKey struct {
 	ChannelID string
 	ThreadTS  string
+	// UserID is set only under session_scope "thread_user": each sender
+	// in a thread gets their own agent session.
+	UserID string
 }
 
-func (k ConvKey) String() string { return k.ChannelID + "/" + k.ThreadTS }
+func (k ConvKey) String() string {
+	s := k.ChannelID + "/" + k.ThreadTS
+	if k.UserID != "" {
+		s += "/" + k.UserID
+	}
+	return s
+}
+
+// Thread is the thread k belongs to, without any per-user component.
+// Thread-wide state (membership, checkpoint, branch origin) is keyed on it.
+func (k ConvKey) Thread() ConvKey { return ConvKey{ChannelID: k.ChannelID, ThreadTS: k.ThreadTS} }
+
+// validate rejects keys whose components could escape the state dir.
+func (k ConvKey) validate() error {
+	if err := validateKeyComponent(k.ChannelID); err != nil {
+		return fmt.Errorf("channel id %q: %w", k.ChannelID, err)
+	}
+	if err := validateKeyComponent(k.ThreadTS); err != nil {
+		return fmt.Errorf("thread ts %q: %w", k.ThreadTS, err)
+	}
+	if k.UserID != "" {
+		if err := validateKeyComponent(k.UserID); err != nil {
+			return fmt.Errorf("user id %q: %w", k.UserID, err)
+		}
+	}
+	return nil
+}
+
+// relDir is k's directory relative to the state dir: the thread's, or
+// a per-user subdirectory of it.
+func (k ConvKey) relDir() string {
+	d := filepath.Join("threads", k.ChannelID, k.ThreadTS)
+	if k.UserID != "" {
+		d = filepath.Join(d, "users", k.UserID)
+	}
+	return d
+}
+
+// PlaceholderCwd is the opaque cwd every ACP call carries under cwd_mode
+// "agent", where the agent chooses the real working directory (typically
+// from the origin _meta). It is a fixed constant, never a path on the
+// relay host.
+const PlaceholderCwd = "/slack-acp/agent-chooses-cwd"
+
+// sessionFile, under cwd_mode "agent", records a conversation's agent
+// session id: the placeholder cwd is shared by every session, so
+// session/list cannot tell conversations apart.
+const sessionFile = "session_id"
 
 // Session holds router-side state for one ACP session.
 type Session struct {
@@ -93,6 +145,7 @@ type Router struct {
 	root         *os.Root // sandbox for per-thread cwd creation
 	idleTimeout  time.Duration
 	systemPrompt string
+	agentCwd     bool // cwd_mode "agent"
 
 	mu    sync.Mutex
 	byKey map[ConvKey]*Session
@@ -115,6 +168,9 @@ type Config struct {
 	//     the session (and re-prefixes after a resume, since intra-
 	//     session compaction may have dropped the prior inlined copy).
 	SystemPrompt string
+	// AgentCwd is cwd_mode "agent": send PlaceholderCwd, not the
+	// conversation's directory.
+	AgentCwd bool
 }
 
 // New constructs a Router. The caller should call Run(ctx) to start GC.
@@ -141,6 +197,7 @@ func New(cfg Config) (*Router, error) {
 		root:         root,
 		idleTimeout:  cfg.IdleTimeout,
 		systemPrompt: cfg.SystemPrompt,
+		agentCwd:     cfg.AgentCwd,
 		byKey:        make(map[ConvKey]*Session),
 		fresh:        make(map[ConvKey]bool),
 	}, nil
@@ -194,14 +251,11 @@ func (r *Router) Known(key ConvKey) bool {
 	if root == nil {
 		return false
 	}
-	if err := validateKeyComponent(key.ChannelID); err != nil {
+	key = key.Thread()
+	if key.validate() != nil {
 		return false
 	}
-	if err := validateKeyComponent(key.ThreadTS); err != nil {
-		return false
-	}
-	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS)
-	_, err := root.Stat(rel)
+	_, err := root.Stat(key.relDir())
 	return err == nil
 }
 
@@ -239,14 +293,11 @@ func (r *Router) GetLastTS(key ConvKey) string {
 	if root == nil {
 		return ""
 	}
-	if err := validateKeyComponent(key.ChannelID); err != nil {
+	key = key.Thread()
+	if key.validate() != nil {
 		return ""
 	}
-	if err := validateKeyComponent(key.ThreadTS); err != nil {
-		return ""
-	}
-	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS, "last_ts")
-	b, err := root.ReadFile(rel)
+	b, err := root.ReadFile(filepath.Join(key.relDir(), "last_ts"))
 	if err != nil {
 		return ""
 	}
@@ -262,14 +313,11 @@ func (r *Router) SetLastTS(key ConvKey, ts string) error {
 	if root == nil {
 		return fmt.Errorf("router closed")
 	}
-	if err := validateKeyComponent(key.ChannelID); err != nil {
+	key = key.Thread()
+	if err := key.validate(); err != nil {
 		return err
 	}
-	if err := validateKeyComponent(key.ThreadTS); err != nil {
-		return err
-	}
-	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS, "last_ts")
-	return root.WriteFile(rel, []byte(ts+"\n"), 0o644)
+	return root.WriteFile(filepath.Join(key.relDir(), "last_ts"), []byte(ts+"\n"), 0o644)
 }
 
 // cwdFor returns the stable per-thread working directory for key and
@@ -286,13 +334,10 @@ func (r *Router) SetLastTS(key ConvKey, ts string) error {
 //     StateDir sandbox, so even a future refactor that bypassed step 1
 //     could not escape the state root on disk.
 func (r *Router) cwdFor(key ConvKey) (string, error) {
-	if err := validateKeyComponent(key.ChannelID); err != nil {
-		return "", fmt.Errorf("channel id %q: %w", key.ChannelID, err)
+	if err := key.validate(); err != nil {
+		return "", err
 	}
-	if err := validateKeyComponent(key.ThreadTS); err != nil {
-		return "", fmt.Errorf("thread ts %q: %w", key.ThreadTS, err)
-	}
-	rel := filepath.Join("threads", key.ChannelID, key.ThreadTS)
+	rel := key.relDir()
 	if err := r.root.MkdirAll(rel, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir thread cwd: %w", err)
 	}
@@ -307,11 +352,76 @@ func (r *Router) cwdFor(key ConvKey) (string, error) {
 // The key is bound server-side from the connection token by mcphost, so
 // this value is what the tools see as the caller's identity; it is never
 // supplied by the agent and cannot be spoofed.
+//
+// A per-user directory (<thread>/users/<user>) maps to "channel/ts/user".
+// PlaceholderCwd (cwd_mode "agent") names no conversation and maps to "".
 func SessionKeyForCwd(cwd string) string {
+	if cwd == PlaceholderCwd {
+		return ""
+	}
+	var user string
+	if filepath.Base(filepath.Dir(cwd)) == "users" {
+		user = "/" + filepath.Base(cwd)
+		cwd = filepath.Dir(filepath.Dir(cwd))
+	}
 	thread := filepath.Base(cwd)
 	channel := filepath.Base(filepath.Dir(cwd))
-	return channel + "/" + thread
+	return channel + "/" + thread + user
 }
+
+// wireCwd is the cwd the agent is told for a conversation whose relay
+// directory is dir: dir itself, or PlaceholderCwd under cwd_mode "agent".
+func (r *Router) wireCwd(dir string) string {
+	if r.agentCwd {
+		return PlaceholderCwd
+	}
+	return dir
+}
+
+// remember records sid as key's agent session under cwd_mode "agent",
+// where it is the only way back to the session after GC or a restart.
+// Best-effort: a lost record costs a fresh session, never correctness.
+func (r *Router) remember(key ConvKey, sid acp.SessionId) {
+	if !r.agentCwd {
+		return
+	}
+	if err := r.root.WriteFile(filepath.Join(key.relDir(), sessionFile), []byte(string(sid)+"\n"), 0o644); err != nil {
+		kitlog.Debugf("router: record session %s for %s: %v", sid, key, err)
+	}
+}
+
+// storedSession names key's newest agent-side session without opening
+// it: the recorded id under cwd_mode "agent", else the head of
+// session/list for the conversation's directory.
+func (r *Router) storedSession(ctx context.Context, key ConvKey, dir string) (acp.SessionId, error) {
+	if r.agentCwd {
+		b, err := r.root.ReadFile(filepath.Join(key.relDir(), sessionFile))
+		sid := strings.TrimSpace(string(b))
+		if err != nil || sid == "" {
+			return "", errNoSession
+		}
+		return acp.SessionId(sid), nil
+	}
+	if !r.agent.Caps().ListSessions {
+		return "", errNoList
+	}
+	sessions, err := r.agent.ListSessions(ctx, dir)
+	if err != nil {
+		return "", fmt.Errorf("listing sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		return "", errNoSession
+	}
+	// The cwd is per-conversation so there's typically just one entry;
+	// if multiple exist we trust the agent's ordering (fir lists
+	// most-recent-first).
+	return acp.SessionId(sessions[0].SessionId), nil
+}
+
+var (
+	errNoSession = errors.New("no session to resume")
+	errNoList    = errors.New("the agent cannot list sessions")
+)
 
 // validateKeyComponent rejects values that could escape or distort the
 // state-dir layout when joined into a path.
@@ -364,7 +474,7 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.Sessi
 	var sid acp.SessionId
 	resumed := false
 	if !fresh {
-		sid, resumed = r.tryResume(ctx, cwd, sink)
+		sid, resumed = r.tryResume(ctx, key, cwd, sink)
 	}
 	caps := r.agent.Caps()
 	pendingInline := false
@@ -378,7 +488,7 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.Sessi
 			}
 		}
 		var nerr error
-		sid, nerr = r.agent.NewSession(ctx, cwd, sink, sysBlocks)
+		sid, nerr = r.agent.NewSession(ctx, r.wireCwd(cwd), sink, sysBlocks)
 		if nerr != nil {
 			// Stable cwd: leave it on disk for the next attempt.
 			return nil, fmt.Errorf("new acp session: %w", nerr)
@@ -405,6 +515,7 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.Sessi
 	}
 	r.byKey[key] = s
 	delete(r.fresh, key)
+	r.remember(key, sid)
 	if resumed {
 		kitlog.Debugf("router: resumed session %s for %s in %s", sid, key, cwd)
 	} else {
@@ -413,35 +524,25 @@ func (r *Router) GetOrCreate(ctx context.Context, key ConvKey, sink client.Sessi
 	return s, nil
 }
 
-// tryResume attempts to reattach to a prior agent-side session for the
-// given cwd via the unstable session/list + session/resume RPCs. Returns
-// (sid, true) on success, ("", false) on any failure or when the agent
-// doesn't advertise the caps. Always best-effort — the caller falls back
-// to NewSession on false.
+// tryResume attempts to reattach to a prior agent-side session for key
+// via session/resume: the head of session/list for its directory, or
+// under cwd_mode "agent" the recorded session id. Returns (sid, true)
+// on success, ("", false) on any failure or when the agent doesn't
+// advertise the caps. Always best-effort — the caller falls back to
+// NewSession on false.
 //
 // Roadmap (docs/design.md): when only Caps().LoadSession is advertised,
-// fall back to the standard session/load. That path needs a persisted
-// (ConvKey → SessionId) map under StateDir, since session/load takes a
-// sessionId and there is no standard list method.
-func (r *Router) tryResume(ctx context.Context, cwd string, sink client.SessionUpdateSink) (acp.SessionId, bool) {
-	caps := r.agent.Caps()
-	if !caps.ListSessions || !caps.ResumeSession {
+// fall back to the standard session/load.
+func (r *Router) tryResume(ctx context.Context, key ConvKey, cwd string, sink client.SessionUpdateSink) (acp.SessionId, bool) {
+	if !r.agent.Caps().ResumeSession {
 		return "", false
 	}
-	sessions, err := r.agent.ListSessions(ctx, cwd)
+	sid, err := r.storedSession(ctx, key, cwd)
 	if err != nil {
-		kitlog.Debugf("router: list sessions for %s: %v", cwd, err)
+		kitlog.Debugf("router: no session to resume for %s: %v", key, err)
 		return "", false
 	}
-	if len(sessions) == 0 {
-		return "", false
-	}
-	// Pick the head. The cwd is per-thread so there's typically just
-	// one entry; if multiple exist we trust the agent's ordering
-	// (fir lists most-recent-first) and let any mismatch fail through
-	// to NewSession on the next message.
-	sid := acp.SessionId(sessions[0].SessionId)
-	if err := r.agent.ResumeSession(ctx, cwd, sid, sink); err != nil {
+	if err := r.agent.ResumeSession(ctx, r.wireCwd(cwd), sid, sink); err != nil {
 		kitlog.Debugf("router: resume %s in %s: %v", sid, cwd, err)
 		return "", false
 	}

@@ -29,6 +29,25 @@ var adminVerbs = map[string]bool{
 	"logout":       true,
 }
 
+// loginVerbs are the admin verbs that manage the agent's credentials.
+// Under cwd_mode "agent" the agent keys credentials on the sender (from
+// the origin _meta), so these are each sender's own and not owner-only.
+var loginVerbs = map[string]bool{
+	"login":        true,
+	"logins":       true,
+	"cancel-login": true,
+	"logout":       true,
+}
+
+// adminVerb returns the owner-only verb text invokes, if any.
+func (h *Handler) adminVerb(text string) (string, bool) {
+	verb, ok := adminVerb(text)
+	if ok && h.cfg.AgentCwd && loginVerbs[verb] {
+		return verb, false
+	}
+	return verb, ok
+}
+
 // adminVerb returns the admin verb text invokes, if any.
 func adminVerb(text string) (string, bool) {
 	body, ok := command.StripSigil(text)
@@ -52,7 +71,7 @@ func (h *Handler) isOwner(ev slackproto.Event) bool {
 
 // ownerRefuses reports whether ownerFilter refuses text from ev.
 func (h *Handler) ownerRefuses(ev slackproto.Event, text string) bool {
-	_, admin := adminVerb(text)
+	_, admin := h.adminVerb(text)
 	return admin && !h.isOwner(ev)
 }
 
@@ -63,12 +82,14 @@ func (h *Handler) ownerRefuses(ev slackproto.Event, text string) bool {
 func (h *Handler) ownerFilter(ctx context.Context, in *convo.In) convo.Verdict {
 	ev := in.Meta.(slackproto.Event)
 	owner := h.isOwner(ev)
-	verb, ok := adminVerb(in.Text)
+	verb, ok := h.adminVerb(in.Text)
 	if !ok {
 		// An owner's pending login takes the thread's next message as
 		// its redirect URL; a non-owner's message must not complete it.
+		// Under cwd_mode "agent" a login is its sender's (tokenOf), so
+		// nobody else's message can reach it.
 		_, isCmd := command.StripSigil(in.Text)
-		if !owner && !isCmd && h.convo.Broker().HasPending(in.Conv) {
+		if !h.cfg.AgentCwd && !owner && !isCmd && h.convo.Broker().HasPending(in.Conv) {
 			return convo.Forward
 		}
 		return convo.Pass

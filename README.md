@@ -219,6 +219,32 @@ journalctl --user -u slack-acp | grep 'catch-up:'
 
 See [`docs/catch-up.md`](docs/catch-up.md).
 
+### Sessions, identity and working directories
+
+Every ACP session call — `session/new`, `session/resume` (and the
+`session/load` acp-kit replays after an agent respawn), `session/fork`
+and every `session/prompt` — carries the triggering Slack message in
+`_meta["dev.acp-kit.origin/v1"]` (`platform: "slack"`, team, user,
+channel, thread, message ts, DM/mention flags). That is the only place
+the sender's identity travels: prompt text never carries a `[name]`
+prefix. (Catch-up and backfill turns, which replay several people's
+missed messages at once, still label each replayed line with its
+author.)
+
+```json
+{
+  "session_scope": "thread",
+  "cwd_mode": "local"
+}
+```
+
+| Key | Value | Effect |
+| --- | --- | --- |
+| `session_scope` | `thread` *(default)* | One agent session per Slack thread, shared by everyone in it. A new message supersedes the thread's running turn. |
+| | `thread_user` | One agent session per (thread, sender). Each message goes to its sender's session; replies in a shared thread start with an @-mention of the user they answer (DMs have one human and get none); a new message supersedes only **that user's** running turn. Per-user state lives in `<state_dir>/threads/<channel>/<ts>/users/<user>`. |
+| `cwd_mode` | `local` *(default)* | The agent is told the per-conversation directory under `state_dir`. |
+| | `agent` | The agent is told the fixed placeholder `/slack-acp/agent-chooses-cwd` — never a path on the relay host — and picks the real cwd itself (e.g. from the origin `_meta`). The relay records each conversation's session id under `state_dir`, so resume after idle GC or a restart still works without `session/list`. The login commands (`!login`, `!logins`, `!cancel-login`, `!logout`) stop being owner-only: each sender logs in for themselves, and a pending login only takes **its sender's** next message as the redirect. Other admin verbs stay owner-only. The relay's `slack` MCP server cannot bind a session to its thread from the placeholder, so it is not offered in this mode (no `slack_*`, `history` or `branch` tools), and the relay cannot see the agent's `./outbox/` (reply attachments are not uploaded). Inbound attachments are still saved under `state_dir` and named by absolute path, so the agent must share the relay's filesystem to read them. |
+
 ### Agent Slack access
 
 The spawned agent can reach Slack beyond the thread it is answering in —

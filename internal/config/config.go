@@ -182,6 +182,46 @@ type Config struct {
 	// self_drive_per_minute. Ignored unless HumanAuthorUserIDs is set.
 	// 0 = default 12.
 	HumanAuthorPerMinute int `json:"human_author_per_minute,omitempty"`
+
+	// SessionScope picks what one agent session serves: "thread"
+	// (default) — one session per Slack thread, shared by everyone in
+	// it — or "thread_user" — one session per (thread, sender). Under
+	// "thread_user" each message goes to its sender's session, replies
+	// @-mention the user they answer, and a new message supersedes only
+	// that sender's in-flight turn.
+	SessionScope string `json:"session_scope,omitempty"`
+
+	// CwdMode picks who chooses an agent session's working directory:
+	// "local" (default) — a per-thread directory under state_dir — or
+	// "agent" — the relay sends the opaque placeholder
+	// "/slack-acp/agent-chooses-cwd" and the agent picks the real cwd
+	// (e.g. from the origin _meta). Under "agent" the login commands
+	// are not owner-only: each sender logs in their own session.
+	CwdMode string `json:"cwd_mode,omitempty"`
+}
+
+// Accepted values for Config.SessionScope and Config.CwdMode.
+const (
+	SessionScopeThread     = "thread"
+	SessionScopeThreadUser = "thread_user"
+	CwdModeLocal           = "local"
+	CwdModeAgent           = "agent"
+)
+
+// GetSessionScope returns the session scope, defaulting to "thread".
+func (c *Config) GetSessionScope() string {
+	if c.SessionScope == "" {
+		return SessionScopeThread
+	}
+	return c.SessionScope
+}
+
+// GetCwdMode returns the cwd mode, defaulting to "local".
+func (c *Config) GetCwdMode() string {
+	if c.CwdMode == "" {
+		return CwdModeLocal
+	}
+	return c.CwdMode
 }
 
 // Load reads and validates the config file.
@@ -228,6 +268,16 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("agent_slack_access must be one of %q, %q or %q (got %q)",
 			AgentSlackAccessOff, AgentSlackAccessRead, AgentSlackAccessReadWrite, c.AgentSlackAccess)
+	}
+	switch c.SessionScope {
+	case "", SessionScopeThread, SessionScopeThreadUser:
+	default:
+		return fmt.Errorf("session_scope must be %q or %q (got %q)", SessionScopeThread, SessionScopeThreadUser, c.SessionScope)
+	}
+	switch c.CwdMode {
+	case "", CwdModeLocal, CwdModeAgent:
+	default:
+		return fmt.Errorf("cwd_mode must be %q or %q (got %q)", CwdModeLocal, CwdModeAgent, c.CwdMode)
 	}
 	if c.SelfDriveSentinel != "" {
 		// Short tokens are the dangerous case: the hatch reopens the

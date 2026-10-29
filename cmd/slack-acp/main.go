@@ -168,7 +168,13 @@ func main() {
 			// Mint a fresh per-session token bound to this thread. The
 			// session key is derived server-side from the token, never
 			// sent by the agent, so it cannot be spoofed.
-			return mcpHost.ServerConfigForSession(router.SessionKeyForCwd(cwd))
+			// cwd_mode "agent" sends a placeholder naming no thread:
+			// no session key, so no slack tools for that session.
+			key := router.SessionKeyForCwd(cwd)
+			if key == "" {
+				return nil
+			}
+			return mcpHost.ServerConfigForSession(key)
 		}
 	}
 
@@ -188,6 +194,7 @@ func main() {
 		StateDir:     cfg.StateDir,
 		IdleTimeout:  cfg.IdleTimeout(),
 		SystemPrompt: sysprompt.Resolve(cfg.SystemPrompt, cfg.DisableSystemPrompt, buildSkillsCatalog(*configPath)),
+		AgentCwd:     cfg.GetCwdMode() == config.CwdModeAgent,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -222,6 +229,8 @@ func main() {
 	}
 	h := handler.New(handler.Config{
 		Router:              r,
+		PerUserSessions:     cfg.GetSessionScope() == config.SessionScopeThreadUser,
+		AgentCwd:            cfg.GetCwdMode() == config.CwdModeAgent,
 		AllowedUserIDs:      allowedUsers,
 		OwnerUserIDs:        toSet(cfg.OwnerUserIDs),
 		AllowedChannelIDs:   allowedChannels,

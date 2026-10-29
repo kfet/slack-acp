@@ -413,3 +413,23 @@ func TestAgentPostsPerMinute(t *testing.T) {
 		t.Fatal("negative agent_posts_per_minute accepted")
 	}
 }
+
+func TestSessionScopeAndCwdMode(t *testing.T) {
+	var c Config
+	if c.GetSessionScope() != SessionScopeThread || c.GetCwdMode() != CwdModeLocal {
+		t.Fatal("defaults")
+	}
+	c.SessionScope, c.CwdMode = SessionScopeThreadUser, CwdModeAgent
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.GetSessionScope() != SessionScopeThreadUser || c.GetCwdMode() != CwdModeAgent {
+		t.Fatal("getters")
+	}
+	if err := (&Config{SessionScope: "user"}).Validate(); err == nil || !strings.Contains(err.Error(), "session_scope") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := (&Config{CwdMode: "remote"}).Validate(); err == nil || !strings.Contains(err.Error(), "cwd_mode") {
+		t.Fatalf("err = %v", err)
+	}
+}

@@ -77,7 +77,7 @@ func (h *Handler) CatchUp(ctx context.Context, evs []slackproto.Event) {
 			continue
 		}
 		if addressed(ev) {
-			summoned[key] = true
+			summoned[key.Thread()] = true
 		}
 		if tsTime(ev.TS).Before(oldest) {
 			rec.Decision, rec.Reason = journal.DecisionDrop, journal.ReasonCatchUpTooOld
@@ -189,7 +189,8 @@ func (h *Handler) catchupLine(ctx context.Context, ev slackproto.Event, text str
 		// turn.
 		text = fmt.Sprintf("(shared %d %s)", len(ev.Files), plural(len(ev.Files), "file", "files"))
 	}
-	if h.cfg.Ambient && !ev.IsDM && ev.UserID != "" {
+	// A per-user turn has a single sender (named in its origin _meta).
+	if h.cfg.Ambient && !h.cfg.PerUserSessions && !ev.IsDM && ev.UserID != "" {
 		return fmt.Sprintf("[%s] %s", h.getUserName(ctx, ev.UserID), text)
 	}
 	return text

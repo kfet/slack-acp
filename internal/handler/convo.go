@@ -32,10 +32,11 @@ func (h *Handler) newConvo() (*convo.Manager, error) {
 			NoProgressTimeout: h.cfg.NoProgressTimeout,
 			MaxTurnDuration:   h.cfg.TurnCeiling,
 		},
-		Sink: convo.SinkFunc(h.reply),
+		Sink:  convo.SinkFunc(h.reply),
+		Hooks: convo.Hooks{Resolve: resolveToken},
 		Run: func(ctx context.Context, _ *convo.Turn, in *convo.In, prompt string) error {
 			ev := in.Meta.(slackproto.Event)
-			return h.run(ctx, ev, router.ConvKey{ChannelID: ev.ChannelID, ThreadTS: ev.ThreadTS}, prompt)
+			return h.run(ctx, ev, h.keyOf(ev), prompt)
 		},
 		OnError: func(_ string, err error) { kitlog.Debugf("handler: prompt error: %v", err) },
 		Logf:    kitlog.Debugf,
@@ -53,6 +54,7 @@ func (h *Handler) reply(ctx context.Context, in *convo.In, text string) error {
 	first, _, _ := strings.Cut(text, "\n")
 	kitlog.Debugf("handler: command %q in %s: %s", in.Text, in.Conv, first)
 	stream := slackproto.NewPostStreamer(h.cfg.API, ev.ChannelID, ev.ThreadTS)
+	stream.SetAddressee(h.addressee(ev))
 	stream.SetSelfDrive(h.cfg.SelfDrive)
 	if err := stream.Append(ctx, toMrkdwn(text)); err != nil {
 		return err
@@ -69,8 +71,9 @@ func toMrkdwn(s string) string { return strings.ReplaceAll(s, "**", "*") }
 type routerSessions struct{ r *router.Router }
 
 func parseKey(conv string) router.ConvKey {
-	ch, ts, _ := strings.Cut(conv, "/")
-	return router.ConvKey{ChannelID: ch, ThreadTS: ts}
+	ch, rest, _ := strings.Cut(conv, "/")
+	ts, user, _ := strings.Cut(rest, "/")
+	return router.ConvKey{ChannelID: ch, ThreadTS: ts, UserID: user}
 }
 
 func (s routerSessions) Live(conv string) (acp.SessionId, time.Time, bool) {

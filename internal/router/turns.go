@@ -81,7 +81,7 @@ func (r *Router) TurnLeaf(key ConvKey, ts string) string {
 }
 
 func (r *Router) turnsPath(key ConvKey) string {
-	return filepath.Join("threads", key.ChannelID, key.ThreadTS, turnsFile)
+	return filepath.Join(key.relDir(), turnsFile)
 }
 
 // turns reads key's turn log; missing or unreadable is empty.
@@ -90,7 +90,7 @@ func (r *Router) turns(key ConvKey) []Turn {
 	r.mu.Lock()
 	root := r.root
 	r.mu.Unlock()
-	if root == nil || validateKeyComponent(key.ChannelID) != nil || validateKeyComponent(key.ThreadTS) != nil {
+	if root == nil || key.validate() != nil {
 		return nil
 	}
 	b, err := root.ReadFile(r.turnsPath(key))

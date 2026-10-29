@@ -36,6 +36,7 @@ import (
 type Event struct {
 	UserID    string // sender
 	BotUserID string // our bot's user id (for stripping mentions)
+	TeamID    string // the workspace the bot is connected to
 	ChannelID string
 	// ThreadTS is the parent thread (== TS for a top-level message).
 	ThreadTS string
@@ -159,6 +160,7 @@ type Client struct {
 	api       *slack.Client
 	sm        *socketmode.Client
 	botUserID string
+	teamID    string
 	handler   Handler
 	selfDrive *SelfDrive // nil = hatch off (the default)
 	// humanAuthors names user ids whose API-authored (bot_id-stamped)
@@ -255,6 +257,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("slack auth.test: %w", err)
 	}
 	c.botUserID = auth.UserID
+	c.teamID = auth.TeamID
 	kitlog.Debugf("slack: connected as %s (%s)", auth.User, auth.UserID)
 
 	// Learn our own app id, but only when the reclassification is
@@ -722,6 +725,7 @@ func mentionsBot(text, botID string) bool {
 
 func (c *Client) deliver(ctx context.Context, ev Event) {
 	ev.BotUserID = c.botUserID
+	ev.TeamID = c.teamID
 	if c.handler != nil {
 		c.handler.Handle(ctx, ev)
 	}
@@ -822,6 +826,11 @@ type PostStreamer struct {
 	// re-checks placeholderDone after acquiring sendMu so a
 	// late-loser doesn't issue its update at all.
 	sendMu sync.Mutex
+
+	// addressee, when set, is @-mentioned at the head of every body
+	// posted (session_scope "thread_user": a reply names the user it
+	// answers in a thread several people share).
+	addressee string
 }
 
 // NewPostStreamer creates a streamer that will post in `channel` as a thread
@@ -855,15 +864,28 @@ func (s *PostStreamer) SetSelfDrive(d *SelfDrive) {
 	s.mu.Unlock()
 }
 
+// SetAddressee makes every posted body start with an @-mention of
+// userID. "" (the default) posts bodies unchanged.
+func (s *PostStreamer) SetAddressee(userID string) {
+	s.mu.Lock()
+	s.addressee = userID
+	s.mu.Unlock()
+}
+
 // out prepares a body for transmission: the sentinel is neutralised so
 // the relay can never post its own trigger. This is loop guard #1 — it
 // makes an echo loop structurally impossible rather than merely
-// unlikely, independent of how Accept matches.
+// unlikely, independent of how Accept matches. The addressee mention,
+// if any, is prefixed after the scrub.
 func (s *PostStreamer) out(body string) string {
 	s.mu.Lock()
-	d := s.selfDrive
+	d, to := s.selfDrive, s.addressee
 	s.mu.Unlock()
-	return d.Scrub(body)
+	body = d.Scrub(body)
+	if to != "" {
+		body = "<@" + to + "> " + body
+	}
+	return body
 }
 
 // recordTS remembers a ts we just wrote, so the inbound path can skip
