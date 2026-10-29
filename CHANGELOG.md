@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-29
+
 ### Added
 
 - `session_scope`: `thread` (default) or `thread_user` — one agent session per (thread, sender); replies @-mention the user they answer and a message supersedes only its sender's turn.
