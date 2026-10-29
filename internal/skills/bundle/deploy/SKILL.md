@@ -26,6 +26,10 @@ ACP session inside a long-lived agent process (`fir --mode acp`,
    to keep thread sessions resumable.
 5. **Allowlist (optional)** — `allowed_user_ids` in `config.json` if
    you want to limit who can trigger the bot.
+6. **Owners** — `owner_user_ids`: who may run operator commands
+   (`!fir`, `!run`, `!skills`, `!update`, `!login`, `!logins`,
+   `!cancel-login`, `!logout`). Fails closed: unset means nobody, so
+   `!login` stops working.
 
 ## Slack app prep (one-time, before deploying)
 
@@ -35,7 +39,8 @@ Done in the Slack admin UI at https://api.slack.com/apps:
    (`xapp-…`) with `connections:write`.
 2. Bot scopes: create the app from `docs/slack-app-manifest.json`,
    which carries the full set (`app_mentions:read`, `chat:write`,
-   `channels:*`, `groups:*`, `im:*`, `reactions:read`, `users:read`).
+   `channels:*`, `files:read`, `files:write`, `groups:*`, `im:*`,
+   `reactions:read`, `users:read`).
    Install to workspace; copy the bot token (`xoxb-…`).
 3. Events (also in the manifest): `app_mention`, `message.channels`,
    `message.groups`, `message.im`, `reaction_added` (the
@@ -108,6 +113,8 @@ Optionally `~/.config/slack-acp/config.json`:
 {
   "agent_cmd": ["fir", "--mode", "acp"],
   "allowed_user_ids": ["U0123ABC"],
+  "owner_user_ids": ["U0123ABC"],
+  "catchup_max_age_seconds": 86400,
   "state_dir": "/home/<user>/.local/state/slack-acp"
 }
 ```
@@ -218,6 +225,55 @@ ssh <host> 'journalctl --user -u slack-acp -f'
 Look for: Socket Mode connect, per-thread cwd creation, ACP
 `initialize` handshake, and `session/prompt` traffic.
 
+## Rolling out v0.15–v0.17 (owner gate, attachments, catch-up)
+
+Upgrading a bot from before v0.15.0 changes behaviour in three places.
+Do these **before** restarting on the new binary:
+
+1. **Scopes: `files:read` + `files:write` (v0.16.0).** Confirm
+   `docs/slack-app-manifest.json` lists both under
+   `oauth_config.scopes.bot`. In the app's admin page add them (or paste
+   the manifest), then **Install App → Reinstall to Workspace**. Without
+   the reinstall the token lacks them: inbound attachments fail to
+   download and `outbox/` uploads fail with `missing_scope`. `slack-acp verify`'s
+   `dm_file_share` check also needs both on the *user* token.
+2. **`owner_user_ids` (v0.15.0).** Set it in `config.json` (fleet bot:
+   in its registry `config`). Gated: `!fir`, `!run`, `!skills`,
+   `!update`, `!login`, `!logins`, `!cancel-login`, `!logout`. Unset =
+   nobody may run them; non-owners get an owner-only refusal (journal
+   reason `owner_only`).
+3. **Catch-up (v0.17.0).** Nothing to configure by default. Checkpoints
+   are written to `<state_dir>/catchup.json`; the first run starts at
+   "now", so the upgrade itself replays nothing. `catchup_max_age_seconds`
+   (default 86400) bounds what gets answered — older misses get a notice;
+   `0` disables catch-up entirely. `state_dir` must persist, or every
+   restart is a first run. **Rate limits are unmeasured:** Slack clamps
+   `conversations.history`/`.replies` to ~1 call/min for commercially
+   distributed non-Marketplace apps, and no clamped install has been
+   observed yet. Watch the logs on the first reconnect for 429s and the
+   `catch-up:` summary line (API calls, rate-limited, waited, took).
+   See `docs/catch-up.md`.
+
+### Post-deploy check list
+
+- [ ] The **running** version is ≥ v0.17.0 (`fleet.sh status` reads the
+      live process; `--version` only reads the binary on disk).
+- [ ] App reinstalled; `files:read` and `files:write` granted.
+- [ ] `owner_user_ids` set; an owner's `!update --check` runs, a
+      non-owner's gets the owner-only refusal.
+- [ ] DM a small file to the bot: the agent sees it (thread
+      `inbox/<ts>/`) and replies.
+- [ ] Ask the agent to put a file in `outbox/`: it is uploaded to the
+      thread at turn end and moved to `outbox/.sent/`.
+- [ ] `<state_dir>/catchup.json` exists after the first connect.
+- [ ] With `catchup.json` already written, stop the service, mention
+      the bot, start it again: the mention is answered once.
+- [ ] Logs after that reconnect: one `catch-up:` line, no repeated
+      `429`/rate-limited counts. `journalctl --user -u slack-acp | grep -E 'catch-up:|429'`
+- [ ] Optional: `slack-acp verify` (with `--outage-stop-cmd` /
+      `--outage-start-cmd`) passes `owner_gate_refused`, `dm_file_share`,
+      `catch_up_mention_answered`, `catch_up_command_skipped`.
+
 ## Upgrading
 
 See `update` skill (`internal/skills/bundle/update/SKILL.md`). Quick reference:
@@ -246,6 +302,12 @@ See `update` skill (`internal/skills/bundle/update/SKILL.md`). Quick reference:
 - **Mixed install methods** — if both `~/.local/bin/slack-acp` and a
   go-installed copy exist, the unit's `ExecStart` pins one. Upgrade
   whichever the unit points at.
+- **Attachments fail with `missing_scope`** — `files:read` /
+  `files:write` added but the app not reinstalled.
+- **`!login` refused for everyone** — `owner_user_ids` unset; the gate
+  fails closed.
+- **Old messages answered after restart** — `state_dir` (and its
+  `catchup.json`) was not persisted.
 - **Bot feedback loop** — handled in code (filters its own messages by
   `BotID` + `User == botUserID`). If you see the bot replying to its
   own posts, that filter regressed — file a bug.
@@ -263,6 +325,7 @@ See `update` skill (`internal/skills/bundle/update/SKILL.md`). Quick reference:
 - [ ] DM smoke test round-trips.
 - [ ] Channel `@mention` smoke test round-trips.
 - [ ] Threaded follow-up reuses the same session (check `state_dir`).
+- [ ] v0.15–v0.17 post-deploy check list above is done.
 
 ## Finish on the FLEET, not on one host
 

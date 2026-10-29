@@ -12,6 +12,7 @@
   "agent_slack_access": "read",
   "agent_posts_per_minute": 10,
   "max_attachment_bytes": 20971520,
+  "catchup_max_age_seconds": 86400,
   "model_probe_budget_seconds": 300,
   "system_prompt": "",
   "disable_system_prompt": false,

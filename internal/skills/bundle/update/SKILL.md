@@ -52,6 +52,11 @@ unless they want a forced restart.
 
 ### 3. Pick the upgrade path
 
+Crossing v0.15.0–v0.17.0 from an older version? First do the pre-steps in
+the deploy skill's "Rolling out v0.15–v0.17" section (reinstall the app
+for `files:read`/`files:write`, set `owner_user_ids`), and run its
+post-deploy check list after the restart.
+
 **Brew + launchd (typical macOS):**
 ```bash
 brew update && brew upgrade slack-acp

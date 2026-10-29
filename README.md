@@ -186,6 +186,39 @@ built-in defaults.
 directory, and agent command without starting the bot — handy
 for verifying what a unit file or env will actually use.
 
+### Owner-only commands
+
+`owner_user_ids` lists the Slack user ids allowed to run the relay's
+operator commands: `!fir`, `!run`, `!skills`, `!update`, the login family
+(`!login`, `!logins`, `!cancel-login`) and `!logout`. Anyone else gets a
+one-line "owner-only" refusal and the message never reaches the agent
+(journal reason `owner_only`). The gate **fails closed**: with
+`owner_user_ids` unset, nobody may run them — set it before upgrading
+past v0.15.0 if you use `!login`. Conversation commands (`!model`,
+`!branch`, …) are not gated.
+
+### Catch-up after a disconnect
+
+On every Socket Mode connect the relay reads the history it missed and
+answers mentions, DMs and ambient thread replies once. Checkpoints live
+in `<state_dir>/catchup.json`; the first run (and any channel joined
+later) starts at "now", so nothing old replays — keep `state_dir`
+persistent or every restart is a first run. Missed messages older than
+`catchup_max_age_seconds` (default 86400, `0` disables catch-up) get a
+one-line notice instead of an answer. Relay commands sent during the
+outage are not run late.
+
+Slack clamps `conversations.history` / `.replies` hard for commercially
+distributed non-Marketplace apps; how the relay fares under that clamp
+has **not been measured**. Each run logs its cost — watch the first
+reconnect after a deploy for 429s:
+
+```bash
+journalctl --user -u slack-acp | grep 'catch-up:'
+```
+
+See [`docs/catch-up.md`](docs/catch-up.md).
+
 ### Agent Slack access
 
 The spawned agent can reach Slack beyond the thread it is answering in —
