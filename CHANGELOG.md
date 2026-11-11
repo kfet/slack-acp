@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-11
+
 ### Added
 
 - MCP files tools on the relay-hosted `slack` server (acp-kit v0.45.0): `send_file` into the session's own thread — inline, or for large files a pre-signed `files.getUploadURLExternal` target the agent's client uploads to directly, finished with `files.completeUploadExternal`; and `list_attachments` / `fetch_attachment` through a one-shot relay download proxy (`files_listen`, `files_public_base_url`). New `max_send_file_bytes`. See `docs/files.md`.
