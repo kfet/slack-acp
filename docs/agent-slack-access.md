@@ -251,3 +251,7 @@ Everything else it needs (`channels:history`, `groups:history`,
 `chat:write.public` is deliberately **not** requested, and a test
 enforces its absence: bot membership is what bounds where an
 agent-initiated post can land.
+
+## Files
+
+The same server carries `send_file`, `list_attachments` and `fetch_attachment`, bound to the session's own thread. See [files.md](files.md).

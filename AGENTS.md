@@ -24,6 +24,7 @@ internal/installsvc/  systemd / launchd supervisor unit generator
 internal/ratelimit/   shared token bucket (self-drive hatch + agent posts)
 internal/router/      (channel,thread_ts) → ACP session map + GC
 internal/skills/      embedded skill bundle + fir-style catalog (wraps `acp-kit/skills`)
+internal/slackfiles/  MCP files tools: send_file uploads, attachment download proxy
 internal/slackmcp/    relay-hosted `slack` MCP server (agent-initiated Slack calls)
 internal/slackproto/  Socket Mode client + throttled message streamer
 internal/journal/     stable JSONL ingest-decision records (deliver/run/drop + reason)

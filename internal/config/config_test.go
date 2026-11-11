@@ -433,3 +433,32 @@ func TestSessionScopeAndCwdMode(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestValidateFiles(t *testing.T) {
+	bad := []Config{
+		{MaxSendFileBytes: -1},
+		{FilesListen: "127.0.0.1:1"},
+		{FilesPublicBaseURL: "https://x.example"},
+		{FilesListen: ":1", FilesPublicBaseURL: "http://x.example"},
+		{FilesListen: ":1", FilesPublicBaseURL: "https://u:p@x.example"},
+		{FilesListen: ":1", FilesPublicBaseURL: "https://x.example/?q=1"},
+		{FilesListen: ":1", FilesPublicBaseURL: "https:///nohost"},
+		{FilesListen: ":1", FilesPublicBaseURL: "https://x.example/#f"},
+		{FilesListen: ":1", FilesPublicBaseURL: "%zz"},
+	}
+	for _, c := range bad {
+		if err := c.Validate(); err == nil {
+			t.Errorf("%+v: want error", c)
+		}
+	}
+	ok := Config{FilesListen: "unix:/tmp/s", FilesPublicBaseURL: "https://x.example/relay"}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !ok.FilesProxyEnabled() || (&Config{}).FilesProxyEnabled() {
+		t.Fatal("FilesProxyEnabled")
+	}
+	if (&Config{}).GetMaxSendFileBytes() != 100<<20 || (&Config{MaxSendFileBytes: 5}).GetMaxSendFileBytes() != 5 {
+		t.Fatal("GetMaxSendFileBytes")
+	}
+}

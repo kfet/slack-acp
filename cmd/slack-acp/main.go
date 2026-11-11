@@ -31,6 +31,7 @@ import (
 	"github.com/kfet/slack-acp/internal/probe"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/skills"
+	"github.com/kfet/slack-acp/internal/slackfiles"
 	"github.com/kfet/slack-acp/internal/slackmcp"
 	"github.com/kfet/slack-acp/internal/slackproto"
 	"github.com/kfet/slack-acp/internal/sysprompt"
@@ -287,6 +288,34 @@ func main() {
 			Logf:              log.Printf,
 			Origin:            h.Origin,
 		}), h, access == config.AgentSlackAccessReadWrite)
+		// MCP files tools (acp-kit docs/files-oob.md): send_file into the
+		// session's own thread, and — with the download proxy configured —
+		// list_attachments / fetch_attachment.
+		files := slackfiles.ToolsConfig{
+			Files: slackfiles.New(slackfiles.Config{
+				API:            sc.API(),
+				SelfDrive:      selfDrive,
+				PostsPerMinute: cfg.GetAgentPostsPerMinute(),
+				Logf:           log.Printf,
+			}),
+			MaxFileBytes: cfg.GetMaxSendFileBytes(),
+			Logf:         log.Printf,
+		}
+		if cfg.FilesProxyEnabled() {
+			files.Downloads = slackfiles.NewDownloads(slackfiles.DownloadsConfig{
+				API:     sc.API(),
+				Client:  handler.NewFileClient(cfg.BotToken),
+				BaseURL: cfg.FilesPublicBaseURL,
+				Logf:    log.Printf,
+			})
+			srv, serr := slackfiles.Serve(cfg.FilesListen, files.Downloads)
+			if serr != nil {
+				log.Fatalf("files proxy listener: %v", serr)
+			}
+			defer srv.Close()
+			log.Printf("slack-acp: attachment download proxy on %s, public at %s", cfg.FilesListen, cfg.FilesPublicBaseURL)
+		}
+		slackfiles.Register(mcpHost, files)
 		if lerr := mcpHost.Listen(); lerr != nil {
 			log.Fatalf("slack-mcp listener: %v", lerr)
 		}
@@ -294,6 +323,9 @@ func main() {
 			access, slackmcp.ServerName, mcpHost.SocketPath())
 	} else {
 		log.Printf("slack-acp: agent Slack access disabled (agent_slack_access=off)")
+		if cfg.FilesProxyEnabled() {
+			log.Printf("slack-acp: files_listen ignored: the files tools ride the slack MCP server, which agent_slack_access=off disables")
+		}
 	}
 
 	// Probe the agent for its current model so the status line can

@@ -284,6 +284,13 @@ existing installs must reinstall the app before `slack_list_channels`
 works. See [`docs/agent-slack-access.md`](docs/agent-slack-access.md)
 for the threat model and the full mitigation list.
 
+The same MCP server carries the files tools: `send_file` (into the
+session's own thread; large files go straight from the agent's client to a
+pre-signed Slack upload URL) and, with `files_listen` +
+`files_public_base_url` configured, `list_attachments` /
+`fetch_attachment` via a one-shot signed download proxy. See
+[`docs/files.md`](docs/files.md).
+
 ### Self-drive escape hatch (testing only)
 
 > **⚠️ This deliberately reopens the bot-message boundary. Leave
@@ -386,6 +393,7 @@ internal/installsvc/  systemd / launchd supervisor unit generator
 internal/ratelimit/   shared token bucket (self-drive hatch + agent posts)
 internal/router/      (channel,thread_ts) → ACP session map + GC
 internal/skills/      embedded skill bundle + fir-style catalog (wraps `acp-kit/skills`)
+internal/slackfiles/  MCP files tools: send_file uploads, attachment download proxy
 internal/slackmcp/    relay-hosted `slack` MCP server (agent-initiated Slack calls)
 internal/slackproto/  Socket Mode client + throttled message streamer
 internal/sysprompt/   Slack-mrkdwn sysprompt composer injected per session

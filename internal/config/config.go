@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,25 @@ type Config struct {
 	// the prompt. 0 = default 20 MiB.
 	MaxAttachmentBytes int64 `json:"max_attachment_bytes,omitempty"`
 
+	// MaxSendFileBytes caps one file the agent sends with the `send_file`
+	// tool. Small files travel inline; larger ones the agent's MCP client
+	// uploads straight to Slack (files.getUploadURLExternal), never
+	// through the relay. 0 = default 100 MiB. See docs/files.md.
+	MaxSendFileBytes int64 `json:"max_send_file_bytes,omitempty"`
+
+	// FilesListen is the address the relay's attachment download proxy
+	// listens on: "host:port", or "unix:/path/to.sock" for a socket a
+	// reverse proxy (or an agentbox Share) fronts. Set together with
+	// FilesPublicBaseURL; both empty (the default) disables the
+	// list_attachments / fetch_attachment tools. See docs/files.md.
+	FilesListen string `json:"files_listen,omitempty"`
+
+	// FilesPublicBaseURL is the public https URL that reaches
+	// FilesListen, e.g. "https://slack-acp.example.com". Download links
+	// are minted under it as <base>/dl/<one-shot token>; the relay adds
+	// the bot token only on its own hop to Slack.
+	FilesPublicBaseURL string `json:"files_public_base_url,omitempty"`
+
 	// ModelProbeBudgetSeconds bounds the total time the startup model
 	// probe may spend retrying a not-yet-ready agent. Agents that block
 	// on external readiness (e.g. `fir --mode acp --wait-mcp` waiting
@@ -268,6 +288,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("agent_slack_access must be one of %q, %q or %q (got %q)",
 			AgentSlackAccessOff, AgentSlackAccessRead, AgentSlackAccessReadWrite, c.AgentSlackAccess)
+	}
+	if c.MaxSendFileBytes < 0 {
+		return fmt.Errorf("max_send_file_bytes must be >= 0 (0 or omitted uses the default of %d)", defaultMaxSendFileBytes)
+	}
+	if err := c.validateFiles(); err != nil {
+		return err
 	}
 	switch c.SessionScope {
 	case "", SessionScopeThread, SessionScopeThreadUser:
@@ -479,3 +505,35 @@ func DefaultConfigPath() string { return filepath.Join(DefaultConfigDir(), "conf
 // DefaultEnvPath is the conventional location for the env file used
 // by supervisor units (systemd EnvironmentFile, launchd wrapper).
 func DefaultEnvPath() string { return filepath.Join(DefaultConfigDir(), "env") }
+
+// defaultMaxSendFileBytes is the send_file cap when MaxSendFileBytes is 0.
+const defaultMaxSendFileBytes int64 = 100 << 20
+
+// GetMaxSendFileBytes returns the send_file size cap.
+func (c *Config) GetMaxSendFileBytes() int64 {
+	if c.MaxSendFileBytes == 0 {
+		return defaultMaxSendFileBytes
+	}
+	return c.MaxSendFileBytes
+}
+
+// FilesProxyEnabled reports whether the attachment download proxy is
+// configured.
+func (c *Config) FilesProxyEnabled() bool { return c.FilesListen != "" }
+
+// validateFiles checks the download proxy knobs: both or neither, and a
+// public base that is absolute https with no credentials, query or
+// fragment, because every minted link is <base>/dl/<token>.
+func (c *Config) validateFiles() error {
+	if (c.FilesListen == "") != (c.FilesPublicBaseURL == "") {
+		return fmt.Errorf("files_listen and files_public_base_url must be set together (or both left empty to disable attachment downloads)")
+	}
+	if c.FilesPublicBaseURL == "" {
+		return nil
+	}
+	u, err := url.Parse(c.FilesPublicBaseURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("files_public_base_url must be an absolute https URL with no credentials, query or fragment (got %q)", c.FilesPublicBaseURL)
+	}
+	return nil
+}
