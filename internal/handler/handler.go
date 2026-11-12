@@ -148,7 +148,9 @@ func New(cfg Config) *Handler {
 	h := &Handler{cfg: cfg, branchRate: ratelimit.New(cfg.AgentPostsPerMinute, defaultBranchesPerMinute, cfg.Now)}
 	h.convo = mustConvo(h.newConvo())
 	if cfg.Router != nil {
-		h.ij = interject.New(cfg.Router.Agent(), cfg.Interject)
+		ijCfg := cfg.Interject
+		ijCfg.Logf = log.Printf
+		h.ij = interject.New(cfg.Router.Agent(), ijCfg)
 	}
 	if cfg.CatchupTurns <= 0 {
 		cfg.CatchupTurns = DefaultCatchupTurns
