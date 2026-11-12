@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-11
+
 ### Added
 
 - `interject: {enabled, min_conf}` (opt-in, default off; acp-kit v0.48.0): a message arriving while the thread's turn runs is answered at once by a fork of the session, posted with a `(quick reply · …)` tag. The fork decides the main turn's fate — continue, queue the message for its next prompt, steer it (the old supersede), or stop it. Side Q&A is handed to the next main prompt. Commands, attachments, unaddressed ambient replies, a fork failure or an agent without `session/fork` keep the old supersede behaviour.
