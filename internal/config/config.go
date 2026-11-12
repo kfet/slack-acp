@@ -2,6 +2,8 @@
 package config
 
 import (
+	"github.com/kfet/acp-kit/interject"
+
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -139,6 +141,13 @@ type Config struct {
 	// separately — how many `branch` tool tasks it will open per minute.
 	// Default 10.
 	AgentPostsPerMinute int `json:"agent_posts_per_minute,omitempty"`
+
+	// Interject opts into mid-turn quick replies: a message arriving
+	// while the thread's turn runs is answered by a fork of the session,
+	// and the fork decides whether to also queue, steer or stop the main
+	// turn. Off by default; without it (or when the agent cannot fork)
+	// a new message supersedes the running turn.
+	Interject interject.Config `json:"interject"`
 
 	// MaxAttachmentBytes caps one inbound Slack file the relay downloads
 	// into the thread's inbox/. Larger files are skipped and named in
@@ -279,6 +288,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ModelProbeBudgetSeconds < 0 {
 		return fmt.Errorf("model_probe_budget_seconds must be >= 0")
+	}
+	if c.Interject.MinConf < 0 || c.Interject.MinConf > 9 {
+		return fmt.Errorf("interject.min_conf must be 0-9 (0 uses the default of %d), got %d", interject.DefaultMinConf, c.Interject.MinConf)
 	}
 	if c.AgentPostsPerMinute < 0 {
 		return fmt.Errorf("agent_posts_per_minute must be >= 0 (0 or omitted uses the default of %d)", defaultAgentPostsPerMinute)

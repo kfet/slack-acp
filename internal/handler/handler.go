@@ -18,6 +18,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/convo"
+	"github.com/kfet/acp-kit/interject"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/slack-acp/internal/journal"
 	"github.com/kfet/slack-acp/internal/ratelimit"
@@ -95,6 +96,9 @@ type Config struct {
 	// AgentCwd is cwd_mode "agent": the agent picks the cwd, and the
 	// login commands are each sender's own rather than owner-only.
 	AgentCwd bool
+	// Interject opts into mid-turn quick replies (see interject.go).
+	// The zero value is off.
+	Interject interject.Config
 }
 
 // defaultBranchesPerMinute mirrors config's agent_posts_per_minute
@@ -130,6 +134,13 @@ type Handler struct {
 	// that started a turn there, so a catch-up turn never supersedes a
 	// newer live one.
 	liveTS sync.Map
+
+	// ij answers messages that arrive mid-turn from a session fork. Nil
+	// when interject is off.
+	ij *interject.Interjector
+	// queueWait, when set (tests), runs each time a queued interject
+	// waits for the conversation's turn to end.
+	queueWait func()
 }
 
 // New constructs a handler.
@@ -139,6 +150,9 @@ func New(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, branchRate: ratelimit.New(cfg.AgentPostsPerMinute, defaultBranchesPerMinute, cfg.Now)}
 	h.convo = mustConvo(h.newConvo())
+	if cfg.Router != nil {
+		h.ij = interject.New(cfg.Router.Agent(), cfg.Interject)
+	}
 	if cfg.CatchupTurns <= 0 {
 		cfg.CatchupTurns = DefaultCatchupTurns
 	}
@@ -189,6 +203,23 @@ func (h *Handler) Handle(ctx context.Context, ev slackproto.Event) {
 	// (convo Supersede mode). The turn's real bound is the
 	// progress-resetting liveness clock, armed inside run once the agent
 	// is about to be prompted.
+	conv := key.String()
+	if h.interjectable(ev, conv, text) {
+		rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonInterject
+		journal.Log(rec)
+		h.bg.Add(1)
+		go func() {
+			defer h.bg.Done()
+			h.interject(ctx, ev, key, text)
+		}()
+		return
+	}
+	h.dispatch(ctx, ev, key, text, rec)
+}
+
+// dispatch hands an admitted message to convo: a relay command, or a
+// turn that supersedes the thread's running one.
+func (h *Handler) dispatch(ctx context.Context, ev slackproto.Event, key router.ConvKey, text string, rec journal.Record) {
 	conv := key.String()
 	res := h.convo.Dispatch(withOrigin(ctx, ev), convo.In{Conv: conv, Token: h.tokenOf(conv, ev), Text: text, Meta: ev})
 	rec.Decision, rec.Reason = journal.DecisionRun, journal.ReasonPrompt
@@ -564,7 +595,7 @@ func (h *Handler) run(ctx context.Context, ev slackproto.Event, key router.ConvK
 
 	// The sender is named in the origin _meta (see withOrigin), never
 	// in the prompt text.
-	promptText := text
+	promptText := h.ij.Take(key.String()) + text
 	if prefix := h.cfg.Router.TakePendingSystemPrompt(sess); prefix != "" {
 		promptText = prefix + "\n\n" + promptText
 	}

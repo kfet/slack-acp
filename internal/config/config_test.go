@@ -414,6 +414,16 @@ func TestAgentPostsPerMinute(t *testing.T) {
 	}
 }
 
+func TestValidateInterject(t *testing.T) {
+	for _, mc := range []int{-1, 10} {
+		c := &Config{BotToken: "xoxb-1", AppToken: "xapp-1"}
+		c.Interject.MinConf = mc
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "interject.min_conf") {
+			t.Fatalf("min_conf %d: err = %v", mc, err)
+		}
+	}
+}
+
 func TestSessionScopeAndCwdMode(t *testing.T) {
 	var c Config
 	if c.GetSessionScope() != SessionScopeThread || c.GetCwdMode() != CwdModeLocal {

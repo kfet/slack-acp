@@ -19,8 +19,9 @@ import (
 // ---- fake agent ----
 
 type fakeAgent struct {
-	mu    sync.Mutex
-	sinks map[acp.SessionId]client.SessionUpdateSink
+	closeCalls int32
+	mu         sync.Mutex
+	sinks      map[acp.SessionId]client.SessionUpdateSink
 
 	caps         client.Caps
 	listResult   []client.SessionInfo
@@ -167,6 +168,11 @@ func (f *fakeAgent) DropSession(sid acp.SessionId) {
 	f.mu.Unlock()
 }
 
+func (f *fakeAgent) CloseSession(_ context.Context, _ acp.SessionId) error {
+	atomic.AddInt32(&f.closeCalls, 1)
+	return nil
+}
+
 func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink) {
 	atomic.AddInt32(&f.rebindCalls, 1)
 	f.mu.Lock()
@@ -185,6 +191,22 @@ func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return nil }
 func (f *fakeAgent) SetModel(context.Context, acp.SessionId, string) error { return nil }
 func (f *fakeAgent) CurrentModel(acp.SessionId) (string, bool)             { return "", false }
 
+func TestForkTarget(t *testing.T) {
+	r, _ := newTestRouter(t)
+	key := ConvKey{ChannelID: "C1", ThreadTS: "1.0"}
+	if _, _, ok := r.ForkTarget(key); ok {
+		t.Fatal("ForkTarget reported a session that does not exist")
+	}
+	s, err := r.GetOrCreate(context.Background(), key, discardSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, cwd, ok := r.ForkTarget(key)
+	if !ok || sid != s.SessionID || cwd != s.Cwd {
+		t.Fatalf("ForkTarget = %q %q %v; want %q %q", sid, cwd, ok, s.SessionID, s.Cwd)
+	}
+}
+
 func TestLiveAndResetSkipsResumeOnce(t *testing.T) {
 	fa := newFakeAgent()
 	fa.caps = client.Caps{ListSessions: true, ResumeSession: true}
@@ -194,7 +216,7 @@ func TestLiveAndResetSkipsResumeOnce(t *testing.T) {
 	if _, _, ok := r.Live(key); ok {
 		t.Fatal("live before any turn")
 	}
-	s, err := r.GetOrCreate(context.Background(), key, nil)
+	s, err := r.GetOrCreate(context.Background(), key, discardSink{})
 	if err != nil || s.SessionID != "old" {
 		t.Fatalf("resume: %v %v", s, err)
 	}
@@ -955,6 +977,24 @@ func TestLastTSRoundTrip(t *testing.T) {
 	}
 	if got := r.GetLastTS(key); got != "200.5" {
 		t.Fatalf("last_ts round-trip: got %q", got)
+	}
+}
+
+// A turn that finishes after a newer message was handled (an
+// interjected reply) must not move the checkpoint backwards.
+func TestLastTSNeverRegresses(t *testing.T) {
+	r := newRouter(t, newFakeAgent())
+	key := ConvKey{ChannelID: "C1", ThreadTS: "100.0"}
+	if _, err := r.GetOrCreate(context.Background(), key, discardSink{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ts := range []string{"300.0", "200.0"} {
+		if err := r.SetLastTS(key, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := r.GetLastTS(key); got != "300.0" {
+		t.Fatalf("last_ts = %q, want 300.0", got)
 	}
 }
 

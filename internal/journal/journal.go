@@ -110,6 +110,7 @@ const (
 	ReasonEmptyText          = "empty_text"
 	ReasonAmbientUnknownThrd = "ambient_unknown_thread"
 	ReasonPrompt             = "prompt"
+	ReasonInterject          = "interject"  // asked a fork mid-turn; the running turn was not superseded
 	ReasonCommand            = "command"    // a relay command (`!help`, `!branch` …): answered, no prompt
 	ReasonOwnerOnly          = "owner_only" // an operator command from a non-owner: refused with a reply
 	// ReasonCatchUpCommand: a relay or slash command the catch-up read

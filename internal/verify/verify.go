@@ -144,6 +144,10 @@ type Config struct {
 	// SelfDriveSentinel enables the self-drive check when non-empty.
 	SelfDriveSentinel string
 
+	// Interject enables the mid-turn interject check; set it when the
+	// relay runs with interject.enabled.
+	Interject bool
+
 	// Nonce disambiguates this run's messages from any other run's.
 	// Generated per-run when empty.
 	Nonce string
@@ -274,6 +278,7 @@ func (r *Runner) Run(ctx context.Context) ([]Result, error) {
 	out = append(out, r.checkEditedMention(ctx))
 	out = append(out, r.checkBotEcho(ctx))
 	out = append(out, r.checkSelfDrive(ctx))
+	out = append(out, r.checkInterject(ctx))
 	// Last: it restarts the relay.
 	out = append(out, r.checkCatchUp(ctx)...)
 	return out, nil
@@ -605,6 +610,33 @@ func (r *Runner) checkSelfDrive(ctx context.Context) Result {
 	return r.expectRun(ctx, name, r.cfg.PublicChannel, ts, ts, journal.PathSelfDrive, journal.ReasonSelfDrive)
 }
 
+// checkInterject DMs a long task, then a side question in the same
+// thread while it runs: the handler must put the question to a fork
+// (reason interject) rather than supersede the turn, and the bot must
+// answer it.
+func (r *Runner) checkInterject(ctx context.Context) Result {
+	const name = "interject_mid_turn"
+	if !r.cfg.Interject {
+		return Result{Name: name, Status: StatusSkip, Detail: "interject is not enabled on the relay (--interject) — off is the default"}
+	}
+	if r.cfg.User == nil {
+		return Result{Name: name, Status: StatusSkip, Detail: skipNoUserToken}
+	}
+	dm, err := r.cfg.Bot.OpenDM(ctx, r.humanID)
+	if err != nil {
+		return failf(name, "conversations.open with the test user: %v", err)
+	}
+	thread, err := r.post(ctx, r.cfg.User, dm, "", r.label("long task: count slowly from 1 to 300, one number per line"))
+	if err != nil {
+		return failf(name, "post as user: %v", err)
+	}
+	ts, err := r.post(ctx, r.cfg.User, dm, thread, r.label("side question: what is 2+2? keep counting"))
+	if err != nil {
+		return failf(name, "post side question as user: %v", err)
+	}
+	return r.expectRunAs(ctx, name, dm, thread, ts, journal.PathMessageIM, journal.ReasonDM, journal.ReasonInterject)
+}
+
 // ---- assertions ----
 
 // terminalRefusals are the drop reasons that mean the relay refused a
@@ -663,13 +695,18 @@ func (v *verdict) Error() string { return v.reason }
 // layer delivered it on the expected surface, the handler ran a prompt
 // for it, and a reply from the bot actually landed in the thread.
 func (r *Runner) expectRun(ctx context.Context, name, channel, threadTS, ts string, path journal.Path, deliverReason string) Result {
+	return r.expectRunAs(ctx, name, channel, threadTS, ts, path, deliverReason, journal.ReasonPrompt)
+}
+
+// expectRunAs is expectRun for a handler run record with runReason.
+func (r *Runner) expectRunAs(ctx context.Context, name, channel, threadTS, ts string, path journal.Path, deliverReason, runReason string) Result {
 	var recs []journal.Record
 	err := r.cfg.Wait(ctx, func(ctx context.Context) (bool, error) {
 		var err error
 		if recs, err = r.recordsFor(ctx, channel, ts); err != nil {
 			return false, err
 		}
-		if hasRecord(recs, journal.StageHandler, journal.DecisionRun, journal.ReasonPrompt) {
+		if hasRecord(recs, journal.StageHandler, journal.DecisionRun, runReason) {
 			return true, nil
 		}
 		if reason := refusal(recs); reason != "" {
@@ -679,7 +716,7 @@ func (r *Runner) expectRun(ctx context.Context, name, channel, threadTS, ts stri
 	})
 	if err != nil {
 		return Result{Name: name, Status: StatusFail, Records: recs,
-			Detail: fmt.Sprintf("expected a prompt for ts=%s: %v", ts, err)}
+			Detail: fmt.Sprintf("expected a %s run for ts=%s: %v", runReason, ts, err)}
 	}
 	if !hasRecordPath(recs, journal.StageProto, path, journal.DecisionDeliver, deliverReason) {
 		return Result{Name: name, Status: StatusFail, Records: recs,

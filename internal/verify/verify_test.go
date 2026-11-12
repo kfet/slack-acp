@@ -264,6 +264,12 @@ func scriptedRelay(j *fakeJournal, botID string) (bot, user *fakeSlack) {
 				journal.Record{Stage: journal.StageHandler, Path: journal.PathMessageIM, Decision: journal.DecisionDrop, Reason: journal.ReasonOwnerOnly, Channel: channel, TS: ts},
 			)
 			bot.botReply(threadTS)
+		case f == user && channel == bot.dmID && strings.Contains(text, "side question"):
+			j.add(
+				journal.Record{Stage: journal.StageProto, Path: journal.PathMessageIM, Decision: journal.DecisionDeliver, Reason: journal.ReasonDM, Channel: channel, TS: ts},
+				journal.Record{Stage: journal.StageHandler, Path: journal.PathMessageIM, Decision: journal.DecisionRun, Reason: journal.ReasonInterject, Channel: channel, TS: ts},
+			)
+			bot.botReply(threadTS)
 		case f == user && channel == bot.dmID:
 			j.delivered(channel, ts, journal.PathMessageIM, journal.ReasonDM)
 			bot.botReply(threadTS)
@@ -334,6 +340,7 @@ func TestRunAllChecksPass(t *testing.T) {
 		Bot: bot, User: user, Journal: j,
 		PublicChannel: "C_PUB", PrivateChannel: "C_PRIV",
 		SelfDriveSentinel: "!!drive!!",
+		Interject:         true,
 		Nonce:             "nonce",
 		Wait:              immediateWait,
 		Outage:            withOutage(j, bot, user),
@@ -350,7 +357,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	for _, want := range []string{
 		"app_mention_public", "ambient_thread_reply_known", "app_mention_private",
 		"dm", "owner_gate_refused", "ambient_thread_reply_unknown_dropped", "edited_mention_dropped",
-		"bot_echo_dropped", "self_drive_hatch", "branch_reaction", "dm_file_share",
+		"bot_echo_dropped", "self_drive_hatch", "interject_mid_turn", "branch_reaction", "dm_file_share",
 		"catch_up_mention_answered", "catch_up_command_skipped",
 	} {
 		res, ok := byName[want]
@@ -365,7 +372,7 @@ func TestRunAllChecksPass(t *testing.T) {
 	if !allOK {
 		t.Fatalf("Summarise says not ok:\n%s", report)
 	}
-	if !strings.Contains(report, "13 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(report, "14 passed, 0 failed, 0 skipped") {
 		t.Fatalf("unexpected summary:\n%s", report)
 	}
 }
@@ -588,7 +595,7 @@ func TestPostErrorsSurfaceAsFailures(t *testing.T) {
 	user.postErr, bot.postErr = boom, boom
 
 	r, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", PrivateChannel: "C_PRIV",
-		SelfDriveSentinel: "!!drive!!", Nonce: "n", Wait: immediateWait, Outage: withOutage(j, bot, user)})
+		SelfDriveSentinel: "!!drive!!", Interject: true, Nonce: "n", Wait: immediateWait, Outage: withOutage(j, bot, user)})
 	results, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -645,6 +652,28 @@ func (f *failSecondPost) Post(ctx context.Context, channel, threadTS, text strin
 		return "", errors.New("boom")
 	}
 	return f.fakeSlack.Post(ctx, channel, threadTS, text)
+}
+
+func TestInterjectCheckSkipsAndFails(t *testing.T) {
+	j := &fakeJournal{}
+	bot, user := newWorkspace()
+	off, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Nonce: "n", Wait: immediateWait})
+	if res := off.checkInterject(context.Background()); res.Status != StatusSkip || !strings.Contains(res.Detail, "--interject") {
+		t.Fatalf("off: %+v", res)
+	}
+	noUser, _ := New(Config{Bot: bot, Journal: j, PublicChannel: "C_PUB", Interject: true, Nonce: "n", Wait: immediateWait})
+	if res := noUser.checkInterject(context.Background()); res.Status != StatusSkip {
+		t.Fatalf("no user token: %+v", res)
+	}
+	second, _ := New(Config{Bot: bot, User: &failSecondPost{fakeSlack: user}, Journal: j, PublicChannel: "C_PUB", Interject: true, Nonce: "n", Wait: immediateWait})
+	if res := second.checkInterject(context.Background()); res.Status != StatusFail || !strings.Contains(res.Detail, "side question") {
+		t.Fatalf("second post: %+v", res)
+	}
+	bot.openErr = errors.New("missing_scope")
+	open, _ := New(Config{Bot: bot, User: user, Journal: j, PublicChannel: "C_PUB", Interject: true, Nonce: "n", Wait: immediateWait})
+	if res := open.checkInterject(context.Background()); res.Status != StatusFail || !strings.Contains(res.Detail, "conversations.open") {
+		t.Fatalf("open: %+v", res)
+	}
 }
 
 func TestDMOpenErrorFails(t *testing.T) {

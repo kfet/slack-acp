@@ -11,6 +11,7 @@
   "prompt_timeout_seconds": 0,
   "agent_slack_access": "read",
   "agent_posts_per_minute": 10,
+  "interject": {"enabled": false, "min_conf": 7},
   "max_attachment_bytes": 20971520,
   "max_send_file_bytes": 104857600,
   "files_listen": "",

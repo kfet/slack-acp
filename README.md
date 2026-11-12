@@ -327,6 +327,25 @@ refuses bot-authored events, so the sentinel itself is the addressing
 mechanism. See [`docs/ambient-threads.md`](docs/ambient-threads.md) for
 the full loop-guard design.
 
+## Mid-turn quick replies (`interject`)
+
+Opt-in. With it off (the default) a new message in a thread whose turn is
+still running cancels that turn and re-prompts with the new message.
+
+```json
+{ "interject": { "enabled": true, "min_conf": 7 } }
+```
+
+With it on, the relay forks the running session (`session/fork`), asks
+the fork the new message, and posts its short answer tagged
+`(quick reply · …)`. The fork also decides what happens to the main
+turn: keep going, queue the message for its next prompt, steer it (the
+old cancel + re-prompt), or stop it. A verdict below `min_conf` (0-9,
+default 7) means "keep going". The side Q&A is prepended to the next
+main prompt. Commands (`!…`), messages with files, unaddressed ambient
+replies, a fork error, and agents without `session/fork` keep the old
+behaviour.
+
 ## Verifying a deployment
 
 `slack-acp verify` drives real messages through real Slack and reports

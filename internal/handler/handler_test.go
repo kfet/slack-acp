@@ -26,8 +26,9 @@ import (
 // ---- fakeAgent: minimal router.Agent implementation for handler tests ----
 
 type fakeAgent struct {
-	mu    sync.Mutex
-	sinks map[acp.SessionId]client.SessionUpdateSink
+	closeCount int32
+	mu         sync.Mutex
+	sinks      map[acp.SessionId]client.SessionUpdateSink
 
 	caps        client.Caps
 	promptStop  acp.StopReason
@@ -142,6 +143,11 @@ func (f *fakeAgent) DropSession(sid acp.SessionId) {
 	f.mu.Lock()
 	delete(f.sinks, sid)
 	f.mu.Unlock()
+}
+
+func (f *fakeAgent) CloseSession(_ context.Context, _ acp.SessionId) error {
+	atomic.AddInt32(&f.closeCount, 1)
+	return nil
 }
 
 func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink) {

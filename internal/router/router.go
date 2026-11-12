@@ -120,6 +120,8 @@ type Agent interface {
 	PromptTurn(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (client.TurnResult, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	DropSession(sid acp.SessionId)
+	// CloseSession ends a session on the agent side (interject forks).
+	CloseSession(ctx context.Context, sid acp.SessionId) error
 	RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 	// Models returns a snapshot of the agent's last-seen available
 	// models and the current model id ("provider/model"). Empty until
@@ -140,6 +142,7 @@ type Agent interface {
 
 // Router owns the conv→session map and creates sessions on demand.
 type Router struct {
+	tsMu         sync.Mutex // serialises SetLastTS's read-compare-write
 	agent        Agent
 	stateDir     string
 	root         *os.Root // sandbox for per-thread cwd creation
@@ -306,7 +309,14 @@ func (r *Router) GetLastTS(key ConvKey) string {
 
 // SetLastTS records the timestamp of the most recently processed message
 // for the given key. Used to track checkpoint for dedup and gap detection.
+// It never moves the checkpoint backwards: a turn can finish after a newer
+// message of its thread was handled. (Slack ts compare lexicographically.)
 func (r *Router) SetLastTS(key ConvKey, ts string) error {
+	r.tsMu.Lock()
+	defer r.tsMu.Unlock()
+	if ts <= r.GetLastTS(key) {
+		return nil
+	}
 	r.mu.Lock()
 	root := r.root
 	r.mu.Unlock()
@@ -577,6 +587,18 @@ func (r *Router) Live(key ConvKey) (acp.SessionId, time.Time, bool) {
 		return "", time.Time{}, false
 	}
 	return s.SessionID, s.lastUsed, true
+}
+
+// ForkTarget reports key's live session id and the cwd the agent knows
+// it by, for forking it (interject) without creating a session.
+func (r *Router) ForkTarget(key ConvKey) (acp.SessionId, string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.byKey[key]
+	if !ok {
+		return "", "", false
+	}
+	return s.SessionID, r.wireCwd(s.Cwd), true
 }
 
 // Reset drops key's live session so the next GetOrCreate starts a NEW

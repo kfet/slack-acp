@@ -248,6 +248,7 @@ func main() {
 		FileClient:          handler.NewFileClient(cfg.BotToken),
 		MaxAttachmentBytes:  cfg.MaxAttachmentBytes,
 		CatchupMaxAge:       cfg.CatchupMaxAge(),
+		Interject:           cfg.Interject,
 	})
 
 	opts := []slackproto.Option{
@@ -479,6 +480,7 @@ func runVerify(args []string) error {
 	since := fs.String("since", "10 min ago", "journalctl --since window")
 	journalCmd := fs.String("journal-cmd", "", "override the journal reader with a shell command line (e.g. `ssh host journalctl --user -u slack-acp --since \"10 min ago\"`); default reads the local unit")
 	sentinel := fs.String("self-drive-sentinel", "", "self-drive sentinel, if the relay is configured with one; empty skips that check")
+	interjectOn := fs.Bool("interject", false, "the relay runs with interject.enabled; false skips that check")
 	timeout := fs.Duration("timeout", 3*time.Minute, "per-assertion wait budget")
 	stopCmd := fs.String("outage-stop-cmd", "", "shell command that stops the relay (e.g. `systemctl --user stop slack-acp`); with --outage-start-cmd enables the catch-up checks, which restart the relay")
 	startCmd := fs.String("outage-start-cmd", "", "shell command that starts the relay again (e.g. `systemctl --user start slack-acp`)")
@@ -520,6 +522,7 @@ func runVerify(args []string) error {
 		PublicChannel:     *public,
 		PrivateChannel:    *private,
 		SelfDriveSentinel: *sentinel,
+		Interject:         *interjectOn,
 		Outage:            outage,
 		Wait:              verify.PollWaiter(500*time.Millisecond, *timeout),
 	})
