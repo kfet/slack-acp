@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/interject"
 	"github.com/kfet/slack-acp/internal/router"
 	"github.com/kfet/slack-acp/internal/slackproto"
@@ -143,8 +145,8 @@ func TestInterjectNoneLeavesMainRunning(t *testing.T) {
 	}
 }
 
-func TestInterjectSteerSupersedes(t *testing.T) {
-	e := newIJEnv(t, "redirecting\n3 9")
+func TestInterjectInformFallbackSupersedes(t *testing.T) {
+	e := newIJEnv(t, "redirecting\n2 9")
 	e.interject()
 	e.finish()
 	if atomic.LoadInt32(&e.fa.cancelCount) == 0 {
@@ -157,7 +159,7 @@ func TestInterjectSteerSupersedes(t *testing.T) {
 }
 
 func TestInterjectAbortStops(t *testing.T) {
-	e := newIJEnv(t, "stopping\n4 9")
+	e := newIJEnv(t, "stopping\n3 9")
 	e.interject()
 	waitForIdle(t, e.h)
 	if atomic.LoadInt32(&e.fa.cancelCount) == 0 {
@@ -169,36 +171,36 @@ func TestInterjectAbortStops(t *testing.T) {
 	e.finish()
 }
 
-func TestInterjectQueueWhileRunningWaits(t *testing.T) {
-	e := newIJEnv(t, "noted\n2 9")
-	// Main is released only once the queued message waits on it.
-	e.h.queueWait = func() {
-		if m := e.mainPrompts(); len(m) != 1 {
-			t.Errorf("queue started a turn while main ran: %q", m)
-		}
-		e.unblock()
+func steerCaps() client.Caps {
+	return client.Caps{Extensions: map[string]json.RawMessage{interject.SteerCap: nil}}
+}
+
+func TestInterjectNativeInformSteers(t *testing.T) {
+	e := newIJEnv(t, "noted\nNOTE: also second\n2 9")
+	e.fa.caps = steerCaps()
+	e.interject()
+	if n := atomic.LoadInt32(&e.fa.cancelCount); n != 0 || len(e.fa.ext) != 1 || e.fa.ext[0]["mode"] != "steer" {
+		t.Fatalf("cancels %d, ext %v", n, e.fa.ext)
 	}
-	e.send()
-	waitForIdle(t, e.h)
-	// The queued message is delivered once the main turn ends.
-	m := e.mainPrompts()
-	if len(m) != 2 || !strings.Contains(m[1], "[queued messages from the user]\nsecond") {
+	e.finish()
+	if m := e.mainPrompts(); len(m) != 1 {
 		t.Fatalf("main prompts = %q", m)
 	}
 }
 
-func TestInterjectQueueAfterMainEndedStartsTurn(t *testing.T) {
-	e := newIJEnv(t, "noted\n2 9")
-	e.onFork = func() {
-		e.unblock()
-		if err := e.h.convo.Active().WaitIdle(context.Background()); err != nil {
-			t.Error(err)
-		}
-	}
+func TestInterjectNativeNoneRecords(t *testing.T) {
+	e := newIJEnv(t, "fine\n1 9")
+	e.fa.caps = steerCaps()
 	e.interject()
+	if len(e.fa.ext) != 1 || e.fa.ext[0]["mode"] != "record" {
+		t.Fatalf("ext %v", e.fa.ext)
+	}
+	e.finish()
+	ev := ijEv
+	ev.TS, ev.Text = "3.0", "third"
+	e.h.Handle(context.Background(), ev)
 	waitForIdle(t, e.h)
-	m := e.mainPrompts()
-	if len(m) != 2 || !strings.Contains(m[1], "[queued messages from the user]\nsecond") {
+	if m := e.mainPrompts(); len(m) != 2 || m[1] != "third" {
 		t.Fatalf("main prompts = %q", m)
 	}
 }
@@ -237,7 +239,7 @@ func TestInterjectVerdictOnlyPostsNothing(t *testing.T) {
 }
 
 func TestInterjectReplyErrorStillActs(t *testing.T) {
-	e := newIJEnv(t, "stopping\n4 9")
+	e := newIJEnv(t, "stopping\n3 9")
 	e.onFork = func() {
 		e.fs.mu.Lock()
 		e.fs.postErr = true

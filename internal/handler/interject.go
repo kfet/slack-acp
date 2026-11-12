@@ -50,27 +50,12 @@ func (h *Handler) interject(ctx context.Context, ev slackproto.Event, key router
 			kitlog.Debugf("handler: interject reply in %s: %v", conv, err)
 		}
 	}
-	switch r.Action {
-	case interject.Steer:
+	switch {
+	case r.Action == interject.Inform && !r.Delivered:
+		// The agent could not take it mid-turn: supersede, as before.
 		h.dispatch(ctx, ev, key, text, handlerRecord(ev))
-	case interject.Abort:
+	case r.Action == interject.Abort:
 		h.convo.Active().Stop(ctx, conv)
-	case interject.Queue:
-		// A running turn already took its prefix, so the queued
-		// message would wait for the next user message: once the
-		// conversation is idle, start a turn for it.
-		for t, ok := h.convo.Active().Get(conv); ok; t, ok = h.convo.Active().Get(conv) {
-			if h.queueWait != nil {
-				h.queueWait()
-			}
-			<-t.Ended()
-		}
-		if h.ij.Queued(conv) {
-			h.liveTS.Store(key, ev.TS)
-			h.convo.Start(withOrigin(ctx, ev), convo.Job{Conv: conv, Run: func(ctx context.Context, _ *convo.Turn) error {
-				return h.run(ctx, ev, key, "")
-			}})
-		}
 	}
 }
 

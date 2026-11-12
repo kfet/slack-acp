@@ -339,10 +339,12 @@ still running cancels that turn and re-prompts with the new message.
 With it on, the relay forks the running session (`session/fork`), asks
 the fork the new message, and posts its short answer tagged
 `(quick reply · …)`. The fork also decides what happens to the main
-turn: keep going, queue the message for its next prompt, steer it (the
-old cancel + re-prompt), or stop it. A verdict below `min_conf` (0-9,
-default 7) means "keep going". The side Q&A is prepended to the next
-main prompt. Commands (`!…`), messages with files, unaddressed ambient
+turn: just answer, inform it, or stop it. A verdict below `min_conf`
+(0-9, default 7) means "just answer". With fir's `_fir/session/steer`
+(fir ≥ 1.53) an answer-only exchange is recorded where the model never
+sees it, and inform injects the Q&A (plus an optional note from the
+fork) into the running turn. Other agents get the side Q&A prepended
+to the next main prompt, and inform cancels and re-prompts. Commands (`!…`), messages with files, unaddressed ambient
 replies, a fork error, and agents without `session/fork` keep the old
 behaviour.
 

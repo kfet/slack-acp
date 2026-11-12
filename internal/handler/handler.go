@@ -138,9 +138,6 @@ type Handler struct {
 	// ij answers messages that arrive mid-turn from a session fork. Nil
 	// when interject is off.
 	ij *interject.Interjector
-	// queueWait, when set (tests), runs each time a queued interject
-	// waits for the conversation's turn to end.
-	queueWait func()
 }
 
 // New constructs a handler.

@@ -51,6 +51,8 @@ type fakeAgent struct {
 	// forks records ForkSession calls; forkErr fails them.
 	forks   []forkCall
 	forkErr error
+	// ext records ExtMethod params.
+	ext []map[string]any
 	// leafFn, when set, gives PromptTurn's LeafID.
 	leafFn func(sid acp.SessionId, blocks []acp.ContentBlock) string
 	// redirects records each login redirect URL submitted.
@@ -148,6 +150,13 @@ func (f *fakeAgent) DropSession(sid acp.SessionId) {
 func (f *fakeAgent) CloseSession(_ context.Context, _ acp.SessionId) error {
 	atomic.AddInt32(&f.closeCount, 1)
 	return nil
+}
+
+func (f *fakeAgent) ExtMethod(_ context.Context, _ acp.SessionId, _ string, p map[string]any) (json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ext = append(f.ext, p)
+	return json.RawMessage(`{}`), nil
 }
 
 func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink) {

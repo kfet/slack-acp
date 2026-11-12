@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -171,6 +172,10 @@ func (f *fakeAgent) DropSession(sid acp.SessionId) {
 func (f *fakeAgent) CloseSession(_ context.Context, _ acp.SessionId) error {
 	atomic.AddInt32(&f.closeCalls, 1)
 	return nil
+}
+
+func (f *fakeAgent) ExtMethod(context.Context, acp.SessionId, string, map[string]any) (json.RawMessage, error) {
+	return nil, nil
 }
 
 func (f *fakeAgent) RebindSink(sid acp.SessionId, sink client.SessionUpdateSink) {

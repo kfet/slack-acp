@@ -11,6 +11,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -122,6 +123,9 @@ type Agent interface {
 	DropSession(sid acp.SessionId)
 	// CloseSession ends a session on the agent side (interject forks).
 	CloseSession(ctx context.Context, sid acp.SessionId) error
+	// ExtMethod sends an agent extension request (interject's
+	// _fir/session/steer).
+	ExtMethod(ctx context.Context, sid acp.SessionId, method string, params map[string]any) (json.RawMessage, error)
 	RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 	// Models returns a snapshot of the agent's last-seen available
 	// models and the current model id ("provider/model"). Empty until
