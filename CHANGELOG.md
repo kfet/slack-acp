@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-11-12
+
 ### Changed
 - acp-kit v0.50.0; interject now logs a steer the agent refuses (before, the fallback to cancel-and-reprompt was silent).
 
